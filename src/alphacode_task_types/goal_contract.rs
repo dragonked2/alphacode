@@ -84,6 +84,23 @@ pub struct CriterionEvidence {
     pub observed_at: DateTime<Utc>,
 }
 
+/// The shared top-level `intent` argument is a UI label, not an execution
+/// parameter. Keep every other argument exact, including nested `intent` keys.
+fn verification_inputs_match(expected: &serde_json::Value, actual: &serde_json::Value) -> bool {
+    match (expected.as_object(), actual.as_object()) {
+        (Some(expected), Some(actual)) => {
+            let expected_len = expected.len() - usize::from(expected.contains_key("intent"));
+            let actual_len = actual.len() - usize::from(actual.contains_key("intent"));
+            expected_len == actual_len
+                && expected
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != "intent")
+                    .all(|(key, value)| actual.get(key) == Some(value))
+        }
+        _ => expected == actual,
+    }
+}
+
 impl SuccessCriterion {
     pub fn matches_observation(&self, observation: &ToolObservation<'_>) -> bool {
         if !observation.succeeded || observation.tool_call_id.trim().is_empty() {
@@ -98,7 +115,7 @@ impl SuccessCriterion {
             } => {
                 !tool_name.trim().is_empty()
                     && observation.tool_name == tool_name
-                    && observation.input == input
+                    && verification_inputs_match(input, observation.input)
                     && metadata_pointer.starts_with('/')
                     && !expected.is_null()
                     && observation
@@ -279,8 +296,9 @@ impl GoalContract {
                 CriterionCheck::ToolMetadata {
                     tool_name, input, ..
                 } => (
-                    input == observation.input,
-                    tool_name == observation.tool_name && input == observation.input,
+                    verification_inputs_match(input, observation.input),
+                    tool_name == observation.tool_name
+                        && verification_inputs_match(input, observation.input),
                 ),
                 _ => (false, false),
             };
@@ -337,6 +355,66 @@ impl GoalContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verification_ignores_only_the_top_level_ui_intent() {
+        use serde_json::json;
+        let expected = json!({"command": "cargo test --lib"});
+        for actual in [
+            expected.clone(),
+            json!({"command": "cargo test --lib", "intent": "Verify the fix"}),
+        ] {
+            assert!(verification_inputs_match(&expected, &actual));
+            assert!(verification_inputs_match(&actual, &expected));
+        }
+        for actual in [
+            json!({"command": "cargo test --lib; exit 0"}),
+            json!({"command": "cargo test --lib", "working_dir": "elsewhere"}),
+            json!({"command": "cargo test --lib", "timeout": 1}),
+        ] {
+            assert!(!verification_inputs_match(&expected, &actual));
+        }
+        assert!(!verification_inputs_match(
+            &json!({"payload": {"intent": "original"}}),
+            &json!({"payload": {"intent": "changed"}}),
+        ));
+    }
+
+    #[test]
+    fn relabeled_failed_verification_revokes_the_previous_pass() {
+        use serde_json::json;
+        let mut contract = GoalContract::new("verify", vec![]);
+        contract.success_criteria.push(SuccessCriterion {
+            statement: "library tests pass".into(),
+            tier: EvidenceTier::FirstParty,
+            check: CriterionCheck::ToolMetadata {
+                tool_name: "bash".into(),
+                input: json!({"command": "cargo test --lib"}),
+                metadata_pointer: "/process_exit_code".into(),
+                expected: json!(0),
+            },
+        });
+        let input = json!({"command": "cargo test --lib", "intent": "Verify"});
+        let metadata = json!({"process_exit_code": 0});
+        contract.observe(&ToolObservation {
+            tool_call_id: "first",
+            tool_name: "bash",
+            input: &input,
+            metadata: Some(&metadata),
+            succeeded: true,
+        });
+        assert!(contract.criterion_verified(0));
+        let retry = json!({"command": "cargo test --lib", "intent": "Recheck"});
+        contract.observe(&ToolObservation {
+            tool_call_id: "retry",
+            tool_name: "bash",
+            input: &retry,
+            metadata: None,
+            succeeded: false,
+        });
+        assert!(!contract.criterion_verified(0));
+        assert!(contract.criterion_evidence.is_empty());
+    }
 
     #[test]
     fn metadata_criteria_bind_input_and_reject_missing_provenance() {

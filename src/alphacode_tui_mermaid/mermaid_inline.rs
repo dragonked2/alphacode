@@ -377,11 +377,22 @@ mod tests {
         header.truncate(scan + 2 + scan_header_len);
         // No encoded raster remains. Metadata is sufficient for layout.
         header.extend_from_slice(&[0xff, 0xd9]);
+        // The JPEG decoder tolerates an absent scan and may synthesize pixels
+        // for a tiny image. Use large metadata dimensions so a raster decode
+        // reliably fails the image reader's allocation limit, before allocating.
+        let frame = header
+            .windows(2)
+            .position(|bytes| bytes == [0xff, 0xc0])
+            .unwrap();
+        header[frame + 5..frame + 9].fill(0xff);
         let b64 = base64::engine::general_purpose::STANDARD.encode(&header);
         assert!(dims_from_b64_prefix(&b64).is_none());
         let (_, width, height) = inline_image_dims("image/jpeg", &b64).unwrap();
-        assert_eq!((width, height), (2, 3));
-        assert!(image::load_from_memory(&header).is_err());
+        assert_eq!((width, height), (65_535, 65_535));
+        assert!(matches!(
+            image::load_from_memory(&header),
+            Err(image::ImageError::Limits(_))
+        ));
     }
 
     #[test]

@@ -2710,6 +2710,9 @@ What would you like to work on today?";
         );
         assert!(contract.criterion_verified(0));
         agent.goal_contract = Some(contract);
+        // UI labels may change between verification and a handoff/retry.
+        // They must neither preserve stale evidence nor prevent a real pass.
+        call.input["intent"] = json!("Retry verification");
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         agent
             .record_streamed_tool_outcome(

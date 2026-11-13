@@ -728,9 +728,13 @@ fn test_model_picker_includes_copilot_models_in_remote_mode() {
             model_names
         );
         assert!(
-            has_model("gemini-3-pro-preview"),
-            "picker should contain copilot model gemini-3-pro-preview, got: {:?}",
+            has_model("gpt-5.3-codex"),
+            "picker should contain copilot model gpt-5.3-codex, got: {:?}",
             model_names
+        );
+        assert!(
+            !has_model("gemini-3-pro-preview"),
+            "picker must not offer a model rejected by the Copilot classifier"
         );
         assert!(
             has_model("grok-code-fast-1"),

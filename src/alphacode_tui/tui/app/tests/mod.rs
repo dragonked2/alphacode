@@ -234,12 +234,17 @@ pub mod tests {
             fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
                 Arc::new(Self)
             }
+            fn set_model(&self, _model: &str) -> Result<()> {
+                Err(anyhow::anyhow!("credentials expired"))
+            }
             fn model_routes(&self) -> Vec<crate::alphacode_provider_core::ModelRoute> {
                 vec![crate::alphacode_provider_core::ModelRoute {
                     model: "failing-model".to_string(),
                     provider: "FailingProvider".to_string(),
                     api_method: "api".to_string(),
-                    available: false,
+                    // Simulate credentials expiring after catalog discovery.
+                    // Already-unavailable routes are correctly hidden.
+                    available: true,
                     detail: "credentials expired".to_string(),
                     cheapness: None,
                 }]

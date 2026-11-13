@@ -883,6 +883,9 @@ fn redact_auth_field(key: &str, value: &str) -> String {
         || key.contains("secret")
         || key.contains("key")
         || key.contains("credential")
+        || key.contains("password")
+        || key.contains("passwd")
+        || key.contains("cookie")
         || key.contains("callback")
         || key.contains("authorization")
         || key.contains("auth_code")
@@ -923,6 +926,9 @@ mod tests {
     #[test]
     fn auth_log_redacts_secret_like_fields() {
         assert_eq!(redact_auth_field("api_key", "sk-secret"), "<redacted>");
+        for key in ["password", "db_password", "PASSWD", "Cookie", "set_cookie"] {
+            assert_eq!(redact_auth_field(key, "fixture-secret"), "<redacted>");
+        }
         assert_eq!(
             redact_auth_field("callback_url", "https://example.com/?code=secret"),
             "<redacted>"

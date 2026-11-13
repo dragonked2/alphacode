@@ -1060,15 +1060,28 @@ mod tests {
 
     #[tokio::test]
     async fn actor_comparison_collects_owner_and_missing_controls() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
             for _ in 0..3 {
                 let (mut socket, _) = listener.accept().await.unwrap();
-                let mut bytes = [0; 4096];
-                let n = socket.read_exact(&mut bytes).await.unwrap();
-                let request = String::from_utf8_lossy(&bytes[..n]).to_ascii_lowercase();
+                // Read the HTTP header boundary, not an arbitrary fixed-size
+                // buffer: the client waits for a response before closing.
+                let bytes = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    let mut reader = tokio::io::BufReader::new((&mut socket).take(4096));
+                    let mut bytes = Vec::new();
+                    loop {
+                        let read = reader.read_until(b'\n', &mut bytes).await.unwrap();
+                        assert!(read > 0, "truncated or oversized fixture request");
+                        if bytes.ends_with(b"\r\n\r\n") {
+                            break bytes;
+                        }
+                    }
+                })
+                .await
+                .expect("fixture request headers timed out");
+                let request = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
                 let (status, body) = if request.starts_with("get /missing ") {
                     ("404 Not Found", "missing")
                 } else if request.contains("cookie: sid=owner") {

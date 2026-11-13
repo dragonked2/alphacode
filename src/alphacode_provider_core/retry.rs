@@ -635,9 +635,23 @@ fn apply_headers(builder: reqwest::RequestBuilder, headers: &HeaderMap) -> reqwe
 }
 
 fn log_retry(provider: &str, url: &str, attempt: u32, reason: &str, delay: Duration) {
+    let url = retry_log_url(url);
     crate::alphacode_base::logging::warn(&format!(
         "[retry] {provider} {url}: attempt {attempt} after {delay:?} ({reason})"
     ));
+}
+
+/// Endpoint identity is useful for retries; credentials and OAuth/query
+/// payloads must never be copied into the retry log.
+fn retry_log_url(value: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(value) else {
+        return "<invalid URL>".into();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
 }
 
 #[allow(dead_code)]
@@ -683,6 +697,21 @@ pub fn policy_with_tui_toast(base: RetryPolicy) -> RetryPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_logs_keep_endpoint_without_url_credentials_or_payloads() {
+        assert_eq!(
+            retry_log_url(
+                "https://user:fixture-password@example.test:8443/v1/chat?api_key=fixture-key#fixture-token"
+            ),
+            "https://example.test:8443/v1/chat"
+        );
+        assert_eq!(retry_log_url("not-a-url fixture-secret"), "<invalid URL>");
+        assert_eq!(
+            retry_log_url("http://[::1]:1234/v1"),
+            "http://[::1]:1234/v1"
+        );
+    }
     use reqwest::header::HeaderValue;
 
     #[test]

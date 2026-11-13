@@ -34,8 +34,10 @@ foreground command:
 }
 ```
 
-`input` must equal the complete normalized input object of the executed call.
-Extra arguments, a different command, or a different tool do not qualify. Use the
+`input` must equal the normalized execution arguments of the executed call.
+The shared top-level `intent` UI label is ignored when matching and when revoking
+an earlier pass after a failed rerun. Nested `intent` fields remain significant.
+Other extra arguments, a different command, or a different tool do not qualify. Use the
 canonical tool name. JSON pointers select native `ToolOutput.metadata`, never a
 JSON-looking string in stdout. Empty tool names, missing call IDs, null expected
 values, missing metadata, invocation failures, and legacy text predicates cannot

@@ -221,27 +221,43 @@ fn test_model_autocomplete_completes_unique_provider_match() {
 
 #[test]
 fn test_model_picker_preview_stays_open_and_updates_filter() {
-    let mut app = create_test_app();
-    configure_test_remote_models(&mut app);
-
-    for c in "/model g52c".chars() {
-        app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
-            .unwrap();
-    }
-
-    let picker = app
-        .inline_interactive_state
-        .as_ref()
-        .expect("model picker preview should be open");
-    assert!(picker.preview);
-    assert_eq!(picker.filter, "g52c");
-    assert!(
-        picker
-            .filtered
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        configure_test_remote_models(&mut app);
+        // This interaction test consumes a server-provided catalog, independently
+        // of local credentials and catalog caches left by other tests.
+        app.remote_model_options = app
+            .remote_available_entries
             .iter()
-            .any(|&i| picker.entries[i].name.starts_with("gpt-5.2-codex ("))
-    );
-    assert_eq!(app.input(), "/model g52c");
+            .map(|model| crate::provider::ModelRoute {
+                model: model.clone(),
+                provider: "OpenAI".into(),
+                api_method: "openai-oauth".into(),
+                available: true,
+                detail: String::new(),
+                cheapness: None,
+            })
+            .collect();
+
+        for c in "/model g52c".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+                .unwrap();
+        }
+
+        let picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("model picker preview should be open");
+        assert!(picker.preview);
+        assert_eq!(picker.filter, "g52c");
+        assert!(
+            picker
+                .filtered
+                .iter()
+                .any(|&i| picker.entries[i].name.starts_with("gpt-5.2-codex ("))
+        );
+        assert_eq!(app.input(), "/model g52c");
+    });
 }
 
 #[test]
@@ -279,4 +295,3 @@ fn test_model_picker_preview_enter_selects_model() {
         crate::alphacode_base::auth::AuthStatus::invalidate_cache();
     });
 }
-

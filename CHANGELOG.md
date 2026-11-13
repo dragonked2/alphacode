@@ -15,6 +15,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Prompt-history Backspace removes one Unicode grapheme cluster at a time.
 - Remote Escape dismisses error toasts before changing the draft and clears
   inline-preview state consistently with local input.
+- Goal verification ignores changes to the optional UI intent label while
+  preserving exact execution-argument matching and failed-rerun invalidation.
+- Large SDK tool results retain both initial context and final diagnostics,
+  matching the truncation used for native tools.
+- Structured diagnostics redact password and cookie fields; retry log URLs
+  omit credentials, query parameters, and fragments.
+- Windows CI coverage checks GUI callback recovery, diagnostic privacy, export,
+  and log rotation using the desktop host's Windows PowerShell runtime.
 
 ## [1.0.100] - 2026-11-10
 

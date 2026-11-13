@@ -173,6 +173,18 @@ jobs:
       # Same gap as in the test job: the workspace member needs its own run.
       - run: cargo clippy -p alphagrep --locked --all-targets -- -D warnings
 
+  gui-diagnostics:
+    name: Windows GUI diagnostics
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # The shipped WPF host uses .NET Framework and Windows PowerShell 5.1,
+      # including System.Web.Extensions. PowerShell 7 cannot compile this host.
+      - name: Verify callback recovery and diagnostic privacy
+        shell: powershell
+        run: ./scripts/tests/gui-callback.tests.ps1
+
   installer-smoke:
     name: installer smoke
     runs-on: ubuntu-latest

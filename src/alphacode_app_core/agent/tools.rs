@@ -59,15 +59,9 @@ pub(super) fn cap_tool_output_for_history(tool_name: &str, mut output: ToolOutpu
 }
 
 pub(super) fn cap_sdk_tool_content_for_history(tool_name: &str, content: String) -> String {
-    if content.chars().count() <= MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY {
-        return content;
-    }
-    let original_chars = content.chars().count();
-    let kept = crate::util::truncate_str(&content, MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY);
-    format!(
-        "{}\n\n[Tool output truncated by alphacode: tool `{}` produced {} chars; kept first {} chars to protect the remote protocol, session history, and prompt cache. Redirect large logs to a file and read targeted sections.]",
-        kept, tool_name, original_chars, MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY,
-    )
+    // SDK results need the same final diagnostics as native tools. Head-only
+    // clipping discarded test summaries and errors at the end of long logs.
+    cap_tool_output_for_history(tool_name, ToolOutput::new(content)).output
 }
 
 /// Build rendered side-pane images from a tool output's attached images.
@@ -284,8 +278,38 @@ mod tests {
             "custom",
             "y".repeat(MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY + 10),
         );
-        assert!(capped.contains("Tool output truncated by alphacode"));
-        assert!(capped.contains("tool `custom` produced"));
+        assert!(capped.contains("[truncated: `custom` produced"));
+        assert!(capped.contains("kept head+tail"));
+    }
+
+    #[test]
+    fn sdk_and_native_caps_preserve_unicode_diagnostics_and_metadata() {
+        let content = format!(
+            "setup started\n{}\nFINAL: tests failed — 修复 🦀",
+            "中🦀e\u{301}".repeat(MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY),
+        );
+        let metadata = serde_json::json!({"process_exit_code": 1});
+        let output = ToolOutput::new(content.clone())
+            .with_metadata(metadata.clone())
+            .with_image("image/png", "test-image");
+        let native = cap_tool_output_for_history("bash", output);
+        let sdk = cap_sdk_tool_content_for_history("bash", content);
+        assert_eq!(sdk, native.output);
+        assert!(sdk.starts_with("setup started\n"));
+        assert!(sdk.ends_with("FINAL: tests failed — 修复 🦀"));
+        assert!(sdk.chars().count() <= MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY);
+        assert_eq!(native.metadata, Some(metadata));
+        assert_eq!(native.images.len(), 1);
+        assert_eq!(native.images[0].data, "test-image");
+    }
+
+    #[test]
+    fn sdk_cap_leaves_short_output_unchanged() {
+        let content = "success — 完成 🦀\n";
+        assert_eq!(
+            cap_sdk_tool_content_for_history("custom", content.into()),
+            content
+        );
     }
 
     #[test]
