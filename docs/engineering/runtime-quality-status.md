@@ -1,5 +1,10 @@
 # Runtime quality work
 
+The historical notes below describe earlier implementation work. Current local
+checks and remaining gaps are recorded in [the 2026-11-13 quality evidence](quality-evidence-2026-11-13.md).
+That evidence does not establish that every live recovery or terminal scenario
+listed here has been exercised.
+
 This is an implementation status record, not a benchmark or a perfect-quality
 rating. The user requested that checks be skipped. Builds, regression tests,
 interactive terminal exercises, and recovery scenarios below remain unexecuted.

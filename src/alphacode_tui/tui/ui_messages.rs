@@ -4043,23 +4043,24 @@ pub(crate) fn render_tool_message(
     }
     // Always preserve a readable failure reason, even with technical details
     // collapsed. This is a bounded preview, not an unbounded raw log dump.
-    if is_error && row_width > 4 {
-        if let Some(reason) = tools_ui::concise_tool_error_summary(&msg.content) {
-            let reason = crate::alphacode_tui_render::single_line_text(&reason);
-            if !rendered_tool_line_text.contains(&reason) {
-                let parts = split_by_display_width(&reason, row_width - 4);
-                for part in parts.iter().take(3) {
-                    lines.push(Line::from(vec![
-                        Span::raw("    "),
-                        Span::styled(part.clone(), Style::default().fg(icon_color)),
-                    ]));
-                }
-                if parts.len() > 3 {
-                    lines.push(super::truncate_line_with_ellipsis_to_width(
-                        &Line::from("    More details: /tool-call-details on"),
-                        row_width,
-                    ));
-                }
+    if is_error
+        && row_width > 4
+        && let Some(reason) = tools_ui::concise_tool_error_summary(&msg.content)
+    {
+        let reason = crate::alphacode_tui_render::single_line_text(&reason);
+        if !rendered_tool_line_text.contains(&reason) {
+            let parts = split_by_display_width(&reason, row_width - 4);
+            for part in parts.iter().take(3) {
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(part.clone(), Style::default().fg(icon_color)),
+                ]));
+            }
+            if parts.len() > 3 {
+                lines.push(super::truncate_line_with_ellipsis_to_width(
+                    &Line::from("    More details: /tool-call-details on"),
+                    row_width,
+                ));
             }
         }
     }

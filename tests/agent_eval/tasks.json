@@ -1,0 +1,16 @@
+{
+  "tasks": [
+    {
+      "id": "quantity-validation",
+      "fixture": "fixtures/quantity",
+      "verifier": "verify_quantity.py",
+      "prompt": "Fix parse_quantity in quantity.py. Return a float for finite, nonnegative integers, floats, and numeric strings (surrounding whitespace is allowed). Reject booleans, negative values, NaN, infinity, unsupported input types, and invalid strings with ValueError. Preserve valid zero and fractional values. Work only in the current task directory."
+    },
+    {
+      "id": "ordered-deduplication",
+      "fixture": "fixtures/ordered",
+      "verifier": "verify_ordered.py",
+      "prompt": "Fix unique_in_order in ordered.py. Accept an iterable of hashable values and return a list with duplicates removed in first-occurrence order. Preserve Unicode strings and support generators, empty inputs, and mixed hashable types without sorting them. Work only in the current task directory."
+    }
+  ]
+}

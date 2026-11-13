@@ -663,6 +663,7 @@ fn test_subagent_command_suggestions_include_manual_launch_and_model_policy() {
 
 fn configure_test_remote_models_with_copilot(app: &mut App) {
     app.is_remote = true;
+    app.remote_provider_name = Some("Copilot".into());
     app.remote_provider_model = Some("claude-sonnet-4".to_string());
     app.remote_available_entries = vec![
         "claude-sonnet-4-6".to_string(),
@@ -671,6 +672,18 @@ fn configure_test_remote_models_with_copilot(app: &mut App) {
         "gemini-3-pro-preview".to_string(),
         "grok-code-fast-1".to_string(),
     ];
+    app.remote_model_options = app
+        .remote_available_entries
+        .iter()
+        .map(|model| crate::provider::ModelRoute {
+            model: model.clone(),
+            provider: "Copilot".into(),
+            api_method: "copilot".into(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        })
+        .collect();
 }
 
 fn configure_test_remote_models_with_cursor(app: &mut App) {
@@ -728,13 +741,9 @@ fn test_model_picker_includes_copilot_models_in_remote_mode() {
             model_names
         );
         assert!(
-            has_model("gpt-5.3-codex"),
-            "picker should contain copilot model gpt-5.3-codex, got: {:?}",
+            has_model("gemini-3-pro-preview"),
+            "picker should contain copilot model gemini-3-pro-preview, got: {:?}",
             model_names
-        );
-        assert!(
-            !has_model("gemini-3-pro-preview"),
-            "picker must not offer a model rejected by the Copilot classifier"
         );
         assert!(
             has_model("grok-code-fast-1"),

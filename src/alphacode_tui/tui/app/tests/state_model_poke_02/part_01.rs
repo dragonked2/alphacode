@@ -1214,6 +1214,20 @@ fn configure_test_remote_models(app: &mut App) {
     app.is_remote = true;
     app.remote_provider_model = Some("gpt-5.3-codex".to_string());
     app.remote_available_entries = vec!["gpt-5.3-codex".to_string(), "gpt-5.2-codex".to_string()];
+    // A connected server owns availability. Picker interaction tests must not
+    // re-infer it from credentials or catalogs left by unrelated local tests.
+    app.remote_model_options = app
+        .remote_available_entries
+        .iter()
+        .map(|model| crate::provider::ModelRoute {
+            model: model.clone(),
+            provider: "OpenAI".into(),
+            api_method: "openai-oauth".into(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        })
+        .collect();
 }
 
 fn configure_test_remote_models_with_openai_recommendations(app: &mut App) {

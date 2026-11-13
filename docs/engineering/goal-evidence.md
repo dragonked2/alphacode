@@ -35,8 +35,11 @@ foreground command:
 ```
 
 `input` must equal the normalized execution arguments of the executed call.
-The shared top-level `intent` UI label is ignored when matching and when revoking
-an earlier pass after a failed rerun. Nested `intent` fields remain significant.
+For the native `bash`, `read`, `write`, `edit`, and `apply_patch` tools, the shared
+top-level `intent` UI label is ignored when matching and when revoking an earlier
+pass after a failed rerun. Nested `intent` fields remain significant. Other tools,
+including extensions and MCP tools, match all arguments exactly: their `intent`
+field can have execution semantics.
 Other extra arguments, a different command, or a different tool do not qualify. Use the
 canonical tool name. JSON pointers select native `ToolOutput.metadata`, never a
 JSON-looking string in stdout. Empty tool names, missing call IDs, null expected
@@ -73,5 +76,7 @@ longer trigger automatic completion from output text.
 
 Regression cases cover source/input binding, missing metadata, failed reruns,
 separate-call accumulation, threshold policies, changed criteria, and serialization
-compatibility. They have not been executed: the user requested no checks. No build,
-test, performance, recovery, or perfect-quality claim follows from these edits.
+compatibility. The current goal-contract and evaluator policy source has passed
+targeted standalone checks; full-library verification and its limitations are
+tracked in [the dated quality evidence](quality-evidence-2026-11-13.md). A passing
+unit check does not establish performance, live recovery, or perfect quality.

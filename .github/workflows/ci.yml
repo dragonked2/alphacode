@@ -173,6 +173,22 @@ jobs:
       # Same gap as in the test job: the workspace member needs its own run.
       - run: cargo clippy -p alphagrep --locked --all-targets -- -D warnings
 
+  evaluation-runner:
+    name: evaluation runner (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify task isolation, verifiers, and process cleanup
+        run: python -m unittest discover -s scripts/tests -p test_agent_eval.py -v
+
   gui-diagnostics:
     name: Windows GUI diagnostics
     runs-on: windows-latest

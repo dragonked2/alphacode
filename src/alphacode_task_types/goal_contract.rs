@@ -86,7 +86,19 @@ pub struct CriterionEvidence {
 
 /// The shared top-level `intent` argument is a UI label, not an execution
 /// parameter. Keep every other argument exact, including nested `intent` keys.
-fn verification_inputs_match(expected: &serde_json::Value, actual: &serde_json::Value) -> bool {
+fn verification_inputs_match(
+    tool_name: &str,
+    expected: &serde_json::Value,
+    actual: &serde_json::Value,
+) -> bool {
+    // These native code tools define `intent` as the shared display label.
+    // An extension/MCP tool can instead use that name as an execution argument.
+    if !matches!(
+        tool_name,
+        "bash" | "read" | "write" | "edit" | "apply_patch"
+    ) {
+        return expected == actual;
+    }
     match (expected.as_object(), actual.as_object()) {
         (Some(expected), Some(actual)) => {
             let expected_len = expected.len() - usize::from(expected.contains_key("intent"));
@@ -115,7 +127,7 @@ impl SuccessCriterion {
             } => {
                 !tool_name.trim().is_empty()
                     && observation.tool_name == tool_name
-                    && verification_inputs_match(input, observation.input)
+                    && verification_inputs_match(tool_name, input, observation.input)
                     && metadata_pointer.starts_with('/')
                     && !expected.is_null()
                     && observation
@@ -296,9 +308,9 @@ impl GoalContract {
                 CriterionCheck::ToolMetadata {
                     tool_name, input, ..
                 } => (
-                    verification_inputs_match(input, observation.input),
+                    verification_inputs_match(tool_name, input, observation.input),
                     tool_name == observation.tool_name
-                        && verification_inputs_match(input, observation.input),
+                        && verification_inputs_match(tool_name, input, observation.input),
                 ),
                 _ => (false, false),
             };
@@ -364,19 +376,25 @@ mod tests {
             expected.clone(),
             json!({"command": "cargo test --lib", "intent": "Verify the fix"}),
         ] {
-            assert!(verification_inputs_match(&expected, &actual));
-            assert!(verification_inputs_match(&actual, &expected));
+            assert!(verification_inputs_match("bash", &expected, &actual));
+            assert!(verification_inputs_match("bash", &actual, &expected));
         }
         for actual in [
             json!({"command": "cargo test --lib; exit 0"}),
             json!({"command": "cargo test --lib", "working_dir": "elsewhere"}),
             json!({"command": "cargo test --lib", "timeout": 1}),
         ] {
-            assert!(!verification_inputs_match(&expected, &actual));
+            assert!(!verification_inputs_match("bash", &expected, &actual));
         }
         assert!(!verification_inputs_match(
+            "bash",
             &json!({"payload": {"intent": "original"}}),
             &json!({"payload": {"intent": "changed"}}),
+        ));
+        assert!(!verification_inputs_match(
+            "mcp__fixture__execute",
+            &json!({"intent": "inspect"}),
+            &json!({"intent": "mutate"}),
         ));
     }
 

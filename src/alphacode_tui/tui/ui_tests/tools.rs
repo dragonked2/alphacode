@@ -311,7 +311,7 @@ Completed: 2 succeeded, 1 failed"
     let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
 
     assert!(
-        rendered[0].contains("⚠ batch · Inspect schemas · 2/3 succeeded"),
+        rendered[0].contains("⚠ batch · 2/3 succeeded"),
         "rendered={rendered:?}"
     );
     assert!(
@@ -360,7 +360,7 @@ fn test_render_tool_message_batch_all_failed_marks_all_children_failed() {
     let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
 
     assert!(
-        rendered[0].contains("✖ batch 3/3 failed"),
+        rendered[0].contains("✖ batch · 3/3 failed"),
         "rendered={rendered:?}"
     );
     let failed_children = rendered
@@ -1239,9 +1239,14 @@ fn test_render_tool_message_preserves_exact_long_skill_name_on_narrow_rows() {
         }),
     };
 
-    let text = render_tool_message(&msg, 32, crate::config::DiffDisplayMode::Off)
+    let lines = render_tool_message(&msg, 32, crate::config::DiffDisplayMode::Off);
+    assert!(lines.iter().all(|line| line.width() <= 32));
+    // Joining wrapped rows must remove layout indentation, not insert it into
+    // the logical identifier whose exact spelling this assertion protects.
+    let text = lines
         .iter()
         .map(extract_line_text)
+        .map(|line| line.trim_start().to_string())
         .collect::<Vec<_>>()
         .join("");
     assert!(text.contains(name), "exact skill name was lost: {text:?}");

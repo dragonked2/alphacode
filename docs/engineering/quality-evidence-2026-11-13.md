@@ -6,8 +6,9 @@ by feature counts, unit-test counts, or this document.
 
 ## Implemented improvements
 
-- Goal verification ignores the shared top-level `intent` display label while
-  matching every execution argument exactly. Failed relabeled reruns revoke old
+- Goal verification ignores the shared top-level `intent` display label for
+  native code tools while matching every execution argument exactly. Extension
+  and MCP tool inputs remain exact, including `intent`. Failed relabeled reruns revoke old
   evidence. Nested `intent` fields remain execution data. Unit cases and the
   streamed-result recorder regression cover this behavior.
 - SDK tool-output clipping uses the native head-and-tail implementation, keeping
@@ -21,10 +22,17 @@ by feature counts, unit-test counts, or this document.
   the desktop host's .NET Framework runtime. The suite covers callback recovery,
   fatal errors, privacy filters, failed log I/O, export, and rotation.
 - Picker fixtures now distinguish unavailable routes from credentials expiring
-  at selection, use a model accepted by the Copilot classifier, and isolate the
-  preview catalog from persisted caches. The JPEG header-only regression uses
+  at selection, declare the remote server's actual route ownership, and isolate
+  the preview catalog from persisted caches. The JPEG header-only regression uses
   allocation-limit rejection rather than assuming a tiny empty scan is rejected
   by the raster decoder.
+- A task-evaluation runner copies fresh fixtures, invokes independent verifiers,
+  checkpoints machine-readable outcomes, and enforces process timeouts. Its
+  fourteen local tests pass, including descendant cleanup, literal command
+  arguments, and rejection of premature zero-exit verifiers. Windows/Linux CI
+  coverage is configured. The two bundled tasks
+  are smoke fixtures, not a comparative coding benchmark. See
+  [task evaluation](agent-task-evaluation.md).
 
 ## Local verification
 
@@ -32,8 +40,8 @@ Environment: Windows/MSVC, pinned Rust 1.94.1, default Cargo features. Build out
 is outside OneDrive at `C:\Users\or0to\AppData\Local\Temp\alphacode-target`.
 
 - Formatting and whitespace checks passed.
-- `cargo check --workspace --tests` passed before the final logging additions;
-  final-revision checks are still pending.
+- `cargo clippy --lib -- -D warnings`, `cargo check --workspace`, and
+  `cargo check --workspace --tests` passed, including the concluding reruns.
 - Installer PATH tests: 46 passed, with no registry changes.
 - GUI callback/diagnostic suite: passed under Windows PowerShell 5.1. Running it
   under PowerShell 7 fails because its .NET runtime differs from the shipped host.
@@ -51,7 +59,20 @@ is outside OneDrive at `C:\Users\or0to\AppData\Local\Temp\alphacode-target`.
 - With CI's color settings, the existing compiled style suite passed 140 tests,
   with 1 ignored. This narrows the color-related baseline failures; it is not a
   final-revision library-suite result.
-- Full library tests and final check/lint validation are in progress.
+- A full color-enabled run passed 6,790 tests, failed 8, and ignored 15. The
+  remaining failures identified missing route ownership in mock remote catalogs
+  and stale render expectations. Their assertions/fixtures have been corrected;
+  the targeted reruns now pass: 158 picker tests and 39 tool-render tests.
+  The full rerun passed: **6,798 passed, 0 failed, 15 ignored**.
+- Local-model integration: 8 passed. Alphagrep: 45 unit and 6 integration tests
+  passed. Evaluation runner: 14 passed.
+- Live smoke evaluation: 2/2 tasks passed independent verification and completion
+  receipts using `1.1.4-dev (20c9c833, dirty)`, a debug build, an isolated app home,
+  and the Alphax Free automatic route. Agent times were 49.55 and 42.89 seconds;
+  each verifier took about 0.15 seconds. Per-task timeout was 180 seconds. This
+  is a two-task smoke result, not a general or comparative coding benchmark.
+- Ignored tests and live terminal latency scenarios are not established by these
+  results. Remote release CI is a separate, exact-revision publication gate.
 
 ## Evidence required for a stronger product rating
 
@@ -66,4 +87,5 @@ is outside OneDrive at `C:\Users\or0to\AppData\Local\Temp\alphacode-target`.
 | Competitive ranking | Same tasks, hardware, budgets, tool versions, and comparable model access; publish the method and raw outcomes. |
 
 No comparative completion-rate, cost, memory, startup, or live-terminal latency
-claim follows from the local checks above. No release or deployment was made.
+claim follows from the local checks above. Release publication is tracked by
+GitHub Actions; these local checks alone do not establish publication.

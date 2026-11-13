@@ -17,12 +17,21 @@ adheres to [Semantic Versioning](https://semver.org/).
   inline-preview state consistently with local input.
 - Goal verification ignores changes to the optional UI intent label while
   preserving exact execution-argument matching and failed-rerun invalidation.
+  MCP and extension arguments remain exact, including any `intent` field.
 - Large SDK tool results retain both initial context and final diagnostics,
   matching the truncation used for native tools.
 - Structured diagnostics redact password and cookie fields; retry log URLs
   omit credentials, query parameters, and fragments.
 - Windows CI coverage checks GUI callback recovery, diagnostic privacy, export,
   and log rotation using the desktop host's Windows PowerShell runtime.
+- Isolate model-picker test catalogs from local credential discovery and align
+  tool-render assertions with error-first summaries and wrapped identifiers.
+
+### Added
+
+- Repeatable coding-task evaluation with fresh fixtures, independent verifiers,
+  completion receipts, checkpointed reports, process-tree timeout cleanup, and
+  Windows/Linux CI tests.
 
 ## [1.0.100] - 2026-11-10
 

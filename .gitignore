@@ -18,6 +18,8 @@ logs/
 # Local build artifacts
 target/
 build/
+__pycache__/
+*.py[cod]
 
 # Environment
 .env

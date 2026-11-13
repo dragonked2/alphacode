@@ -1825,8 +1825,8 @@ fn render_tool_message_keeps_error_summary_when_details_hidden() {
     let rendered = extract_line_text(&lines[0]);
 
     assert!(
-        rendered.contains("Run the test suite ·"),
-        "error summary should still render after the intent: {rendered}"
+        rendered.contains("error: command not found: cargoo"),
+        "the failure reason should remain visible with details hidden: {rendered}"
     );
 }
 

@@ -814,6 +814,11 @@ Compare tools under the same conditions and record:
 - Measurement method and warm/cold state
 - The exact workload
 
+For coding-task outcomes, the [task-evaluation runner](docs/engineering/agent-task-evaluation.md)
+provides fresh fixtures, independent verification, timeouts, and JSON reports.
+Its bundled tasks are workflow smoke tests; no comparative coding-quality score
+has been established from them.
+
 <div align="right"><a href="#top">⬆ Back to top</a></div>
 
 ---
