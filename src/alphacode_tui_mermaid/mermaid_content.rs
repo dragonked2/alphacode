@@ -202,15 +202,12 @@ pub fn inline_fit_geometry(width: u32, height: u32, chat_width: u16, cap_rows: u
         (scale_num_w, scaled_h_by_w as u32)
     } else {
         // Height-bound: shrink further so the height fits the cap.
-        let w = (u64::from(width) * u64::from(cap_px) / u64::from(height))
-            .min(u64::from(avail_px)) as u32;
+        let w = (u64::from(width) * u64::from(cap_px) / u64::from(height)).min(u64::from(avail_px))
+            as u32;
         (w.min(avail_px).max(1), cap_px)
     };
 
-    let rows = final_h_px
-        .max(1)
-        .div_ceil(cell_h)
-        .max(min_rows as u32) as u16;
+    let rows = final_h_px.max(1).div_ceil(cell_h).max(min_rows as u32) as u16;
     let cols = (final_w_px.max(1).div_ceil(cell_w) as u16)
         .saturating_add(2)
         .min(chat_width);

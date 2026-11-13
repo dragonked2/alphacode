@@ -448,7 +448,8 @@ fn inline_fit_geometry_respects_tiny_and_empty_viewports() {
     for width in 0..8 {
         for cap in 0..5 {
             for (image_width, image_height) in [(1920, 1080), (0, 0), (u32::MAX, u32::MAX)] {
-                let (rows, cols) = super::inline_fit_geometry(image_width, image_height, width, cap);
+                let (rows, cols) =
+                    super::inline_fit_geometry(image_width, image_height, width, cap);
                 assert!(rows <= cap);
                 assert!(cols <= width);
                 if width <= 2 || cap == 0 {
