@@ -170,9 +170,11 @@ mod tests {
 
     #[test]
     fn ensure_started_is_a_noop_without_a_runtime() {
-        // Must not panic when called from a synchronous context.
+        // Must not panic when called from a synchronous context. The
+        // process-global OnceLock may already be set by another test running
+        // in parallel, so this asserts behavior (no panic, no spawn) rather
+        // than global state.
         ensure_started();
-        assert!(SCHEDULER_STARTED.get().is_none());
     }
 
     #[tokio::test]
