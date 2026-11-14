@@ -15,6 +15,11 @@ use super::*;
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::sync::Arc;
 
+const ALPHAX_FREE_PRIVACY_NOTICE: &str = "\n\n⚠️ **Privacy note — Alphax Free**\n\n\
+Alphax Free is a remote model service, not an on-device model. Alphacode sends your prompt and relevant conversation context to it; content from files you ask Alphacode to inspect may be included too.\n\n\
+Because this is a free service, requests may be logged or retained, and its policies may allow them to be used to improve or train models. Alphacode cannot guarantee the service's data-handling practices.\n\n\
+Please avoid sharing passwords, API keys, personal information, or confidential work. For sensitive data, switch to a local model or a provider whose privacy terms you trust.";
+
 impl App {
     fn open_auth_browser(url: &str) -> bool {
         // Honors --no-browser/NO_BROWSER/ALPHACODE_NO_BROWSER and never opens real
@@ -1679,19 +1684,20 @@ impl App {
             profile.id.to_string(),
             resolved.display_name.clone(),
         );
-        self.push_display_message(DisplayMessage::system(
-            if profile.id == crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID {
-                if self.is_remote {
-                    "Credentials are saved. The connected session is activating Alphax Free and will select an available free model automatically.".to_string()
-                } else {
-                    "Alphax Free is ready and automatically routes each request to an available free model. Use /model to choose one yourself.".to_string()
-                }
-            } else if self.is_remote {
-                "Credentials are saved. The connected session is refreshing its model catalog.".to_string()
+        let message = if profile.id == crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID {
+            let activation = if self.is_remote {
+                "Credentials are saved. The connected session is activating Alphax Free and will select an available free model automatically."
             } else {
-                "Fetching the model catalog. Switch models anytime with /model.".to_string()
-            },
-        ));
+                "Alphax Free is ready and automatically routes each request to an available free model. Use /model to choose one yourself."
+            };
+            format!("{activation}{ALPHAX_FREE_PRIVACY_NOTICE}")
+        } else if self.is_remote {
+            "Credentials are saved. The connected session is refreshing its model catalog."
+                .to_string()
+        } else {
+            "Fetching the model catalog. Switch models anytime with /model.".to_string()
+        };
+        self.push_display_message(DisplayMessage::system(message));
     }
 
     #[expect(
@@ -3881,4 +3887,27 @@ fn looks_like_oauth_callback_input(input: &str) -> bool {
 
 fn antigravity_input_requires_state_validation(input: &str, expected_state: Option<&str>) -> bool {
     expected_state.is_some() && looks_like_oauth_callback_input(input)
+}
+
+#[cfg(test)]
+mod privacy_notice_tests {
+    use super::ALPHAX_FREE_PRIVACY_NOTICE;
+
+    #[test]
+    fn alphax_privacy_notice_covers_remote_data_use() {
+        for phrase in [
+            "remote model service",
+            "prompt and relevant conversation context",
+            "improve or train models",
+            "passwords, API keys",
+            "switch to a local model",
+        ] {
+            assert!(
+                ALPHAX_FREE_PRIVACY_NOTICE.contains(phrase),
+                "missing {phrase}"
+            );
+        }
+        assert!(!ALPHAX_FREE_PRIVACY_NOTICE.contains("http://"));
+        assert!(!ALPHAX_FREE_PRIVACY_NOTICE.contains("https://"));
+    }
 }

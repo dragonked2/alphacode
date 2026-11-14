@@ -238,9 +238,17 @@ where
     let mut after_id: Option<String> = None;
 
     loop {
+        // Record only fixed, non-secret metadata before building a request that
+        // may carry OAuth attribution and bearer credentials. The audit path
+        // must never receive the request builder itself.
+        crate::alphacode_provider_core::request_audit::record_operation(
+            "https://api.anthropic.com/v1/models",
+            "GET",
+            "models",
+        );
         let resp = build_request(&client, after_id.as_deref())
             .timeout(CATALOG_REQUEST_TIMEOUT)
-            .audited_send()
+            .send()
             .await?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to fetch Anthropic model catalog: {}", resp.status());

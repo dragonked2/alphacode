@@ -55,6 +55,9 @@ async fn fetch_anthropic_usage_data(access_token: String, cache_key: String) -> 
     }
 
     let client = crate::provider::shared_http_client();
+    // The OAuth request builder contains sensitive attribution/auth headers;
+    // only the fixed URL and method are passed to the audit logger.
+    crate::alphacode_provider_core::request_audit::record_operation(USAGE_URL, "GET", "usage");
     let response = crate::provider::anthropic::apply_oauth_attribution_headers(
         client
             .get(USAGE_URL)
@@ -68,7 +71,7 @@ async fn fetch_anthropic_usage_data(access_token: String, cache_key: String) -> 
             .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219"),
         &crate::provider::anthropic::new_oauth_request_id(),
     )
-    .audited_send()
+    .send()
     .await;
 
     let response = match response {
