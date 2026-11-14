@@ -267,6 +267,10 @@ impl Tool for WriteTool {
                 .open(&path)
                 .await?;
             file.write_all(params.content.as_bytes()).await?;
+            // `tokio::fs::File` may still have a pending buffered write after
+            // `write_all` completes. Flush before reporting success so an
+            // immediate read (including the next tool call) sees this chunk.
+            file.flush().await?;
         } else {
             tokio::fs::write(&path, &params.content).await?;
         }
