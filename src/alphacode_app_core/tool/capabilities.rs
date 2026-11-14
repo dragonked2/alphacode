@@ -45,6 +45,7 @@ pub(crate) fn family(name: &str) -> &'static str {
         | "challenge_classifier"
         | "ctf_auto_solver" => "CTF forensics reversing and crypto",
         "investigation"
+        | "hunt_reasoning"
         | "authorization_review"
         | "ctf_web_recon"
         | "httpflow"
@@ -104,7 +105,10 @@ pub(crate) fn matches_query(name: &str, description: &str, query: &str) -> bool 
             "offline authorization evidence matrix ownership tenant idor bola false positive controls"
         }
         "investigation" => {
-            "engagement hypotheses experiments evidence proof report budget checkpoint resume retest"
+            "engagement hypotheses experiments controls attempts reassessment evidence proof report budget checkpoint resume retest"
+        }
+        "hunt_reasoning" => {
+            "learned researcher mindset causal logic assumptions invariants counterexamples transfer reasoning experiment controls"
         }
         "nuclei" => "template vulnerability scanner",
         "sqlmap" => "sql injection database testing",

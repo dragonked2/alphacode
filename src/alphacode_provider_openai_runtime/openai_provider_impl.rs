@@ -231,7 +231,7 @@ impl Provider for OpenAIProvider {
         let client = self.client.clone();
         let panic_tx = tx.clone();
 
-        tokio::spawn(async move {
+        crate::alphacode_provider_core::request_audit::spawn(async move {
             let stream_task = async move {
                 // Attempt persistent WebSocket continuation first
                 if use_websocket_transport {

@@ -21,6 +21,7 @@
 //! OAuth access token stops working, so `ManualRelogin` is the honest refresh
 //! story. All endpoints below were validated against the live services.
 
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -199,7 +200,7 @@ pub async fn initiate_cli_login(client: &reqwest::Client) -> Result<(ZcodeLoginI
         .post(format!("{ZCODE_OAUTH_API_BASE}/oauth/cli/init"))
         .bearer_auth(&poll_token)
         .json(&serde_json::json!({ "provider": OAUTH_PROVIDER_ID }))
-        .send()
+        .audited_send()
         .await
         .context("failed to reach zcode.z.ai OAuth init endpoint")?;
     let body = read_body(response).await?;
@@ -245,7 +246,7 @@ pub async fn poll_cli_login(
     let response = client
         .get(format!("{ZCODE_OAUTH_API_BASE}/oauth/cli/poll/{flow_id}"))
         .bearer_auth(poll_token)
-        .send()
+        .audited_send()
         .await
         .context("failed to poll zcode.z.ai OAuth endpoint")?;
     let body = read_body(response).await?;
@@ -529,7 +530,7 @@ async fn business_access_token(client: &reqwest::Client, oauth_token: &str) -> R
     let response = client
         .post(ZAI_BUSINESS_LOGIN_URL)
         .json(&serde_json::json!({ "token": oauth_token }))
-        .send()
+        .audited_send()
         .await
         .context("failed to reach the Z.ai business login endpoint")?;
     let data: BusinessLoginData = parse_envelope(&read_body(response).await?).map_err(|error| {
@@ -582,7 +583,7 @@ async fn mint_project_access_token_inner(
     let response = client
         .get(format!("{ZAI_API_BASE}/api/biz/customer/getCustomerInfo"))
         .header("Authorization", &bearer)
-        .send()
+        .audited_send()
         .await
         .context("failed to fetch Z.ai customer info")?;
     #[derive(Deserialize)]
@@ -609,7 +610,7 @@ async fn mint_project_access_token_inner(
     let response = client
         .get(&keys_url)
         .header("Authorization", &bearer)
-        .send()
+        .audited_send()
         .await
         .context("failed to list Z.ai project API keys")?;
     let keys: Vec<ApiKeyEntry> = parse_envelope(&read_body(response).await?).unwrap_or_default();
@@ -628,7 +629,7 @@ async fn mint_project_access_token_inner(
                     "name": ZCODE_API_KEY_NAME,
                     "usageScene": USAGE_SCENE_CODING_PLAN,
                 }))
-                .send()
+                .audited_send()
                 .await
                 .context("failed to create the zcode-api-key project key")?;
             let entry: ApiKeyEntry = parse_envelope(&read_body(response).await?)?;
@@ -647,7 +648,7 @@ async fn mint_project_access_token_inner(
             "clientType": CLIENT_TYPE,
             "clientVersion": CLIENT_VERSION,
         }))
-        .send()
+        .audited_send()
         .await
         .context("failed to mint Z.ai project access token")?;
     let data: ProjectAccessToken = parse_envelope(&read_body(response).await?)?;
@@ -704,7 +705,7 @@ pub async fn verify_credentials_live(client: &reqwest::Client) -> Result<()> {
     let response = client
         .get(format!("{ZAI_API_BASE}/api/biz/customer/getCustomerInfo"))
         .bearer_auth(&access_token)
-        .send()
+        .audited_send()
         .await
         .context("failed to reach Z.ai customer info endpoint")?;
     #[derive(Deserialize)]

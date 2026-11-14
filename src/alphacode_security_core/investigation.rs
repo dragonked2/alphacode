@@ -815,6 +815,18 @@ impl InvestigationIntelligence {
         max_cost: u32,
         max_risk: u32,
     ) -> Option<&InvestigationLead> {
+        self.next_matching(policy, max_cost, max_risk, |_| true)
+    }
+
+    /// The live runtime may exclude spent dispatch plans without mutating or
+    /// dropping their evidence/coverage records. Ranking remains centralized.
+    pub fn next_matching(
+        &self,
+        policy: &ScopePolicy,
+        max_cost: u32,
+        max_risk: u32,
+        eligible: impl Fn(&InvestigationLead) -> bool,
+    ) -> Option<&InvestigationLead> {
         self.leads
             .values()
             .filter(|lead| {
@@ -822,6 +834,7 @@ impl InvestigationIntelligence {
                     lead.status,
                     InvestigationStatus::Hypothesized | InvestigationStatus::Supported
                 ) && !lead.research.reassessment_pending()
+                    && eligible(lead)
                     && lead.cost <= max_cost
                     && lead.risk <= max_risk
                     && matches!(decide(policy, &lead.asset), ScopeDecision::Allowed { .. })

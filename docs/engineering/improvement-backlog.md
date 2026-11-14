@@ -23,6 +23,9 @@ complete until its stated gate has been exercised.
 | G1-G3 | High | Restore green full tests and CI quality gates. | `fmt`, `check`, `test`, `clippy`, and release perf gates on supported platforms. |
 | H | Medium | Keep setup, troubleshooting, and release notes aligned with behavior. | Doc review against actual CLI output. |
 
-The first library run on Windows reported 6,266 passed, six failed, and 12
-ignored. The six failures have targeted fixes in progress; this is not yet a
-green release gate. `cargo audit` is not installed on this machine.
+The first library run on Windows historically reported 6,266 passed, six failed,
+and 12 ignored. For current failure investigation, local checks, and the
+distinction between committed CI results and uncommitted work, see the
+[2026-11-14 quality evidence](quality-evidence-2026-11-14.md). The remaining
+product-level evidence above is still required; green unit tests alone do not
+close those items.

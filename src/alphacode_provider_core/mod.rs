@@ -14,6 +14,7 @@ pub mod models;
 pub mod openai_schema;
 pub mod pricing;
 pub mod reasoning;
+pub mod request_audit;
 pub mod request_budget;
 pub mod retry;
 pub mod retry_after;

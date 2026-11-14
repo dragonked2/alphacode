@@ -17,6 +17,7 @@ use crate::alphacode_provider_antigravity::{
     antigravity_user_agent, catalog_is_stale, catalog_model_detail, client_metadata_header,
     is_retryable_empty_turn, merge_antigravity_model_ids, remap_unsupported_model,
 };
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use crate::alphacode_provider_core::{EventStream, Provider};
 use crate::alphacode_provider_gemini::{
     CodeAssistGenerateRequest, CodeAssistGenerateResponse, GeminiFunctionCallingConfig,
@@ -364,7 +365,7 @@ impl AntigravityProvider {
             )
             .header("x-goog-client-metadata", client_metadata_header())
             .json(&request)
-            .send()
+            .audited_send()
             .await
             .context("Failed to send Antigravity generateContent request")?;
 
@@ -437,7 +438,7 @@ impl AntigravityProvider {
                     )
                     .header("x-goog-client-metadata", client_metadata_header())
                     .json(&request)
-                    .send()
+                    .audited_send()
                     .await
                     .context("Failed to send Antigravity generateContent request")?;
                 continue;
@@ -479,7 +480,7 @@ impl Provider for AntigravityProvider {
         let provider = self.clone();
         let (tx, rx) = mpsc::channel::<Result<crate::alphacode_message_types::StreamEvent>>(100);
 
-        tokio::spawn(async move {
+        crate::alphacode_provider_core::request_audit::spawn(async move {
             let _ = tx
                 .send(Ok(StreamEvent::ConnectionType {
                     connection: "https".to_string(),

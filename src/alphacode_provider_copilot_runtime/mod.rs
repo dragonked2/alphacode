@@ -964,7 +964,7 @@ impl Provider for CopilotApiProvider {
             created_at: self.created_at,
         };
 
-        tokio::spawn(async move {
+        crate::alphacode_provider_core::request_audit::spawn(async move {
             provider
                 .stream_request(built_messages, built_tools, is_user_initiated, tx)
                 .await;

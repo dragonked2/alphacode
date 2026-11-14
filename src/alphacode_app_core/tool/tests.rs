@@ -189,6 +189,159 @@ async fn unified_investigation_dispatch_observation_resume_and_budget_share_the_
     scope::clear_session_scope(&session);
 }
 
+#[tokio::test]
+async fn structured_research_reassessment_and_dispatch_budget_precede_side_effects() {
+    let _guard = isolate_process_env();
+    let registry = Registry::empty();
+    registry
+        .register(
+            "investigation".into(),
+            Arc::new(super::investigation::InvestigationTool::for_registry(
+                &registry,
+            )),
+        )
+        .await;
+    let capture = Arc::new(UnifiedCaptureTool(std::sync::atomic::AtomicUsize::new(0)));
+    registry.register("httpflow".into(), capture.clone()).await;
+    let session = format!("reasoning-controls-{}", uuid::Uuid::new_v4());
+    let ctx = ToolContext {
+        session_id: session.clone(),
+        message_id: "test".into(),
+        tool_call_id: "test".into(),
+        working_dir: None,
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: ToolExecutionMode::Direct,
+    };
+    registry.execute("investigation",json!({"action":"start","objective":"Test transfer on an unfamiliar controlled product","in_scope":["https://fixture.test/"],"tool_call_budget":10}),ctx.clone()).await.unwrap();
+    let proposed = registry.execute("investigation",json!({"action":"propose","asset":"https://fixture.test/object","category":"authorization","claim":"Retained reference may outlive membership"}),ctx.clone()).await.unwrap();
+    let proposed: Value = serde_json::from_str(&proposed.output).unwrap();
+    let lead = proposed["lead_id"].as_str().unwrap();
+    let mut plan = json!({"action":"plan","lead_id":lead,"expected":"Removed member cannot read private fixture","steps":["Compare before and after removal using owned data"],"tool":"httpflow","input":{"url":"https://fixture.test/object"},"experiment":{
+        "expected_secure_behavior":"Removed member cannot read private fixture","positive_control":"Current member reads owned canary","negative_control":"Unrelated member cannot read it","success_oracle":"Removed member reads the private canary contrary to policy","reopen_condition":"Fresh evidence changes the policy or identity interpretation",
+        "request":{"method":"GET","actor_label":"removed-member","object_owner_label":"owner","workflow_state":"revoked","dimension":"workflow_state"},"attempt_budget":2}});
+    registry
+        .execute("investigation", plan.clone(), ctx.clone())
+        .await
+        .unwrap();
+    registry.execute("investigation",json!({"action":"prioritize","lead_id":lead,"priority":{"information_gain":8,"impact_potential":6,"cost":10,"risk":2}}),ctx.clone()).await.unwrap();
+    let constrained = registry
+        .execute(
+            "investigation",
+            json!({"action":"next","max_cost":5}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(serde_json::from_str::<Value>(&constrained.output).unwrap()["lead"].is_null());
+    let eligible = registry
+        .execute(
+            "investigation",
+            json!({"action":"next","max_cost":10,"max_risk":2}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&eligible.output).unwrap()["lead"]["id"],
+        lead
+    );
+    let executed = registry
+        .execute(
+            "investigation",
+            json!({"action":"execute","lead_id":lead}),
+            ctx.for_subcall("first".into()),
+        )
+        .await
+        .unwrap();
+    let executed: Value = serde_json::from_str(&executed.output).unwrap();
+    let receipt = executed["evidence_id"].as_str().unwrap();
+    // A completed dispatch is immutable even before its interpretation is recorded.
+    plan["experiment"]["attempt_budget"] = json!(30);
+    assert!(
+        registry
+            .execute("investigation", plan, ctx.clone())
+            .await
+            .is_err()
+    );
+    registry
+        .execute(
+            "investigation",
+            json!({"action":"attach","lead_id":lead,"evidence_id":receipt,"supports":true}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+    let mut attempt = json!({"action":"record_attempt","lead_id":lead,"attempt":{"id":"first-attempt","request_fingerprint":"a".repeat(64),"outcome":"supports","observation":"Owned canary returned; policy/impact interpretation still requires review","evidence_ids":[receipt],"at":chrono::Utc::now().to_rfc3339()}});
+    // An invented receipt cannot turn an interpretation into evidence.
+    attempt["attempt"]["evidence_ids"] = json!(["invented-receipt"]);
+    assert!(
+        registry
+            .execute("investigation", attempt.clone(), ctx.clone())
+            .await
+            .is_err()
+    );
+    attempt["attempt"]["evidence_ids"] = json!([receipt]);
+    registry
+        .execute("investigation", attempt, ctx.clone())
+        .await
+        .unwrap();
+    registry.execute("investigation",json!({"action":"reassess","lead_id":lead,"reviewed_attempts":["first-attempt"],"cause":"other","reason":"Need a separate controlled repetition before interpreting the effect"}),ctx.clone()).await.unwrap();
+    assert!(
+        registry
+            .execute(
+                "investigation",
+                json!({"action":"execute","lead_id":lead}),
+                ctx.for_subcall("blocked".into())
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(capture.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let checkpoint = crate::engagement_runtime::read(&session).unwrap().unwrap();
+    assert!(
+        checkpoint.research.investigation.leads()[lead]
+            .research
+            .reassessment_pending()
+    );
+    registry.execute("investigation",json!({"action":"resolve_reassessment","lead_id":lead,"disposition":"continue","reason":"A second controlled observation remains within policy and the original budget"}),ctx.clone()).await.unwrap();
+    registry
+        .execute(
+            "investigation",
+            json!({"action":"execute","lead_id":lead}),
+            ctx.for_subcall("second".into()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        registry
+            .execute(
+                "investigation",
+                json!({"action":"execute","lead_id":lead}),
+                ctx.for_subcall("over-budget".into())
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(capture.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    // An interpretation cannot bypass the existing lifecycle/proof gate.
+    assert!(registry.execute("investigation",json!({"action":"transition","lead_id":lead,"status":"supported","reason":"Controlled observation alone is not finding promotion"}),ctx.clone()).await.is_err());
+    let spent = registry
+        .execute("investigation", json!({"action":"next"}), ctx.clone())
+        .await
+        .unwrap();
+    assert!(serde_json::from_str::<Value>(&spent.output).unwrap()["lead"].is_null());
+    assert_eq!(
+        crate::engagement_runtime::read(&session)
+            .unwrap()
+            .unwrap()
+            .ledger
+            .tool_calls,
+        2
+    );
+    scope::clear_session_scope(&session);
+}
+
 /// The bug that prompted this ladder: a bare `from_value` rejected every
 /// argument shape a model actually produces, and the resulting
 /// "missing field `url`" cost a whole turn.

@@ -73,6 +73,51 @@ vulnerability here" is a successful outcome.
 
 ## Investigation continuity
 
+### Transfer researcher logic, not historical payloads
+
+Load `researcher-reasoning` at the start of a hunt and when a lead stalls. Learn
+the invariant, challenged assumption, causal mechanism, prerequisites and strongest
+counterexample. Apply that logic to the observed structure of this product with
+`hunt_reasoning` when available, then build a controlled `investigation` experiment.
+Use explicit positive/negative controls, a success oracle, an attempt budget and
+reassessment instead of repeating probes. A report's title, bounty or severity
+cannot establish a mechanism or a finding on this target. Lessons supplement
+first-principles analysis; unmatched surfaces still need applicable coverage.
+
+### Adapt to the product and the evidence
+
+Begin with a compact engagement map: authorized assets/actions, exclusions,
+request limits, controlled identities/roles/tenants, sensitive resources and
+critical business transitions. Learn normal behavior before mutating requests.
+Map UI actions to API calls and server-side authorization decisions; prioritize
+boundaries protecting private data, money, privileges and irreversible state.
+Missing accounts or permission are blockers, never assumptions to fill in.
+
+Keep a small experiment queue, not a payload checklist. For each lead record:
+security invariant, observed prerequisite, alternative benign explanation,
+smallest distinguishing test, positive/negative controls, expected server-side
+oracle, evidence references, request cost and stop condition. Prefer tests that
+separate multiple plausible explanations cheaply. Reserve budget for reproducing
+and disproving promising leads rather than spending it all on discovery.
+
+After each result, update the queue explicitly:
+- A reproducible effect advances to independent controls and minimal proof.
+- Reflection, status changes or timing alone remain observations; check caching,
+  redirects, identity drift, public sharing and asynchronous state before promotion.
+- A decisive negative closes only that hypothesis under the tested conditions.
+- An inconclusive response changes the experiment or records a blocker; it does
+  not justify repeating the same probe with cosmetic payload variations.
+- Rate limits and service degradation reduce concurrency and pause the affected
+  surface according to policy; do not rotate identities to evade a restriction.
+
+Deduplicate by root cause and trust boundary, retaining affected routes as
+instances. Reuse stable discovery and controls only while identity, deployment,
+policy and object state still match. Parallelize independent permitted reads;
+serialize stateful experiments sharing cookies, objects or workflow transitions.
+Verify state after interrupted mutations before retrying. Stop an exploit once
+its permitted impact is established, preserve a minimal replay, and report
+remaining uncertainty and untested surfaces separately from confirmed findings.
+
 ### Choose capabilities for the question
 
 Before a new workstream, state the next decision and the observation that would

@@ -1,3 +1,4 @@
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -275,7 +276,7 @@ async fn exchange_code(
             ("code_verifier", verifier),
             ("redirect_uri", redirect_uri),
         ])
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {
@@ -384,7 +385,7 @@ async fn fetch_email(access_token: &str) -> Result<String> {
     let resp = client
         .get("https://gmail.googleapis.com/gmail/v1/users/me/profile")
         .bearer_auth(access_token)
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {

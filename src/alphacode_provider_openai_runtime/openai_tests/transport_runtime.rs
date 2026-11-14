@@ -530,6 +530,7 @@ async fn persistent_ws_does_not_reuse_response_cancelled_before_completion() {
         .await
         .expect("connect websocket client");
     let persistent_ws = Arc::new(Mutex::new(Some(PersistentWsState {
+        audit_origin: format!("ws://{addr}"),
         ws_stream: client_ws,
         last_response_id: "resp_previous".to_string(),
         connected_at: Instant::now(),

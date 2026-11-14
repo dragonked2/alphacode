@@ -2,6 +2,7 @@
 //!
 //! Fetches usage information from Anthropic's OAuth usage endpoint and OpenAI's ChatGPT wham/usage endpoint.
 
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use crate::auth;
 mod accessors;
 mod api_keys;
@@ -67,7 +68,7 @@ async fn fetch_anthropic_usage_data(access_token: String, cache_key: String) -> 
             .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219"),
         &crate::provider::anthropic::new_oauth_request_id(),
     )
-    .send()
+    .audited_send()
     .await;
 
     let response = match response {

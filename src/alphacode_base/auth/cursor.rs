@@ -1,3 +1,4 @@
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::Client;
@@ -578,7 +579,7 @@ async fn refresh_direct_access_token(
             .post(format!("{CURSOR_API_BASE}/oauth/token"))
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .json(&request)
-            .send()
+            .audited_send()
             .await
             .context("Failed to refresh Cursor access token")?;
 
@@ -632,7 +633,7 @@ async fn exchange_api_key_for_tokens(client: &Client, api_key: &str) -> Result<C
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .bearer_auth(api_key)
         .body("{}")
-        .send()
+        .audited_send()
         .await
         .context("Failed to exchange Cursor API key for access token")?;
 

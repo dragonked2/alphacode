@@ -4,6 +4,29 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.7] - 2026-11-14
+
+### Fixed
+
+- Limit explicit OpenRouter catalog refresh to the catalog and active model's
+  endpoints, instead of probing up to 24 models; prevent snapshot-triggered
+  duplicate catalog fetches during the refresh.
+- Serialize compatible-provider catalog fetches shared by forks and recheck
+  freshness after background waiters acquire the lock, preventing duplicate
+  cold-start prefetch/picker requests.
+- Stop model-list key-validation probes in usage reports for OpenAI, Anthropic,
+  Gemini, and compatible profiles without balance APIs. Report local key
+  configuration honestly; retain real balance, quota and admin spend requests.
+
+### Added
+
+- Opt-in local provider HTTP dispatch audit with per-turn IDs, session IDs,
+  request categories and timestamps; stream workers retain turn attribution.
+  No prompts, bodies, credentials, paths or query strings are recorded.
+- `scripts/provider_traffic.py` reports exact instrumented dispatch counts per
+  prompt, session, UTC minute, category and origin, plus rolling-minute peaks.
+  See `docs/engineering/provider-traffic-1.1.7.md` for coverage and limits.
+
 ## [1.1.6] - 2026-11-14
 
 ### Added

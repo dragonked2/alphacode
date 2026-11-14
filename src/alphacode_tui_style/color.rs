@@ -24,7 +24,16 @@ pub fn color_capability() -> ColorCapability {
     if CAPABILITY_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) == 1 {
         return ColorCapability::TrueColor;
     }
-    *CAPABILITY.get_or_init(detect_color_capability)
+    *CAPABILITY.get_or_init(|| {
+        // Buffer assertions use a stable terminal profile. Environment detection
+        // is exercised separately, including the production build in integration
+        // tests; a developer's terminal must not change golden RGB values.
+        if cfg!(test) {
+            ColorCapability::TrueColor
+        } else {
+            detect_color_capability()
+        }
+    })
 }
 
 /// Pin the process-global color capability to truecolor.
@@ -141,6 +150,12 @@ pub fn has_truecolor() -> bool {
 /// non-empty value, suppress ANSI color output for accessibility. The TUI
 /// keeps layout/structure but renders without chroma.
 pub fn no_color_enabled() -> bool {
+    // Unit rendering tests describe a color-enabled terminal. Test production
+    // accessibility preferences in isolated processes (tests/render_preferences.rs)
+    // so they neither inherit nor mutate another rendering test's environment.
+    if cfg!(test) {
+        return false;
+    }
     static NO_COLOR: OnceLock<bool> = OnceLock::new();
     *NO_COLOR.get_or_init(|| {
         std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
@@ -157,6 +172,9 @@ pub fn no_color_enabled() -> bool {
 /// platform `NO_COLOR` convention (motion often accompanies color animation).
 /// Callers should gate decorative spinners/donuts on this.
 pub fn reduced_motion_requested() -> bool {
+    if cfg!(test) {
+        return false;
+    }
     static REDUCED: OnceLock<bool> = OnceLock::new();
     *REDUCED.get_or_init(|| {
         std::env::var("ALPHACODE_REDUCED_MOTION").is_ok_and(|v| {

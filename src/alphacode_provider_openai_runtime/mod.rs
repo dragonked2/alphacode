@@ -274,6 +274,7 @@ fn openai_request_model(request: &Value) -> String {
 /// Keeps the connection alive across turns so we can use `previous_response_id`
 /// to send only new items instead of the full conversation each turn.
 struct PersistentWsState {
+    audit_origin: String,
     ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
     last_response_id: String,
     connected_at: Instant,

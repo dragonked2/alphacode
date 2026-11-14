@@ -199,7 +199,7 @@ pub(super) async fn fetch_openai_usage_for_account(
         builder = builder.header("chatgpt-account-id", account_id);
     }
 
-    let response = match builder.send().await {
+    let response = match builder.audited_send().await {
         Ok(response) => response,
         Err(e) => {
             let report = ProviderUsage {
@@ -273,11 +273,11 @@ pub(super) async fn fetch_openrouter_usage_report() -> Option<ProviderUsage> {
         client
             .get("https://openrouter.ai/api/v1/key")
             .header("Authorization", format!("Bearer {}", api_key))
-            .send(),
+            .audited_send(),
         client
             .get("https://openrouter.ai/api/v1/credits")
             .header("Authorization", format!("Bearer {}", api_key))
-            .send()
+            .audited_send()
     );
 
     let mut limits = Vec::new();
@@ -464,43 +464,17 @@ pub(super) async fn fetch_antigravity_usage_report() -> Option<ProviderUsage> {
     })
 }
 
-/// Gemini API key validity report. Google does not expose per-key spend or
-/// quota through a public API, so this is a free `models.list` probe plus the
-/// local activity ledger.
+/// Gemini has no public per-key usage endpoint. Report local configuration
+/// without spending a models.list request to render usage.
 pub(super) async fn fetch_gemini_usage_report() -> Option<ProviderUsage> {
-    let api_key = auth::gemini::api_key()?;
-
-    let client = crate::provider::shared_http_client();
-    let response = client
-        .get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1")
-        .header("x-goog-api-key", api_key)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await;
-
-    let status = match response {
-        Ok(response) => {
-            let status = response.status();
-            if status.is_success() {
-                "valid".to_string()
-            } else if status.as_u16() == 400 || status.as_u16() == 401 || status.as_u16() == 403 {
-                format!("invalid or unauthorized ({})", status.as_u16())
-            } else if status.as_u16() == 429 {
-                "rate limited (429)".to_string()
-            } else {
-                format!("check failed ({})", status.as_u16())
-            }
-        }
-        Err(e) => format!("check failed ({})", e),
-    };
-
+    auth::gemini::api_key()?;
     Some(ProviderUsage {
         provider_name: "Google Gemini (API key)".to_string(),
-        limits: Vec::new(),
-        extra_info: vec![("Key status".to_string(), status)],
-        hard_limit_reached: false,
-        error: None,
-        last_used_unix_secs: None,
+        extra_info: vec![(
+            "Key status".to_string(),
+            "configured (not checked)".to_string(),
+        )],
+        ..Default::default()
     })
 }
 
@@ -516,7 +490,7 @@ pub(super) async fn fetch_cursor_usage_report() -> Option<ProviderUsage> {
         .basic_auth(&api_key, Option::<&str>::None)
         .header("Accept", "application/json")
         .timeout(std::time::Duration::from_secs(10))
-        .send()
+        .audited_send()
         .await;
 
     let mut extra_info = Vec::new();
@@ -591,7 +565,7 @@ pub(super) async fn fetch_copilot_usage_report() -> Option<ProviderUsage> {
             auth::copilot::EDITOR_PLUGIN_VERSION,
         )
         .header("Accept", "application/json")
-        .send()
+        .audited_send()
         .await;
 
     if let Ok(resp) = api_result

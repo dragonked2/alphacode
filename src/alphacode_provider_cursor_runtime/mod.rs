@@ -11,6 +11,7 @@
 use crate::alphacode_base::auth::cursor as cursor_auth;
 use crate::alphacode_base::provider::cursor::{AVAILABLE_MODELS, DEFAULT_MODEL};
 use crate::alphacode_message_types::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use crate::alphacode_provider_core::{EventStream, Provider};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -147,7 +148,7 @@ async fn fetch_available_models(client: &reqwest::Client, api_key: &str) -> Resu
     let response = client
         .get(MODELS_API_URL)
         .basic_auth(api_key, Some(""))
-        .send()
+        .audited_send()
         .await
         .context("Failed to fetch Cursor model catalog")?;
 
@@ -284,7 +285,7 @@ impl Provider for CursorCliProvider {
         let client = self.client.clone();
         let (tx, rx) = mpsc::channel::<Result<crate::alphacode_message_types::StreamEvent>>(100);
 
-        tokio::spawn(async move {
+        crate::alphacode_provider_core::request_audit::spawn(async move {
             let result = run_native_text_command(client, tx.clone(), &prompt, &model).await;
 
             if let Err(err) = result {

@@ -1,3 +1,4 @@
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -652,7 +653,7 @@ pub async fn exchange_github_token(
                 "User-Agent",
                 crate::alphacode_provider_core::with_alphacode_brand(EDITOR_VERSION),
             )
-            .send()
+            .audited_send()
             .await
             .context("Failed to exchange GitHub token for Copilot token")?;
 
@@ -745,7 +746,7 @@ pub async fn initiate_device_flow(client: &reqwest::Client) -> Result<DeviceCode
             ("client_id", GITHUB_COPILOT_CLIENT_ID),
             ("scope", "read:user"),
         ])
-        .send()
+        .audited_send()
         .await
         .context("Failed to initiate GitHub device flow")?;
 
@@ -777,7 +778,7 @@ pub async fn poll_for_access_token(
                 ("device_code", device_code),
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ])
-            .send()
+            .audited_send()
             .await
             .context("Failed to poll for access token")?;
 
@@ -926,7 +927,7 @@ pub async fn fetch_available_models(
         .header("Editor-Version", EDITOR_VERSION)
         .header("Editor-Plugin-Version", EDITOR_PLUGIN_VERSION)
         .header("Copilot-Integration-Id", COPILOT_INTEGRATION_ID)
-        .send()
+        .audited_send()
         .await
         .context("Failed to fetch Copilot models")?;
 
@@ -968,7 +969,7 @@ pub async fn fetch_github_username(client: &reqwest::Client, token: &str) -> Res
             "User-Agent",
             crate::alphacode_provider_core::with_alphacode_brand(EDITOR_VERSION),
         )
-        .send()
+        .audited_send()
         .await
         .context("Failed to fetch GitHub user")?;
 

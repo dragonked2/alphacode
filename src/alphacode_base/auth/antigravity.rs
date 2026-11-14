@@ -1,3 +1,4 @@
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{self, IsTerminal, Write};
@@ -417,7 +418,7 @@ async fn exchange_authorization_code(
             ("code_verifier", verifier.to_string()),
             ("redirect_uri", redirect_uri.to_string()),
         ])
-        .send()
+        .audited_send()
         .await
         .context("Failed to exchange Antigravity authorization code")?;
 
@@ -455,7 +456,7 @@ pub async fn fetch_email(access_token: &str) -> Result<String> {
         .get(GOOGLE_USERINFO_URL)
         .header(reqwest::header::USER_AGENT, GOOGLE_OAUTH_USER_AGENT)
         .bearer_auth(access_token)
-        .send()
+        .audited_send()
         .await
         .context("Failed to fetch Antigravity Google profile")?;
 
@@ -494,7 +495,7 @@ pub async fn fetch_project_id(access_token: &str) -> Result<String> {
             .post(format!("{base_url}/v1internal:loadCodeAssist"))
             .headers(headers.clone())
             .json(&body)
-            .send()
+            .audited_send()
             .await
         {
             Ok(resp) => resp,

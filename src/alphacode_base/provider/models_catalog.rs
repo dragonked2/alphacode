@@ -1,4 +1,5 @@
 use super::*;
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 
 /// Total per-request timeout for model catalog fetches. The shared HTTP
 /// client only sets a connect timeout, so without this a hung catalog request
@@ -164,7 +165,7 @@ pub async fn fetch_openai_model_catalog(access_token: &str) -> Result<OpenAIMode
         .get("https://chatgpt.com/backend-api/codex/models?client_version=1.0.0")
         .header("Authorization", format!("Bearer {}", access_token))
         .timeout(CATALOG_REQUEST_TIMEOUT)
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {
@@ -239,7 +240,7 @@ where
     loop {
         let resp = build_request(&client, after_id.as_deref())
             .timeout(CATALOG_REQUEST_TIMEOUT)
-            .send()
+            .audited_send()
             .await?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to fetch Anthropic model catalog: {}", resp.status());
@@ -299,7 +300,7 @@ pub async fn fetch_openai_api_key_model_catalog(api_key: &str) -> Result<OpenAIM
         .get(&models_url)
         .header("Authorization", format!("Bearer {}", api_key))
         .timeout(CATALOG_REQUEST_TIMEOUT)
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {

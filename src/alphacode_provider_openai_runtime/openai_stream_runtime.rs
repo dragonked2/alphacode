@@ -759,6 +759,11 @@ pub(super) async fn try_persistent_ws_continuation(
         crate::alphacode_message_types::ConnectionPhase::SendingRequest,
     )
     .await;
+    crate::alphacode_provider_core::request_audit::record_operation(
+        &state.audit_origin,
+        "WS",
+        "websocket_inference",
+    );
     if let Err(e) = state.ws_stream.send(WsMessage::Text(request_text)).await {
         return PersistentWsResult::Failed(format!("send error: {}", e));
     }
@@ -1069,7 +1074,7 @@ pub(super) async fn stream_response_websocket_persistent(
     let creds = credentials.read().await;
     let is_chatgpt_mode = !creds.refresh_token.is_empty() || creds.id_token.is_some();
     let ws_url = OpenAIProvider::responses_ws_url(&creds);
-    let mut ws_request = ws_url.into_client_request().map_err(|err| {
+    let mut ws_request = ws_url.as_str().into_client_request().map_err(|err| {
         OpenAIStreamFailure::Other(anyhow::anyhow!(
             "Failed to build websocket request: {}",
             err
@@ -1108,6 +1113,11 @@ pub(super) async fn stream_response_websocket_persistent(
     emit_connection_phase(&tx, ConnectionPhase::Connecting).await;
     let connect_start = std::time::Instant::now();
 
+    crate::alphacode_provider_core::request_audit::record_operation(
+        &ws_url,
+        "GET",
+        "websocket_connect",
+    );
     let connect_result = tokio::time::timeout(
         Duration::from_secs(WEBSOCKET_CONNECT_TIMEOUT_SECS),
         connect_async(ws_request),
@@ -1190,6 +1200,11 @@ pub(super) async fn stream_response_websocket_persistent(
     })?;
     let request_send_started_at = Instant::now();
     emit_connection_phase(&tx, ConnectionPhase::SendingRequest).await;
+    crate::alphacode_provider_core::request_audit::record_operation(
+        &ws_url,
+        "WS",
+        "websocket_inference",
+    );
     ws_stream
         .send(WsMessage::Text(request_text))
         .await
@@ -1455,6 +1470,9 @@ pub(super) async fn stream_response_websocket_persistent(
             ],
         );
         *guard = Some(PersistentWsState {
+            audit_origin: reqwest::Url::parse(&ws_url)
+                .map(|url| url.origin().ascii_serialization())
+                .unwrap_or_default(),
             ws_stream,
             last_response_id: resp_id,
             connected_at,

@@ -22,6 +22,7 @@
 //!    recorded against the exact key generation that was rejected so a late
 //!    failure can never mark a freshly re-authorized key as broken.
 
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -238,7 +239,7 @@ pub async fn exchange_code(
             code_verifier: &attempt.verifier,
             code_challenge_method: "S256",
         })
-        .send()
+        .audited_send()
         .await
         .context("Failed to reach the OrcaRouter token endpoint")?;
 

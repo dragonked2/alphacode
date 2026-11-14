@@ -27,6 +27,7 @@ use crate::alphacode_base::provider_catalog::{
 use crate::alphacode_message_types::{
     CacheControl, ContentBlock, Message, Role, StreamEvent, ToolDefinition,
 };
+use crate::alphacode_provider_core::request_audit::{AuditedSend as _, BlockingAuditedSend as _};
 use crate::alphacode_provider_core::{EventStream, Provider};
 pub use crate::alphacode_provider_openrouter::{
     EndpointInfo, ModelInfo, ModelPricing, ModelTimestampIndex, ProviderRouting,
@@ -181,7 +182,7 @@ fn fetch_opencode_latest_version() -> Result<String, anyhow::Error> {
             "User-Agent",
             crate::alphacode_provider_core::ALPHACODE_USER_AGENT,
         )
-        .send()?
+        .audited_send()?
         .json()?;
     let tag = body["tag_name"]
         .as_str()
@@ -1146,6 +1147,26 @@ async fn fetch_models_from_api(
     models_cache: Arc<RwLock<ModelsCache>>,
     cache_namespace: Option<String>,
 ) -> Result<Vec<ModelInfo>> {
+    let result = fetch_models_from_api_inner(
+        client,
+        api_base,
+        auth,
+        Arc::clone(&models_cache),
+        cache_namespace,
+    )
+    .await;
+    models_cache.write().await.last_failure_at =
+        result.as_ref().err().map(|_| std::time::Instant::now());
+    result
+}
+
+async fn fetch_models_from_api_inner(
+    client: Client,
+    api_base: String,
+    auth: ProviderAuth,
+    models_cache: Arc<RwLock<ModelsCache>>,
+    cache_namespace: Option<String>,
+) -> Result<Vec<ModelInfo>> {
     // Tolerant to bare roots (`http://127.0.0.1:8080`) and versioned bases
     // (`.../v1`): both resolve to `.../v1/models` without ever producing
     // `/v1/v1/models`. Custom prefixes (`/api/v3`, ...) are preserved.
@@ -1163,7 +1184,7 @@ async fn fetch_models_from_api(
         ),
         &api_base,
     )
-        .send()
+        .audited_send()
         .await
         .with_context(|| {
             format!(
@@ -1262,7 +1283,7 @@ pub async fn discover_local_initial_model(
         request
     };
     let response = request
-        .send()
+        .audited_send()
         .await
         .with_context(|| format!("Could not reach {profile_id} at {url}. Start its local server and load a chat model."))?
         .error_for_status()
@@ -1800,6 +1821,7 @@ pub struct OpenRouterProvider {
     static_image_input_support: HashMap<String, bool>,
     send_openrouter_headers: bool,
     models_cache: Arc<RwLock<ModelsCache>>,
+    model_fetch_lock: Arc<tokio::sync::Mutex<()>>,
     model_catalog_refresh: Arc<Mutex<ModelCatalogRefreshState>>,
     /// Provider routing preferences
     provider_routing: Arc<RwLock<ProviderRouting>>,
@@ -2315,6 +2337,7 @@ impl OpenRouterProvider {
             static_image_input_support,
             send_openrouter_headers: false,
             models_cache: Arc::new(RwLock::new(ModelsCache::default())),
+            model_fetch_lock: Arc::new(tokio::sync::Mutex::new(())),
             model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
             provider_routing: Arc::new(RwLock::new(ProviderRouting::default())),
             provider_pin: Arc::new(Mutex::new(None)),
@@ -2545,6 +2568,7 @@ impl OpenRouterProvider {
             static_image_input_support: HashMap::new(),
             send_openrouter_headers,
             models_cache: Arc::new(RwLock::new(ModelsCache::default())),
+            model_fetch_lock: Arc::new(tokio::sync::Mutex::new(())),
             model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
             provider_routing: Arc::new(RwLock::new(provider_routing)),
             provider_pin: Arc::new(Mutex::new(None)),
@@ -2586,6 +2610,7 @@ impl OpenRouterProvider {
             static_image_input_support: HashMap::new(),
             send_openrouter_headers: true,
             models_cache: Arc::new(RwLock::new(ModelsCache::default())),
+            model_fetch_lock: Arc::new(tokio::sync::Mutex::new(())),
             model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
             provider_routing: Arc::new(RwLock::new(Self::parse_provider_routing())),
             provider_pin: Arc::new(Mutex::new(None)),
@@ -2686,6 +2711,7 @@ impl OpenRouterProvider {
             static_image_input_support: HashMap::new(),
             send_openrouter_headers: false,
             models_cache: Arc::new(RwLock::new(ModelsCache::default())),
+            model_fetch_lock: Arc::new(tokio::sync::Mutex::new(())),
             model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
             provider_routing: Arc::new(RwLock::new(ProviderRouting::default())),
             provider_pin: Arc::new(Mutex::new(None)),
@@ -2941,6 +2967,7 @@ impl OpenRouterProvider {
                 static_image_input_support: HashMap::new(),
                 send_openrouter_headers: true,
                 models_cache: Arc::new(RwLock::new(ModelsCache::default())),
+                model_fetch_lock: Arc::new(tokio::sync::Mutex::new(())),
                 model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
                 provider_routing: Arc::new(RwLock::new(ProviderRouting::default())),
                 provider_pin: Arc::new(Mutex::new(None)),
@@ -3004,7 +3031,22 @@ impl OpenRouterProvider {
         let refresh_state = Arc::clone(&self.model_catalog_refresh);
         let previous_fingerprint = self.cached_model_catalog_fingerprint();
         let ns = self.foreground_cache_namespace();
+        let fetch_lock = Arc::clone(&self.model_fetch_lock);
+        let fresh_secs = self.model_catalog_refresh_intervals().0;
+        let retry_secs = self.model_catalog_refresh_intervals().1;
         handle.spawn(async move {
+            let _fetch_guard = fetch_lock.lock().await;
+            // A foreground prefetch may have filled the cache while this
+            // background request was waiting. Recheck after acquiring the lock.
+            let fresh = models_cache.read().await.cached_at
+                .zip(current_unix_secs())
+                .is_some_and(|(cached, now)| now.saturating_sub(cached) < fresh_secs);
+            let cooling_down = models_cache.read().await.last_failure_at
+                .is_some_and(|failed| failed.elapsed().as_secs() < retry_secs);
+            if fresh || cooling_down {
+                OpenRouterProvider::finish_background_model_catalog_refresh(&refresh_state);
+                return;
+            }
             match fetch_models_from_api(client, api_base, auth, models_cache, ns).await {
                 Ok(models) => {
                     let updated = models_fingerprint(&models) != previous_fingerprint;
@@ -3447,6 +3489,7 @@ impl OpenRouterProvider {
 
     /// Fetch available models from OpenRouter API (with disk caching)
     pub async fn fetch_models(&self) -> Result<Vec<ModelInfo>> {
+        let _fetch_guard = self.model_fetch_lock.lock().await;
         if !self.supports_model_catalog {
             return Ok(Vec::new());
         }
@@ -3479,6 +3522,20 @@ impl OpenRouterProvider {
             return Ok(cache_entry.models);
         }
 
+        if self
+            .models_cache
+            .read()
+            .await
+            .last_failure_at
+            .is_some_and(|failed| {
+                failed.elapsed().as_secs() < self.model_catalog_refresh_intervals().1
+            })
+        {
+            anyhow::bail!(
+                "Model catalog refresh cooling down after a failed request; use /refresh-model-list to retry now"
+            );
+        }
+
         fetch_models_from_api(
             self.client.clone(),
             self.api_base.clone(),
@@ -3491,6 +3548,7 @@ impl OpenRouterProvider {
 
     /// Force refresh the models cache from API
     pub async fn refresh_models(&self) -> Result<Vec<ModelInfo>> {
+        let _fetch_guard = self.model_fetch_lock.lock().await;
         // Some compatible gateways expose an automatic model router instead
         // of a useful /models catalog. These profiles intentionally rely on
         // their static route alias; probing /models can fail or return models
@@ -3547,7 +3605,7 @@ impl OpenRouterProvider {
             ),
             &self.api_base,
         )
-        .send()
+        .audited_send()
         .await
         .context("Failed to fetch endpoint data")?;
 
@@ -3605,7 +3663,7 @@ impl OpenRouterProvider {
             ),
             &self.api_base,
         )
-        .send()
+        .audited_send()
         .await
         .context("Failed to refresh endpoint data")?;
 
@@ -3924,6 +3982,159 @@ mod llamacpp_compat_tests {
     use super::*;
     use crate::alphacode_provider_core::Provider;
 
+    async fn counting_catalog_server() -> (
+        String,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<Vec<String>>,
+    ) {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let (done_tx, mut done_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let mut paths = Vec::new();
+            loop {
+                let (socket, _) = tokio::select! {
+                    result = listener.accept() => result.unwrap(),
+                    _ = &mut done_rx => break,
+                };
+                let mut socket = BufReader::new(socket);
+                let mut line = String::new();
+                socket.read_line(&mut line).await.unwrap();
+                let path = line.split_whitespace().nth(1).unwrap().to_string();
+                let mut content_length = 0;
+                loop {
+                    line.clear();
+                    if socket.read_line(&mut line).await.unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(length) = line.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        content_length = length.trim().parse::<usize>().unwrap();
+                    }
+                }
+                socket
+                    .read_exact(&mut vec![0; content_length])
+                    .await
+                    .unwrap();
+                let body = if path.ends_with("/models") {
+                    serde_json::json!({"data": (0..30).map(|i| serde_json::json!({"id":format!("unused-{i}")})).collect::<Vec<_>>()})
+                } else {
+                    serde_json::json!({"data":{"endpoints":[]}})
+                }.to_string();
+                let body = if path.ends_with("/chat/completions") {
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string()
+                } else {
+                    body
+                };
+                paths.push(path);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket
+                    .get_mut()
+                    .write_all(response.as_bytes())
+                    .await
+                    .unwrap();
+            }
+            paths
+        });
+        (base, done_tx, server)
+    }
+
+    #[tokio::test]
+    async fn catalog_refresh_does_not_probe_unused_models() {
+        let (base, done_tx, server) = counting_catalog_server().await;
+        let mut provider = local_no_auth_provider("active-refresh-fixture");
+        provider.api_base = base;
+        provider.profile_id = None;
+        provider.supports_provider_features = true;
+        provider.client = Client::builder().no_proxy().build().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            provider.refresh_model_catalog(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        done_tx.send(()).unwrap();
+        let paths = server.await.unwrap();
+        assert_eq!(
+            paths,
+            vec!["/v1/models", "/v1/models/active-refresh-fixture/endpoints"]
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_cold_prefetch_and_picker_send_one_catalog_request() {
+        let (base, done_tx, server) = counting_catalog_server().await;
+        let mut provider = local_no_auth_provider("cold-catalog-fixture");
+        provider.api_base = base;
+        provider.client = Client::builder().no_proxy().build().unwrap();
+        let provider = Arc::new(provider);
+        let prefetch = provider.prefetch_models();
+        let picker = async {
+            let _ = provider.available_models_display();
+            provider.prefetch_models().await
+        };
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            tokio::join!(prefetch, picker)
+        })
+        .await
+        .unwrap();
+        first.unwrap();
+        second.unwrap();
+        // Wait for the scheduled background worker to finish its post-lock
+        // freshness check before closing the listener.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if !provider.model_catalog_refresh.lock().unwrap().in_flight {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        done_tx.send(()).unwrap();
+        assert_eq!(server.await.unwrap(), vec!["/v1/models"]);
+    }
+
+    #[tokio::test]
+    async fn warm_direct_provider_sends_one_request_per_completion_without_catalog_polls() {
+        let (base, done_tx, server) = counting_catalog_server().await;
+        let mut provider = local_no_auth_provider("prompt-count-fixture");
+        provider.api_base = base;
+        provider.client = Client::builder().no_proxy().build().unwrap();
+        provider.prefetch_models().await.unwrap();
+        for _ in 0..3 {
+            // Repeated picker reads and prefetches must stay local with a warm catalog.
+            for _ in 0..20 {
+                let _ = provider.available_models_display();
+            }
+            provider.prefetch_models().await.unwrap();
+            let mut stream = provider.complete(&[], &[], "fixture", None).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while let Some(event) = stream.next().await {
+                    event.unwrap();
+                }
+            })
+            .await
+            .unwrap();
+        }
+        done_tx.send(()).unwrap();
+        assert_eq!(
+            server.await.unwrap(),
+            vec![
+                "/v1/models",
+                "/v1/chat/completions",
+                "/v1/chat/completions",
+                "/v1/chat/completions",
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn dropping_response_stream_cancels_an_idle_http_request() {
         use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -3995,6 +4206,7 @@ mod llamacpp_compat_tests {
             static_image_input_support: std::collections::HashMap::new(),
             send_openrouter_headers: false,
             models_cache: std::sync::Arc::new(tokio::sync::RwLock::new(ModelsCache::default())),
+            model_fetch_lock: Arc::new(tokio::sync::Mutex::new(())),
             model_catalog_refresh: std::sync::Arc::new(std::sync::Mutex::new(
                 ModelCatalogRefreshState::default(),
             )),

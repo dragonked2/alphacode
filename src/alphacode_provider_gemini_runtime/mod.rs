@@ -758,7 +758,7 @@ impl Provider for GeminiProvider {
         let provider = self.clone();
         let (tx, rx) = mpsc::channel::<Result<StreamEvent>>(100);
 
-        tokio::spawn(async move {
+        crate::alphacode_provider_core::request_audit::spawn(async move {
             let _ = tx
                 .send(Ok(StreamEvent::ConnectionType {
                     connection: "https".to_string(),
@@ -1235,7 +1235,7 @@ mod request_pressure_tests {
     async fn rate_limit_returns_to_the_agent_without_nested_retries() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/generate", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
+        let server = crate::alphacode_provider_core::request_audit::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut bytes = [0; 4096];
             assert!(socket.read(&mut bytes).await.unwrap() > 0);

@@ -67,6 +67,14 @@ impl Agent {
     pub(crate) const PROACTIVE_COMPACTION_THRESHOLD: f32 = 0.85;
 
     pub(super) async fn run_turn(&mut self, print_output: bool) -> Result<String> {
+        crate::alphacode_provider_core::request_audit::scope(
+            self.session.id.clone(),
+            self.run_turn_audited(print_output),
+        )
+        .await
+    }
+
+    async fn run_turn_audited(&mut self, print_output: bool) -> Result<String> {
         self.set_log_context();
         crate::session_metrics::record_turn(&self.session.id);
         self.initialize_goal_contract();

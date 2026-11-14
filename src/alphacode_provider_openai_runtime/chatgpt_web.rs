@@ -47,7 +47,7 @@ impl ChatGptWebState {
         let advertised_tools: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
         let (tx, rx) = mpsc::channel(128);
 
-        tokio::spawn(async move {
+        crate::alphacode_provider_core::request_audit::spawn(async move {
             if tx
                 .send(Ok(StreamEvent::ConnectionType {
                     connection: "browser/chatgpt-web".to_string(),

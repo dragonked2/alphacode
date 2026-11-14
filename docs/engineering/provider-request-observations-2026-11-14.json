@@ -1,0 +1,65 @@
+{
+  "source": "C:\\Users\\or0to\\.alphacode\\logs\\alphacode-2026-11-14.log",
+  "metric": "logged OpenAI-compatible stream attempts, not verified HTTP sends",
+  "total": 635,
+  "active_minutes": 225,
+  "median_per_active_calendar_minute": 2,
+  "mean_per_active_calendar_minute": 2.82,
+  "peak_calendar_minute": 12,
+  "peak_rolling_60s": [
+    14,
+    "2026-11-14 00:11:20.350000"
+  ],
+  "recent_calendar_minutes": [
+    [
+      "2026-11-14 17:49",
+      2
+    ],
+    [
+      "2026-11-14 17:50",
+      2
+    ],
+    [
+      "2026-11-14 17:51",
+      1
+    ],
+    [
+      "2026-11-14 17:52",
+      2
+    ],
+    [
+      "2026-11-14 17:53",
+      1
+    ],
+    [
+      "2026-11-14 17:54",
+      1
+    ],
+    [
+      "2026-11-14 17:55",
+      1
+    ],
+    [
+      "2026-11-14 17:56",
+      1
+    ],
+    [
+      "2026-11-14 18:28",
+      2
+    ],
+    [
+      "2026-11-14 18:29",
+      1
+    ],
+    [
+      "2026-11-14 18:32",
+      1
+    ],
+    [
+      "2026-11-14 18:33",
+      1
+    ]
+  ],
+  "unattributed_attempts": 635,
+  "distinct_recorded_sessions": 0
+}

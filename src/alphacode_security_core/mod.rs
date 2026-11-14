@@ -22,6 +22,7 @@ pub mod operator;
 pub mod orchestrator;
 pub mod prioritization;
 pub mod proof;
+pub mod reasoning;
 pub mod repro_harness;
 pub mod research_session;
 pub mod resources;

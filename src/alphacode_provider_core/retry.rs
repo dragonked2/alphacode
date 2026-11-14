@@ -499,8 +499,14 @@ pub async fn send_with_retry(
             None => builder,
         };
 
-        let send_result =
-            send_with_initial_response_timeout(builder, policy.initial_response_timeout).await;
+        let send = send_with_initial_response_timeout(builder, policy.initial_response_timeout);
+        // These tool callers share provider pacing/retry mechanics, but their
+        // target-site traffic must not inflate the provider request ledger.
+        let send_result = if matches!(label, "webfetch" | "websearch" | "scrapling") {
+            super::request_audit::suppress(send).await
+        } else {
+            send.await
+        };
 
         match send_result {
             Ok(response) => {

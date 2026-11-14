@@ -1,0 +1,572 @@
+{
+  "version": 1,
+  "lessons": [
+    {
+      "id": "recheck_authority_after_transition",
+      "required_cues": [
+        "revocable_membership",
+        "retained_object_reference"
+      ],
+      "invariant": "Protected operations must use current authority, including after removal.",
+      "broken_assumption": "Possession of an old reference or authorship implies continuing permission.",
+      "reasoning": [
+        "Separate ownership from membership and operation-specific policy.",
+        "Compare the same controlled object before and after revocation; inspect alternate delivery paths."
+      ],
+      "preconditions": [
+        "Established revocation policy and two controlled accounts; account for documented bearer-link lifetimes."
+      ],
+      "test": {
+        "positive_control": "Authorized member accesses the owned fixture before removal.",
+        "negative_control": "Unrelated actor and nonexistent fixture remain denied.",
+        "discriminating_test": "Revoke membership, repeat one authorized test against the retained fixture reference, and verify actual read or write effect.",
+        "success_oracle": "Protected canary or persisted operation remains available contrary to current policy."
+      },
+      "counterexamples": [
+        "Public artifacts or intentionally valid expiring bearer links can explain continued access."
+      ],
+      "transfer_question": "Where is authority re-evaluated when relationships change?",
+      "sources": [
+        {
+          "report_id": 2028450,
+          "content_sha256": "349469b9830adb534061ef855291c42050b8b7147f2d041a449e009aca642057",
+          "basis": "narrative",
+          "observation": "The narrative reports deleting an earlier message through the API after leaving the channel.",
+          "evidence_quote": "It successfully deleted the message."
+        },
+        {
+          "report_id": 2668302,
+          "content_sha256": "f509294cb695b7fea560b91856132b78e029669c2e594d0e95a3f99129c17859",
+          "basis": "narrative",
+          "observation": "The narrative reports continued access to a retained job-artifact link after project membership removal.",
+          "evidence_quote": "After Owner remove him from private project but still the link is accessible"
+        }
+      ]
+    },
+    {
+      "id": "validate_types_before_lookup",
+      "required_cues": [
+        "structured_input",
+        "credential_lookup"
+      ],
+      "invariant": "A credential is data of the required type, never a query expression.",
+      "broken_assumption": "A truthy parsed value is a valid credential string.",
+      "reasoning": [
+        "Trace client-controlled types into lookup construction.",
+        "Distinguish a changed query result from authenticated authority."
+      ],
+      "preconditions": [
+        "Controlled identity and a permitted test environment."
+      ],
+      "test": {
+        "positive_control": "Known valid credential returns its expected identity.",
+        "negative_control": "Invalid scalar credential fails without creating a session.",
+        "discriminating_test": "Compare permitted type-boundary inputs without enumerating users; inspect the resulting controlled session identity.",
+        "success_oracle": "A credential-free input creates an unauthorized authenticated capability."
+      },
+      "counterexamples": [
+        "A parser error or success-shaped response without usable authority is insufficient."
+      ],
+      "transfer_question": "Which component converts untrusted structured data into authority?",
+      "sources": [
+        {
+          "report_id": 1447619,
+          "content_sha256": "4c0100ace5b595df121cbf39009796170b6942a5cd9ceb24f99c1de29cd0925a",
+          "basis": "narrative",
+          "observation": "The narrative traces a client-controlled structured login value into a database lookup and shows an issued session.",
+          "evidence_quote": "Data from HTTP POST requests is forwarded to hardcoded Login Handlers"
+        }
+      ]
+    },
+    {
+      "id": "follow_equivalent_private_representations",
+      "required_cues": [
+        "privacy_setting",
+        "derived_representation"
+      ],
+      "invariant": "Privacy applies to equivalent information across every representation.",
+      "broken_assumption": "Removing a displayed field also removes the protected information.",
+      "reasoning": [
+        "Identify what the privacy promise protects.",
+        "Follow alternate encodings and derived fields through the actual response."
+      ],
+      "preconditions": [
+        "Controlled private fixture and a clearly established viewing policy."
+      ],
+      "test": {
+        "positive_control": "Permitted viewer sees the canary representation.",
+        "negative_control": "Restricted viewer receives no equivalent data when protection is effective.",
+        "discriminating_test": "Change one privacy state and compare responses for the same controlled object; interpret the alternate representation.",
+        "success_oracle": "Restricted viewer recovers the protected information from an equivalent representation."
+      },
+      "counterexamples": [
+        "Public or intentionally coarse approximate information may satisfy the policy."
+      ],
+      "transfer_question": "Which other field reconstructs the value the UI hides?",
+      "sources": [
+        {
+          "report_id": 2610467,
+          "content_sha256": "0970d5eb4a0c26a2602f5016e6487a548ae1340aefdb42fc8bb4f8df3282a526",
+          "basis": "narrative",
+          "observation": "The narrative compares a hidden event address with equivalent coordinates still present in the response.",
+          "evidence_quote": "the host event has blocked non-RSVP users"
+        }
+      ]
+    },
+    {
+      "id": "prove_verification_changes_authority",
+      "required_cues": [
+        "verification_challenge",
+        "identity_attribute_change"
+      ],
+      "invariant": "Changing a verified identity attribute requires valid verification.",
+      "broken_assumption": "Showing a verification screen means the server enforces verification.",
+      "reasoning": [
+        "Observe the normal challenge and state transition.",
+        "Compare valid and invalid verification outcomes, then read authoritative account state."
+      ],
+      "preconditions": [
+        "Owned account and controlled destination; no unrelated identity."
+      ],
+      "test": {
+        "positive_control": "Correct challenge value changes the intended controlled attribute.",
+        "negative_control": "Invalid value leaves the attribute unchanged.",
+        "discriminating_test": "Test a small policy-permitted invalid-value control and verify the saved attribute through a fresh read.",
+        "success_oracle": "Unverified controlled attribute becomes authoritative despite an invalid challenge."
+      },
+      "counterexamples": [
+        "A local UI update or pre-authorized destination is not verification bypass."
+      ],
+      "transfer_question": "What server-side state proves the challenge was enforced?",
+      "sources": [
+        {
+          "report_id": 2588329,
+          "content_sha256": "1e398675af6e9aa07a3ac2e47ac5993d799b6b9090335d6bdbab5794d6bbfc03",
+          "basis": "narrative",
+          "observation": "The narrative reports an invalid verification value being accepted and a phone attribute being changed.",
+          "evidence_quote": "if you place 0000, it will accept any number and update it into the app"
+        }
+      ]
+    },
+    {
+      "id": "authorize_each_object_graph_edge",
+      "required_cues": [
+        "private_parent",
+        "nested_object_lookup"
+      ],
+      "invariant": "Each independently addressable child must preserve the parent access policy.",
+      "broken_assumption": "Protecting the main object view protects every resolver and version.",
+      "reasoning": [
+        "Map parent, version and related artifact identifiers.",
+        "Check each reachable edge with the same controlled identities."
+      ],
+      "preconditions": [
+        "Explicitly private owned parent and controlled nonmember."
+      ],
+      "test": {
+        "positive_control": "Owner resolves parent and child canaries.",
+        "negative_control": "Nonmember and missing-child controls reveal no protected values.",
+        "discriminating_test": "Use a known controlled child reference to compare direct and nested access without guessing third-party identifiers.",
+        "success_oracle": "A nonmember retrieves private child data through an unprotected graph edge."
+      },
+      "counterexamples": [
+        "An identifier alone or documented public metadata does not prove a private-data leak."
+      ],
+      "transfer_question": "Which child can be addressed without traversing the protected parent?",
+      "sources": [
+        {
+          "report_id": 2528293,
+          "content_sha256": "84f2199ebb0247ec79cad194e4fe4e225ef27be9b4aba254d11afeb10b3870fc",
+          "basis": "narrative",
+          "observation": "The narrative follows private model identifiers into separately accessible model-version data.",
+          "evidence_quote": "the response to the request above includes the ID of the different model versions"
+        }
+      ]
+    },
+    {
+      "id": "bind_verified_and_consumed_meaning",
+      "required_cues": [
+        "signed_document",
+        "multiple_interpretations"
+      ],
+      "invariant": "The identity consumed must be the identity covered by the verified signature.",
+      "broken_assumption": "A valid signature somewhere in a document authenticates every interpreted field.",
+      "reasoning": [
+        "Separate verification from selection and consumption.",
+        "Map which element supplies the trusted identity and which element was signed."
+      ],
+      "preconditions": [
+        "Applicable configuration and controlled identity provider; source is only a public summary."
+      ],
+      "test": {
+        "positive_control": "Ordinary correctly signed assertion authenticates the controlled identity.",
+        "negative_control": "Unsigned or altered identity is rejected.",
+        "discriminating_test": "In an authorized isolated setup, vary document structure and compare the verified element with the consumed identity.",
+        "success_oracle": "An unverified identity controls authentication despite a valid signature on different content."
+      },
+      "counterexamples": [
+        "Signature validation that rejects ambiguity and binds the consumed element preserves the invariant."
+      ],
+      "transfer_question": "Did the verifier and consumer agree on the same meaning?",
+      "sources": [
+        {
+          "report_id": 2579939,
+          "content_sha256": "ed0278fa32dff2d89318dec532d15fead24cf0a320dfde055a697dab2d354bff",
+          "basis": "summary",
+          "observation": "The public summary describes XML signature wrapping under a specific federation configuration; detailed original steps are absent.",
+          "evidence_quote": "An XML signature wrapping vulnerability was present"
+        }
+      ]
+    },
+    {
+      "id": "separate_shared_state_from_local_error",
+      "required_cues": [
+        "shared_cache",
+        "unkeyed_input"
+      ],
+      "invariant": "An input omitted from the cache key must not change a shared response unsafely.",
+      "broken_assumption": "An error observed by the initiating client demonstrates cross-client cache impact.",
+      "reasoning": [
+        "Separate origin behavior from storage and independent retrieval.",
+        "Use an isolated authorized cache key and an independent clean client."
+      ],
+      "preconditions": [
+        "Verified isolated key; no poisoning of shared production pages."
+      ],
+      "test": {
+        "positive_control": "Clean clients receive the expected response on an unmodified isolated key.",
+        "negative_control": "Fresh unrelated key remains unaffected.",
+        "discriminating_test": "Vary one input on the isolated key, then retrieve it without that input from a separate controlled client.",
+        "success_oracle": "Independent client receives the input-induced response from shared cache state."
+      },
+      "counterexamples": [
+        "A one-client origin error, reflected header, or ineffective cache isolation proves no cross-client effect."
+      ],
+      "transfer_question": "What persisted across clients, and which key selected it?",
+      "sources": [
+        {
+          "report_id": 1976449,
+          "content_sha256": "b7b076410116c992e6f178e9d4ab2fa1f0a5a27d19aeadbabd4db01d006ec175",
+          "basis": "narrative",
+          "observation": "The narrative uses an isolated cache key and a separate clean browser to distinguish shared cached effects from a local error.",
+          "evidence_quote": "Open another browser in incognito mode"
+        }
+      ]
+    },
+    {
+      "id": "compose_capabilities_not_bug_names",
+      "required_cues": [
+        "redirected_credential",
+        "attacker_controlled_content"
+      ],
+      "invariant": "Authentication credentials must reach only the intended trusted consumer.",
+      "broken_assumption": "A trusted hostname makes every path and downstream redirect safe.",
+      "reasoning": [
+        "Track origin, path, redirect and credential representation separately.",
+        "Require compatible context and observed capability at every chain edge."
+      ],
+      "preconditions": [
+        "Controlled accounts, upload and callback; all tested origins authorized."
+      ],
+      "test": {
+        "positive_control": "Normal callback authenticates only the intended controlled session.",
+        "negative_control": "Untrusted callback or unapproved content cannot read the credential.",
+        "discriminating_test": "Trace a disposable credential through the controlled redirect chain and identify the execution context that can read it.",
+        "success_oracle": "Controlled untrusted content obtains a credential usable beyond its intended boundary."
+      },
+      "counterexamples": [
+        "A redirect or isolated script execution with no compatible credential flow is not an account-takeover chain."
+      ],
+      "transfer_question": "Which exact capability produced by one edge satisfies the next edge?",
+      "sources": [
+        {
+          "report_id": 265943,
+          "content_sha256": "170edd6913fb5ade45b36e72306d79065ae6c5f4410edef52037367640033c54",
+          "basis": "narrative",
+          "observation": "The narrative combines a permissive SSO destination, uploaded active content, redirects and reusable authentication material.",
+          "evidence_quote": "Token doesn’t expire flaw"
+        }
+      ]
+    },
+    {
+      "id": "keep_chain_prerequisites_explicit",
+      "required_cues": [
+        "signed_storage_reference",
+        "filesystem_path"
+      ],
+      "invariant": "Path containment remains necessary even when a request is signed.",
+      "broken_assumption": "Cryptographic authenticity guarantees the signed path is safe.",
+      "reasoning": [
+        "Separate signature authority from path semantics.",
+        "Carry key possession as an explicit prerequisite rather than inventing an unauthenticated attack."
+      ],
+      "preconditions": [
+        "Permitted local setup and explicitly supplied test signing material."
+      ],
+      "test": {
+        "positive_control": "Signed reference accesses an owned in-root canary.",
+        "negative_control": "Tampered signature and normalized out-of-root reference are rejected.",
+        "discriminating_test": "Use disposable canaries to test whether validly signed paths stay inside the configured storage root.",
+        "success_oracle": "A validly signed controlled reference crosses the storage boundary."
+      },
+      "counterexamples": [
+        "Without the required signing capability, conditional impact is not an available external exploit."
+      ],
+      "transfer_question": "Which prerequisite is missing between the current foothold and this primitive?",
+      "sources": [
+        {
+          "report_id": 2334455,
+          "content_sha256": "f8088741fb73d9d9d88bbe2f6ad10b9387eda0a0b292fb85fcca4cdc452f120e",
+          "basis": "narrative",
+          "observation": "The narrative makes prior signing-key possession an explicit condition for the demonstrated storage-path behavior.",
+          "evidence_quote": "the attacker must know the value of `secret_key_base`"
+        }
+      ]
+    },
+    {
+      "id": "compare_alternate_workflow_consumers",
+      "required_cues": [
+        "restricted_operation",
+        "alternate_workflow"
+      ],
+      "invariant": "A restricted operation keeps its policy across alternate workflows.",
+      "broken_assumption": "Restricting the primary action prevents every equivalent effect.",
+      "reasoning": [
+        "Identify the protected effect, not merely its primary endpoint.",
+        "Find secondary workflows that carry the same content or trigger the same capability."
+      ],
+      "preconditions": [
+        "Controlled identities and permitted disposable workflow state."
+      ],
+      "test": {
+        "positive_control": "Eligible account performs the intended primary action.",
+        "negative_control": "Ineligible account is denied on the primary route.",
+        "discriminating_test": "Compare one permitted alternate workflow for the same controlled effect and verify the persisted result.",
+        "success_oracle": "The equivalent restricted effect occurs through the alternate route."
+      },
+      "counterexamples": [
+        "A separately authorized operation with a similar UI may have a different valid policy."
+      ],
+      "transfer_question": "Which other workflow invokes the same downstream effect?",
+      "sources": [
+        {
+          "report_id": 2679108,
+          "content_sha256": "ed62dd9269b1a3e23d27cd05d245f281dc73c14f2bd0f2d276e75e20270791fc",
+          "basis": "narrative",
+          "observation": "The narrative describes adding restricted comments through a separate disclosure-request workflow.",
+          "evidence_quote": "you can attach a comment on each request/cancellation"
+        }
+      ]
+    },
+    {
+      "id": "distinguish_reachability_from_eligibility",
+      "required_cues": [
+        "restricted_benefit",
+        "public_workflow"
+      ],
+      "invariant": "A benefit restricted to an eligible population must enforce eligibility at consumption.",
+      "broken_assumption": "An obscure event page provides sufficient access control.",
+      "reasoning": [
+        "Determine the actual eligibility promise.",
+        "Follow the normal workflow to the entitlement boundary; avoid expanding financial side effects."
+      ],
+      "preconditions": [
+        "Explicit eligibility policy and permission for a disposable or reversible transaction."
+      ],
+      "test": {
+        "positive_control": "Eligible controlled actor can claim the test benefit.",
+        "negative_control": "Ineligible actor cannot consume it.",
+        "discriminating_test": "Compare controlled eligible and ineligible journeys; stop at the least harmful authoritative entitlement signal.",
+        "success_oracle": "An ineligible actor receives the protected benefit contrary to policy."
+      },
+      "counterexamples": [
+        "An intentionally public promotion or a cart page without a completed claim proves no violation."
+      ],
+      "transfer_question": "Where does the service enforce who may consume value?",
+      "sources": [
+        {
+          "report_id": 2552027,
+          "content_sha256": "5434985ae17ac0ede44c98e5fd977c1beca5b12b317df6ca17683f50a9c19212",
+          "basis": "narrative",
+          "observation": "The narrative reports an anonymous checkout consuming merchandise intended for an employee event.",
+          "evidence_quote": "with no promo code, any user can checkout books for free"
+        }
+      ]
+    },
+    {
+      "id": "trace_recovery_token_destination",
+      "required_cues": [
+        "recovery_token",
+        "user_controlled_destination"
+      ],
+      "invariant": "Recovery secrets remain bound to their intended trusted destination.",
+      "broken_assumption": "A legitimate recovery email guarantees every link destination is trusted.",
+      "reasoning": [
+        "Trace the token through link construction and redirects.",
+        "Distinguish arbitrary navigation from disclosure of a usable recovery capability."
+      ],
+      "preconditions": [
+        "Owned recovery account and controlled destination; public source is a summary."
+      ],
+      "test": {
+        "positive_control": "Normal recovery reaches the intended controlled account flow.",
+        "negative_control": "Disallowed destination receives no secret.",
+        "discriminating_test": "Inspect the owned recovery flow for destination control and observe whether a disposable secret crosses origins.",
+        "success_oracle": "A usable owned recovery secret reaches an unauthorized destination."
+      },
+      "counterexamples": [
+        "A redirect without a secret, expired token, or correctly allowlisted callback does not establish takeover."
+      ],
+      "transfer_question": "Does the secret follow data whose destination the attacker chooses?",
+      "sources": [
+        {
+          "report_id": 2341038,
+          "content_sha256": "33bfabeea261f20c632edbaa9d2a6185913d7872f9e0c536e5e42759fc29249a",
+          "basis": "summary",
+          "observation": "The public summary describes a user-influenced recovery-link destination disclosing recovery material.",
+          "evidence_quote": "The reset password link sent via email contains a parameter"
+        }
+      ]
+    },
+    {
+      "id": "test_final_file_interpretation",
+      "required_cues": [
+        "file_upload",
+        "browser_delivery"
+      ],
+      "invariant": "Uploaded data must remain inert in every permitted delivery context.",
+      "broken_assumption": "A filename or accepted upload type determines how the eventual browser interprets it.",
+      "reasoning": [
+        "Follow upload, transformation and delivery as separate trust decisions.",
+        "Establish the final origin and parser before claiming script execution impact."
+      ],
+      "preconditions": [
+        "Controlled upload and victim session; source provides a summary only."
+      ],
+      "test": {
+        "positive_control": "Ordinary allowed media renders correctly.",
+        "negative_control": "An inert owned control never executes.",
+        "discriminating_test": "Compare declared type and actual delivery interpretation using a harmless owned canary.",
+        "success_oracle": "Canary executes in a protected origin or other demonstrated cross-user security context."
+      },
+      "counterexamples": [
+        "Script executing only in an isolated unprivileged file origin may have no application impact."
+      ],
+      "transfer_question": "Which component decides the final meaning of stored bytes?",
+      "sources": [
+        {
+          "report_id": 2306491,
+          "content_sha256": "5032413940ae234997c184f8662365256fe3ec77a898c28261497674332d3ec9",
+          "basis": "summary",
+          "observation": "The public summary describes active content delivered through a media-upload flow; detailed browser-context controls are absent.",
+          "evidence_quote": "through the video upload function"
+        }
+      ]
+    },
+    {
+      "id": "trace_hidden_input_to_interpreter",
+      "required_cues": [
+        "request_metadata",
+        "backend_interpreter"
+      ],
+      "invariant": "Every untrusted data source remains data when it reaches an interpreter.",
+      "broken_assumption": "Only visible form parameters can reach a database or executable sink.",
+      "reasoning": [
+        "Map headers and background metadata processing as well as UI inputs.",
+        "Treat scanner output as a lead and design a causal manual control."
+      ],
+      "preconditions": [
+        "Identified reachable sink and permitted bounded comparisons."
+      ],
+      "test": {
+        "positive_control": "Known valid request produces stable baseline behavior.",
+        "negative_control": "Equivalent harmless metadata produces no interpreter-specific effect.",
+        "discriminating_test": "Vary one metadata input with paired controls; repeat and account for cache, network and routing confounders.",
+        "success_oracle": "Reproducible interpreter-specific behavior attributable to that input."
+      },
+      "counterexamples": [
+        "Scanner labels or noisy timing without causal controls do not establish injection."
+      ],
+      "transfer_question": "What invisible input reaches the same trusted sink?",
+      "sources": [
+        {
+          "report_id": 2597543,
+          "content_sha256": "baafec03a71508a48d01935d40396d6ba7922805c19231728011830ef01ccffb",
+          "basis": "narrative",
+          "observation": "The narrative identifies an HTTP metadata field as the suspected database input and supplies scanner evidence; independent controls are not shown.",
+          "evidence_quote": "Parameter: User-Agent (User-Agent)"
+        }
+      ]
+    },
+    {
+      "id": "prove_parser_disagreement",
+      "required_cues": [
+        "multiple_http_parsers",
+        "request_framing"
+      ],
+      "invariant": "Components sharing a connection must agree on request boundaries.",
+      "broken_assumption": "Acceptance of malformed framing alone proves cross-request impact.",
+      "reasoning": [
+        "Separate parse tolerance from connection desynchronization.",
+        "Track which controlled request owns each response or canary."
+      ],
+      "preconditions": [
+        "Explicitly permitted isolated connections and applicable parser configuration."
+      ],
+      "test": {
+        "positive_control": "Well-formed controlled requests preserve response attribution.",
+        "negative_control": "Rejected malformed framing leaves subsequent controlled traffic unaffected.",
+        "discriminating_test": "In an isolated authorized setup, compare framing interpretations and observe a separate controlled follow-up request.",
+        "success_oracle": "Response attribution or a controlled subsequent request crosses the intended boundary."
+      },
+      "counterexamples": [
+        "A parser error, timeout, or old affected-version claim without observed disagreement is insufficient."
+      ],
+      "transfer_question": "Where do two components disagree about the boundary of the same bytes?",
+      "sources": [
+        {
+          "report_id": 2237099,
+          "content_sha256": "93869baf1c72d9428ce8dd2e700345a0524a9fb732f01eaa9083ee99b20f7005",
+          "basis": "narrative",
+          "observation": "The narrative describes malformed framing and mismatched attribution involving separate requests in a local demonstration.",
+          "evidence_quote": "the beginning of another request can be smuggled in the body"
+        }
+      ]
+    },
+    {
+      "id": "retest_the_property_not_the_patch",
+      "required_cues": [
+        "previous_security_fix",
+        "configurable_destination"
+      ],
+      "invariant": "A fix must restore the security property across every equivalent path.",
+      "broken_assumption": "Changing one previously exploited path eliminates the whole failure mechanism.",
+      "reasoning": [
+        "Reconstruct the invariant the patch intended to restore.",
+        "Identify alternate inputs and privilege conditions without assuming the old exploit still works."
+      ],
+      "preconditions": [
+        "Current revision, permitted role and relevant configuration; source is summary-only."
+      ],
+      "test": {
+        "positive_control": "Intended trusted destination receives only the expected controlled data.",
+        "negative_control": "Unapproved destination cannot receive the protected canary.",
+        "discriminating_test": "Compare equivalent configured destinations under the stated role and inspect the actual controlled data flow.",
+        "success_oracle": "The original protected property still fails through an alternate permitted path."
+      },
+      "counterexamples": [
+        "A historical incomplete fix says nothing about the current deployment without fresh evidence."
+      ],
+      "transfer_question": "Which assumption did the fix restore, and which equivalent consumer remains?",
+      "sources": [
+        {
+          "report_id": 2104591,
+          "content_sha256": "3cd2be175b479b2d692920a229e7a5ff22dbae75631db4944d8649585fbad7de",
+          "basis": "summary",
+          "observation": "The public summary describes a destination-setting change exposing integration credentials after an incomplete earlier fix.",
+          "evidence_quote": "This was as a result of an incomplete fix"
+        }
+      ]
+    }
+  ]
+}

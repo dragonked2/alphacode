@@ -1,3 +1,4 @@
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{self, IsTerminal, Write};
@@ -539,7 +540,7 @@ async fn exchange_authorization_code(
     let resp = client
         .post(GOOGLE_TOKEN_URL)
         .form(&form)
-        .send()
+        .audited_send()
         .await
         .context("Failed to exchange Gemini authorization code")?;
 
@@ -573,7 +574,7 @@ pub async fn fetch_email(access_token: &str) -> Result<String> {
     let resp = client
         .get(GOOGLE_USERINFO_URL)
         .bearer_auth(access_token)
-        .send()
+        .audited_send()
         .await
         .context("Failed to fetch Gemini Google profile")?;
 

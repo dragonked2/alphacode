@@ -11,6 +11,7 @@
 //! `GET /v1/models` endpoint on the same origin. The runtime is registered
 //! with `crate::alphacode_base::provider::external` by the composition root.
 
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use crate::alphacode_base::auth::zcode as zcode_auth;
 use crate::alphacode_message_types::{Message as ChatMessage, StreamEvent, ToolDefinition};
 use crate::alphacode_provider_anthropic::{
@@ -205,7 +206,7 @@ impl ZcodeProvider {
             .get(MODELS_URL)
             .header("x-api-key", &token)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .send()
+            .audited_send()
             .await
             .context("failed to reach the Z.ai coding plan model catalog")?;
         let status = response.status();
@@ -322,7 +323,7 @@ impl ZcodeProvider {
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .header("Content-Type", "application/json")
                 .json(&body)
-                .send()
+                .audited_send()
                 .await;
 
             let response = match response {
@@ -699,7 +700,7 @@ impl Provider for ZcodeProvider {
             fetched_models: self.fetched_models.clone(),
             catalog_source: self.catalog_source.clone(),
         };
-        tokio::spawn(async move {
+        crate::alphacode_provider_core::request_audit::spawn(async move {
             worker.stream_request(body, tx).await;
         });
 

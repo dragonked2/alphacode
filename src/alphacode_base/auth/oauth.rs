@@ -1,4 +1,5 @@
 use crate::alphacode_base::auth::claude as claude_auth;
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use anyhow::Result;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
@@ -724,7 +725,7 @@ async fn exchange_claude_code_at_url(
         .header("Content-Type", "application/json")
         .timeout(Duration::from_secs(CLAUDE_TOKEN_TIMEOUT_SECS))
         .json(&payload)
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {
@@ -823,7 +824,7 @@ async fn exchange_openai_code_at_url(
             verifier,
             urlencoding::encode(redirect_uri)
         ))
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {
@@ -999,7 +1000,7 @@ async fn fetch_claude_profile_email_at_url(
         )
         .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219")
         .bearer_auth(access_token)
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {
@@ -1092,7 +1093,7 @@ async fn send_claude_refresh_request(
         .header("Content-Type", "application/json")
         .timeout(Duration::from_secs(CLAUDE_TOKEN_TIMEOUT_SECS))
         .json(&payload)
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {
@@ -1334,7 +1335,7 @@ async fn refresh_openai_tokens_inner(
                 openai::CLIENT_ID,
                 urlencoding::encode(refresh_token)
             ))
-            .send()
+            .audited_send()
             .await?;
 
         if !resp.status().is_success() {
@@ -1504,7 +1505,7 @@ async fn exchange_code_at_url(
         .post(token_url)
         .header("Content-Type", "application/json")
         .json(&payload)
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {
@@ -1548,7 +1549,7 @@ async fn refresh_tokens_at_url(token_url: &str, refresh_token: &str) -> Result<O
         .post(token_url)
         .header("Content-Type", "application/json")
         .json(&payload)
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {

@@ -58,8 +58,11 @@ impl ReproLanguage {
                     source_path.display().to_string(),
                     "-o".into(),
                     source_path
-                        .with_extension("")
-                        .with_file_name("repro_bin")
+                        .with_file_name(if cfg!(windows) {
+                            "repro_bin.exe"
+                        } else {
+                            "repro_bin"
+                        })
                         .display()
                         .to_string(),
                 ],
@@ -149,8 +152,8 @@ fn capture_to_string(raw: Vec<u8>) -> String {
     }
     let mut out = String::from_utf8_lossy(&raw[..MAX_CAPTURE_BYTES]).into_owned();
     out.push_str(&format!(
-        "\n[... {} bytes of output truncated ...]",
-        raw.len() - MAX_CAPTURE_BYTES
+        "\n[... output truncated after {} bytes ...]",
+        MAX_CAPTURE_BYTES
     ));
     out
 }
@@ -266,11 +269,22 @@ fn kill_process_tree(child: &mut Child) {
 fn drain_on_thread<R: Read + Send + 'static>(mut pipe: R) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
-        // Reads stop at MAX_CAPTURE_BYTES * 2 so a pathological child cannot
-        // exhaust memory before the deadline fires; the excess is discarded
-        // and `capture_to_string` marks truncation.
-        let mut limited = (&mut pipe).take((MAX_CAPTURE_BYTES * 2) as u64);
-        let _ = limited.read_to_end(&mut buf);
+        // Keep draining after the retention limit: closing the read end early
+        // can break the child's writes and invalidate the reproduction.
+        let mut chunk = [0_u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => {
+                    // One extra byte is enough for capture_to_string to mark
+                    // truncation, while memory stays bounded for noisy children.
+                    let keep = count.min((MAX_CAPTURE_BYTES + 1).saturating_sub(buf.len()));
+                    buf.extend_from_slice(&chunk[..keep]);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
         buf
     })
 }
@@ -374,8 +388,33 @@ impl ReproWorkspace {
                 };
             }
         };
+        let started = Instant::now();
         let (program, args) = language.run_command(&path);
-        let mut result = run_bounded(name, &program, &args, Some(self.dir.path()), timeout);
+        let mut result = run_bounded(&name, &program, &args, Some(self.dir.path()), timeout);
+        if language == ReproLanguage::Rust && result.outcome == ReproOutcome::Passed {
+            // A successful compiler is not a successful reproduction. Execute
+            // the artifact using only what remains of the same total budget.
+            let binary = self.dir.path().join(if cfg!(windows) {
+                "repro_bin.exe"
+            } else {
+                "repro_bin"
+            });
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                result.outcome = ReproOutcome::TimedOut;
+            } else {
+                let build_command = result.command_line;
+                result = run_bounded(
+                    &name,
+                    &binary.to_string_lossy(),
+                    &[],
+                    Some(self.dir.path()),
+                    remaining,
+                );
+                result.command_line = format!("{build_command} && {}", result.command_line);
+            }
+        }
+        result.elapsed = started.elapsed();
         result.workspace = Some(self.dir.path().to_path_buf());
         result
     }
@@ -643,6 +682,53 @@ mod tests {
         } else {
             ("sh".to_string(), vec!["-c".into(), "exit 7".into()])
         }
+    }
+
+    #[test]
+    fn noisy_output_is_drained_but_retention_is_bounded() {
+        use std::io::Cursor;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct CountedReader {
+            inner: Cursor<Vec<u8>>,
+            count: Arc<AtomicUsize>,
+        }
+        impl Read for CountedReader {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.inner.read(out)?;
+                self.count.fetch_add(count, Ordering::Relaxed);
+                Ok(count)
+            }
+        }
+        let count = Arc::new(AtomicUsize::new(0));
+        let captured = drain_on_thread(CountedReader {
+            inner: Cursor::new(vec![b'x'; MAX_CAPTURE_BYTES * 8]),
+            count: count.clone(),
+        })
+        .join()
+        .unwrap();
+        assert_eq!(count.load(Ordering::Relaxed), MAX_CAPTURE_BYTES * 8);
+        assert_eq!(captured.len(), MAX_CAPTURE_BYTES + 1);
+        assert!(capture_to_string(captured).contains("output truncated"));
+    }
+
+    #[test]
+    fn rust_workspace_executes_the_compiled_reproduction() {
+        let ws = ReproWorkspace::create("rust-execution").unwrap();
+        let result = ws.run(
+            "runtime-failure",
+            ReproLanguage::Rust,
+            "fn main() { println!(\"runtime-marker\"); std::process::exit(7); }",
+            Duration::from_secs(30),
+        );
+        assert_eq!(
+            result.outcome,
+            ReproOutcome::Failed { exit_code: 7 },
+            "{result:?}"
+        );
+        assert!(result.stdout.contains("runtime-marker"));
     }
 
     #[test]

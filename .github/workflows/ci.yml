@@ -107,6 +107,9 @@ jobs:
             cargo-test-opt0-${{ matrix.os }}-
       - run: cargo test --lib --locked -- --test-threads=4
       - run: cargo test --test llamacpp_compat --locked
+      - run: cargo test --test provider_request_audit --locked
+      - name: Verify production accessibility preferences in isolated processes
+        run: cargo test --test render_preferences --locked
       # `alphagrep` is its own workspace member, so root-package commands
       # never run its tests; gate them here.
       - run: cargo test -p alphagrep --locked
@@ -188,6 +191,8 @@ jobs:
           python-version: '3.12'
       - name: Verify task isolation, verifiers, and process cleanup
         run: python -m unittest discover -s scripts/tests -p test_agent_eval.py -v
+      - name: Provider traffic summary tests
+        run: python -m unittest discover -s scripts/tests -p test_provider_traffic.py -v
 
   gui-diagnostics:
     name: Windows GUI diagnostics

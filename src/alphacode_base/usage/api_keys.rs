@@ -2,7 +2,7 @@
 //!
 //! OAuth subscriptions expose rich usage endpoints, but plain API keys mostly
 //! do not, so this module gathers the best available picture per key:
-//!   - Key validity (cheap, free endpoint probes such as `GET /v1/models`).
+//!   - Local key configuration (live checks belong to provider doctor).
 //!   - Real balance / spend APIs where they exist (DeepSeek, Moonshot,
 //!     Anthropic/OpenAI admin cost reports when an admin key is configured).
 //!   - Locally tracked spend from [`crate::provider_activity`] (alphacode prices
@@ -31,37 +31,11 @@ fn push_local_spend(extra_info: &mut Vec<(String, String)>, source_key: &str) {
     }
 }
 
-fn key_status_from_response(status: reqwest::StatusCode) -> String {
-    if status.is_success() {
-        "valid".to_string()
-    } else if status.as_u16() == 401 || status.as_u16() == 403 {
-        format!("invalid or unauthorized ({})", status.as_u16())
-    } else if status.as_u16() == 429 {
-        "rate limited (429)".to_string()
-    } else {
-        format!("check failed ({})", status.as_u16())
-    }
-}
-
-/// Free `GET {base}/models` probe used for OpenAI-compatible profiles that do
-/// not expose a balance API. Returns a human-readable key status.
-async fn probe_openai_compatible_key(api_base: &str, api_key: &str) -> String {
-    let base = api_base.trim_end_matches('/');
-    if base.is_empty() {
-        return "configured (no endpoint to probe)".to_string();
-    }
-    let client = crate::provider::shared_http_client();
-    let response = client
-        .get(format!("{}/models", base))
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Accept", "application/json")
-        .timeout(HTTP_TIMEOUT)
-        .send()
-        .await;
-    match response {
-        Ok(response) => key_status_from_response(response.status()),
-        Err(e) => format!("check failed ({})", e),
-    }
+fn configured_key_status() -> (String, String) {
+    (
+        "Key status".to_string(),
+        "configured (not checked)".to_string(),
+    )
 }
 
 fn month_start_utc() -> chrono::DateTime<chrono::Utc> {
@@ -121,20 +95,8 @@ async fn fetch_anthropic_api_key_report() -> ProviderUsage {
     let display_name = "Anthropic API key".to_string();
     let mut extra_info = Vec::new();
 
-    if let Some(api_key) = configured_key("ANTHROPIC_API_KEY", "anthropic.env") {
-        let client = crate::provider::shared_http_client();
-        let response = client
-            .get("https://api.anthropic.com/v1/models?limit=1")
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01")
-            .timeout(HTTP_TIMEOUT)
-            .send()
-            .await;
-        let status = match response {
-            Ok(response) => key_status_from_response(response.status()),
-            Err(e) => format!("check failed ({})", e),
-        };
-        extra_info.push(("Key status".to_string(), status));
+    if configured_key("ANTHROPIC_API_KEY", "anthropic.env").is_some() {
+        extra_info.push(configured_key_status());
 
         if let Some(admin_key) = configured_key("ANTHROPIC_ADMIN_API_KEY", "anthropic.env")
             && let Some(cost) = fetch_anthropic_org_cost(&admin_key).await
@@ -162,19 +124,8 @@ async fn fetch_openai_api_key_report() -> ProviderUsage {
     let display_name = "OpenAI API key".to_string();
     let mut extra_info = Vec::new();
 
-    if let Some(api_key) = configured_key("OPENAI_API_KEY", "openai.env") {
-        let client = crate::provider::shared_http_client();
-        let response = client
-            .get("https://api.openai.com/v1/models")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .timeout(HTTP_TIMEOUT)
-            .send()
-            .await;
-        let status = match response {
-            Ok(response) => key_status_from_response(response.status()),
-            Err(e) => format!("check failed ({})", e),
-        };
-        extra_info.push(("Key status".to_string(), status));
+    if configured_key("OPENAI_API_KEY", "openai.env").is_some() {
+        extra_info.push(configured_key_status());
 
         if let Some(admin_key) = configured_key("OPENAI_ADMIN_API_KEY", "openai.env")
             && let Some(cost) = fetch_openai_org_cost(&admin_key).await
@@ -226,14 +177,8 @@ async fn fetch_compatible_profile_report(
             }
         }
         _ => {
-            // No provider-specific balance API: do a free `GET /models` probe
-            // against the profile's own endpoint so the key status is real
-            // rather than just "configured".
-            if let Some(api_key) = configured_key(profile.api_key_env, profile.env_file) {
-                let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
-                let status = probe_openai_compatible_key(&resolved.api_base, &api_key).await;
-                extra_info.push(("Key status".to_string(), status));
-            }
+            // Usage rendering must not revalidate keys with a model-list call.
+            extra_info.push(configured_key_status());
         }
     }
 
@@ -256,7 +201,7 @@ async fn fetch_deepseek_balance(api_key: &str) -> Result<Vec<(String, String)>> 
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Accept", "application/json")
         .timeout(HTTP_TIMEOUT)
-        .send()
+        .audited_send()
         .await
         .context("balance request failed")?;
     if !response.status().is_success() {
@@ -311,7 +256,7 @@ async fn fetch_moonshot_balance(api_key: &str, api_base: &str) -> Result<Vec<(St
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Accept", "application/json")
         .timeout(HTTP_TIMEOUT)
-        .send()
+        .audited_send()
         .await
         .context("balance request failed")?;
     if !response.status().is_success() {
@@ -365,7 +310,7 @@ async fn fetch_anthropic_org_cost(admin_key: &str) -> Option<f64> {
         .header("x-api-key", admin_key)
         .header("anthropic-version", "2023-06-01")
         .timeout(HTTP_TIMEOUT)
-        .send()
+        .audited_send()
         .await
         .ok()?;
     if !response.status().is_success() {
@@ -403,7 +348,7 @@ async fn fetch_openai_org_cost(admin_key: &str) -> Option<f64> {
         ))
         .header("Authorization", format!("Bearer {}", admin_key))
         .timeout(HTTP_TIMEOUT)
-        .send()
+        .audited_send()
         .await
         .ok()?;
     if !response.status().is_success() {
@@ -428,4 +373,25 @@ async fn fetch_openai_org_cost(admin_key: &str) -> Option<f64> {
         }
     }
     saw_any.then_some(total)
+}
+
+#[cfg(test)]
+mod traffic_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn compatible_usage_without_balance_api_is_local() {
+        let profile = crate::provider_catalog::openai_compatible_profile_by_id("nvidia-nim").unwrap();
+        let report = fetch_compatible_profile_report(profile).await;
+        assert!(report.extra_info.contains(&configured_key_status()));
+        assert!(report.error.is_none());
+    }
+
+    #[test]
+    fn configured_status_does_not_claim_live_validation() {
+        assert_eq!(
+            configured_key_status(),
+            ("Key status".into(), "configured (not checked)".into())
+        );
+    }
 }

@@ -5,7 +5,12 @@ description: Map of the 0xNotNull Medium writeup lists (bug-bounty-critical, BAC
 
 # WRITEUP CORPUS → SKILL MAP
 
-**Core:** The 20 publication lists by 0xNotNull on Medium (~3200 curated writeups across topics) were mined for the recurring techniques. Each topic maps to the alphacode skill that carries its distilled methodology; topic gaps became new skills. When hunting a specific bug class, load the matching skill here instead of rediscovering the technique from scratch.
+This is a legacy topic-to-reference map. Its list sizes and previous extraction
+claims are not an audited study-coverage record. Use `researcher-reasoning` and
+the source-grounded curriculum to learn causal investigation logic, then load
+the relevant class reference as needed. A topic list or report title alone does
+not establish that its reports were read, that a mechanism was learned, or that
+the target is vulnerable.
 
 | List (stories) | alphacode skill(s) |
 |---|---|
@@ -35,7 +40,8 @@ description: Map of the 0xNotNull Medium writeup lists (bug-bounty-critical, BAC
 - **CSPT (3 stories, almost undocumented)** → `hunt-cspt`: client-side path traversal recon, confirmation, and pollution-gadget pairing.
 
 ## KNOWING WHAT ALREADY-EXISTS COVERS
-The remaining topics were comprehensive in alphacode already (see the table) — do not build new material for them; chain the existing skills per the Pairs columns above.
+The table provides starting references. Audit actual gaps and applicability;
+extend a reference when new source-grounded reasoning adds something useful.
 
 ## METHOD NOTES (how the corpus was mined)
 - Each list is essentially "curated writeups per bug class". The recurring *causal patterns* (not individual idiosyncrasies) were extracted: e.g. OTP stories repeatedly fall into "code value manipulation", "response tampering", "flow confusion", "limits only guarded one axis" — hence the four attack surfaces in `hunt-otp`.

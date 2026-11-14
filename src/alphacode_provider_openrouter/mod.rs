@@ -230,6 +230,7 @@ pub struct ModelsCache {
     pub models: Vec<ModelInfo>,
     pub fetched: bool,
     pub cached_at: Option<u64>,
+    pub last_failure_at: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Default, Clone)]

@@ -598,6 +598,11 @@ pub async fn run_agent_turn(
         .body(())
         .context("Failed to build Cursor agent request")?;
 
+    crate::alphacode_provider_core::request_audit::record_operation(
+        &format!("https://{host}"),
+        "POST",
+        "cursor_h2_inference",
+    );
     let (response, mut send_stream) = h2
         .send_request(request, false)
         .context("Failed to send Cursor agent request headers")?;

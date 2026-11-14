@@ -126,6 +126,7 @@ pub fn tier_for(name: &str) -> ToolTier {
     const EXTENDED: &[&str] = &[
         "authorization_review",
         "investigation",
+        "hunt_reasoning",
         "ctf_web_recon",
         // Redundant editing variants — `edit`/`apply_patch` cover the same work.
         "multiedit",

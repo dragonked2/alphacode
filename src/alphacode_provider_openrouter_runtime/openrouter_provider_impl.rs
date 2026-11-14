@@ -368,7 +368,7 @@ impl Provider for OpenRouterProvider {
         let model_for_stream = model.clone();
         let provider_pin = Arc::clone(&self.provider_pin);
 
-        tokio::spawn(async move {
+        crate::alphacode_provider_core::request_audit::spawn(async move {
             if tx
                 .send(Ok(StreamEvent::ConnectionType {
                     connection: "https/sse".to_string(),
@@ -795,6 +795,11 @@ impl Provider for OpenRouterProvider {
     }
 
     async fn refresh_model_catalog(&self) -> Result<ModelCatalogRefreshSummary> {
+        // Snapshot helpers can schedule a stale/missing catalog refresh. Record
+        // this explicit attempt first so they cannot spawn a duplicate fetch.
+        if let Ok(mut state) = self.model_catalog_refresh.lock() {
+            state.last_attempt_unix = current_unix_secs();
+        }
         let before_models = self.available_models_display();
         let before_routes = self.model_routes();
 
@@ -811,38 +816,16 @@ impl Provider for OpenRouterProvider {
             ));
         }
 
-        let refreshed_models = self.refresh_models().await?;
+        self.refresh_models().await?;
 
         if self.supports_provider_features {
-            let mut targets = Vec::new();
-            let mut seen = HashSet::new();
-            let push_target =
-                |targets: &mut Vec<String>, seen: &mut HashSet<String>, model: String| {
-                    if !model.trim().is_empty() && seen.insert(model.clone()) {
-                        targets.push(model);
-                    }
-                };
-
-            push_target(&mut targets, &mut seen, self.model());
-
-            for model in refreshed_models.iter().map(|info| info.id.clone()).take(16) {
-                push_target(&mut targets, &mut seen, model);
+            // Refreshing the picker must not probe the first 16 catalog rows
+            // and every previously cached model. Only the active model needs
+            // fresh routing metadata; other models load it when selected.
+            let model = self.model();
+            if !model.trim().is_empty() {
+                let _ = self.refresh_endpoints(&model).await;
             }
-
-            for model in refreshed_models.iter().map(|info| info.id.clone()) {
-                if load_endpoints_disk_cache_public(&model).is_some() {
-                    push_target(&mut targets, &mut seen, model);
-                }
-                if targets.len() >= 24 {
-                    break;
-                }
-            }
-
-            futures::stream::iter(targets)
-                .for_each_concurrent(4, |model| async move {
-                    let _ = self.refresh_endpoints(&model).await;
-                })
-                .await;
         }
 
         let after_models = self.available_models_display();
@@ -971,6 +954,7 @@ impl Provider for OpenRouterProvider {
             static_image_input_support: self.static_image_input_support.clone(),
             send_openrouter_headers: self.send_openrouter_headers,
             models_cache: Arc::clone(&self.models_cache),
+            model_fetch_lock: Arc::clone(&self.model_fetch_lock),
             model_catalog_refresh: Arc::clone(&self.model_catalog_refresh),
             provider_routing: Arc::new(RwLock::new(
                 self.provider_routing

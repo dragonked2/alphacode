@@ -38,6 +38,7 @@
 //! are excluded: they are metered aliases and would silently cost credits.
 
 use super::route_cloak;
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 
 /// The profile whose gateway exposes the free pool. Kept as a constant so the
 /// rotation code and the profile definition cannot drift apart.
@@ -225,7 +226,7 @@ pub async fn refresh_free_pool_from_gateway(api_base: &str) {
         return;
     };
     let url = format!("{}{CATALOG_PATH}", api_base.trim_end_matches('/'));
-    let Ok(response) = client.get(&url).send().await else {
+    let Ok(response) = client.get(&url).audited_send().await else {
         return;
     };
     if !response.status().is_success() {

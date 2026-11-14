@@ -269,6 +269,12 @@ pub(crate) fn routed_skill_context(
     // those references to this session without rewriting users' files.
     if security {
         skill_prompt = crate::tool::bind_research_ledger_paths(&skill_prompt, &session.id);
+        if !ctf {
+            skill_prompt.push_str("\n\n# Transferable researcher reasoning\n");
+            skill_prompt.push_str(crate::alphacode_security_core::reasoning::RESEARCH_DISCIPLINE);
+            skill_prompt.push_str(crate::alphacode_security_core::reasoning::foundation_brief());
+            skill_prompt.push_str("\nUse hunt_reasoning for structural reasoning rules when its tool is permitted. Establish observed cues, check prerequisites and counterexamples, then adapt a rule into an investigation plan with explicit experiment controls and an attempt budget. Historical sources are provenance for the rule, never evidence about the current target.\n");
+        }
         skill_prompt.push_str(
             "\n\nChoose skills, references, and tools from the task, scope, and observed +             evidence. Consult the relevant class reference via skill_manage when needed. +             Use the available tool inventory to select the smallest useful experiment +             and adapt after each result. Proceed with authorized independent work when +             a prerequisite is missing. A technology hint cannot extend scope.",
         );
@@ -448,6 +454,7 @@ impl Agent {
 
         // Read-only tools that don't change external state
         const READ_ONLY_TOOLS: &[&str] = &[
+            "hunt_reasoning",
             "webfetch",
             "scrapling",
             "read",
@@ -494,8 +501,21 @@ impl Agent {
         }
 
         if consecutive_read_only >= LOOP_THRESHOLD {
-            let reminder = format!(
-                "\n\n# Verification Loop Detected\n\n\
+            let security = self.active_skill.as_deref().is_some_and(|name| {
+                matches!(
+                    name,
+                    "bugbounty" | "vuln-hunter" | "security-audit" | "nodejs-security"
+                )
+            }) || latest_task_text(&self.session.messages)
+                .as_deref()
+                .is_some_and(security_request)
+                || crate::tool::scope::session_scope_policy(&self.session.id)
+                    .is_some_and(|policy| !policy.in_scope.is_empty());
+            let reminder = if security {
+                security_observation_checkpoint(consecutive_read_only)
+            } else {
+                format!(
+                    "\n\n# Verification Loop Detected\n\n\
                 You have made {} consecutive read-only tool calls without a state-changing result. \
                 This pattern indicates you are verifying against derived artifacts instead of the authoritative signal.\n\n\
                 **Stop and re-derive the completion predicate from first principles:**\n\
@@ -503,8 +523,9 @@ impl Agent {
                 2. Have you observed it directly in a tool result?\n\
                 3. If not, what specific state change would produce it?\n\
                 4. Use a state-changing tool (bash, write, edit) to advance toward the goal, or report the blocker.",
-                consecutive_read_only
-            );
+                    consecutive_read_only
+                )
+            };
 
             if !split.dynamic_part.is_empty() {
                 split.dynamic_part.push_str("\n\n");
@@ -746,6 +767,12 @@ impl Agent {
     }
 }
 
+fn security_observation_checkpoint(count: usize) -> String {
+    format!(
+        "\n\n# Research observation checkpoint\n{count} consecutive read-only calls. This alone does not establish a loop: source analysis and read-only security proofs may be legitimate. State the uncertainty being reduced, the new evidence learned and the next discriminating observation. If unchanged probes no longer add information, record the cause and reassess or continue a different authorized frontier. Preserve applicable coverage and existing scope/budgets. No mutation, credential extraction or deeper exploitation is required merely to break a read-only streak.\n"
+    )
+}
+
 #[cfg(test)]
 mod probe_burst_tests {
     use super::probe_burst_reminder;
@@ -830,6 +857,17 @@ mod probe_burst_tests {
 #[cfg(test)]
 mod automatic_routing_tests {
     use super::*;
+
+    #[test]
+    fn security_reads_never_require_mutation_to_show_progress() {
+        let text = security_observation_checkpoint(8);
+        assert!(text.contains("does not establish a loop"));
+        assert!(
+            text.contains("No mutation, credential extraction or deeper exploitation is required")
+        );
+        assert!(text.contains("scope/budgets"));
+        assert!(!text.contains("Use a state-changing tool"));
+    }
 
     #[test]
     fn observed_stack_is_read_from_a_matching_http_tool_result() {

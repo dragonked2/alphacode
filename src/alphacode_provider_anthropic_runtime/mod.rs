@@ -17,6 +17,7 @@
 
 use crate::alphacode_base::auth;
 use crate::alphacode_base::auth::oauth;
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use crate::alphacode_provider_core::{EventStream, NativeToolResultSender, Provider};
 fn oauth_beta_headers(model: &str) -> &'static str {
     crate::alphacode_provider_core::anthropic_oauth_beta_headers(model)
@@ -185,7 +186,7 @@ async fn oauth_preflight_get(
         .get(url)
         .headers(headers.clone())
         .timeout(std::time::Duration::from_secs(5))
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {
@@ -209,7 +210,7 @@ async fn oauth_preflight_post_json<T: Serialize + ?Sized>(
         .headers(headers.clone())
         .timeout(std::time::Duration::from_secs(5))
         .json(body)
-        .send()
+        .audited_send()
         .await?;
 
     if !resp.status().is_success() {
@@ -479,7 +480,7 @@ impl AnthropicProvider {
 
         // Trigger background usage fetch so extra_usage is known before first API call
         let _ = tokio::runtime::Handle::try_current().map(|_| {
-            tokio::spawn(async {
+            crate::alphacode_provider_core::request_audit::spawn(async {
                 let _ = crate::alphacode_base::usage::get().await;
             })
         });
@@ -1111,7 +1112,7 @@ impl Provider for AnthropicProvider {
 
         // Spawn task to handle streaming with retry logic.
         // This includes forced OAuth refresh on auth failures.
-        tokio::spawn(async move {
+        crate::alphacode_provider_core::request_audit::spawn(async move {
             if tx
                 .send(Ok(StreamEvent::ConnectionType {
                     connection: "https/sse".to_string(),
@@ -1483,7 +1484,7 @@ impl Provider for AnthropicProvider {
         let model_state = Arc::clone(&self.model);
 
         // Spawn task to handle streaming with retry logic
-        tokio::spawn(async move {
+        crate::alphacode_provider_core::request_audit::spawn(async move {
             if tx
                 .send(Ok(StreamEvent::ConnectionType {
                     connection: "https/sse".to_string(),

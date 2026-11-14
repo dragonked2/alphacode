@@ -73,6 +73,58 @@ fn redact_alphax_gateway_brand(api_base: &str, detail: &str) -> String {
         .into_owned()
 }
 
+/// Repair only an explicitly rejected optional setting. Never drop messages,
+/// tools, output budgets, or model IDs to make a malformed request pass.
+fn repair_unsupported_optional_parameter(
+    status: reqwest::StatusCode,
+    body: &str,
+    request: &Value,
+) -> Option<Value> {
+    if status != reqwest::StatusCode::BAD_REQUEST {
+        return None;
+    }
+    let error: Value = serde_json::from_str(body).ok()?;
+    let error = error.get("error")?;
+    let parameter = error.get("param")?.as_str()?;
+    const OPTIONAL: &[&str] = &[
+        "stream_options",
+        "parallel_tool_calls",
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "seed",
+        "logprobs",
+        "top_logprobs",
+        "reasoning_effort",
+        "thinking",
+    ];
+    if !OPTIONAL.contains(&parameter) {
+        return None;
+    }
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let code = error.get("code").and_then(Value::as_str).unwrap_or("");
+    if code != "unsupported_parameter"
+        && ![
+            "not supported",
+            "unsupported",
+            "unrecognized request argument",
+            "unknown parameter",
+        ]
+        .iter()
+        .any(|marker| message.contains(marker))
+    {
+        return None;
+    }
+    let mut repaired = request.clone();
+    repaired.as_object_mut()?.remove(parameter)?;
+    Some(repaired)
+}
+
 /// Build a short, product-level error for the Alphax Free gateway.
 ///
 /// Its upstream body can contain internal router names, account identifiers,
@@ -244,6 +296,7 @@ pub(super) async fn run_stream_with_retries(
             attempt_tx,
             Arc::clone(&provider_pin),
             model.clone(),
+            false,
         )
         .await
         {
@@ -318,6 +371,7 @@ async fn stream_response(
     tx: mpsc::Sender<Result<StreamEvent>>,
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
     model: String,
+    compatibility_repaired: bool,
 ) -> Result<()> {
     use crate::alphacode_message_types::ConnectionPhase;
     let _ = tx
@@ -442,6 +496,32 @@ async fn stream_response(
                 }
                 _ => {}
             }
+        }
+
+        // A different payload can repair a schema rejection; repeating the
+        // identical HTTP 400 cannot. Allow exactly one repair per attempt.
+        if !compatibility_repaired
+            && let Some(repaired) =
+                repair_unsupported_optional_parameter(status, &upstream_body, request)
+        {
+            let body = bytes::Bytes::from(serde_json::to_vec(&repaired)?);
+            crate::alphacode_base::logging::info(
+                "Provider rejected an optional request setting; retrying once without that setting",
+            );
+            return Box::pin(stream_response(
+                client,
+                api_base,
+                auth,
+                send_openrouter_headers,
+                &repaired,
+                body,
+                responses_fallback,
+                tx,
+                provider_pin,
+                model,
+                true,
+            ))
+            .await;
         }
 
         // Responses-only model on a `new-api`-style gateway: the gateway told us
@@ -878,6 +958,150 @@ fn is_retryable_error(error_str: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn compatibility_repair_retries_once_and_preserves_the_turn() {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut bodies = Vec::new();
+            for parameter in ["temperature", "stream_options"] {
+                let (mut socket, _) =
+                    tokio::time::timeout(Duration::from_secs(10), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let mut wire = Vec::new();
+                loop {
+                    let mut chunk = [0; 4096];
+                    let count =
+                        tokio::time::timeout(Duration::from_secs(10), socket.read(&mut chunk))
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    assert!(count > 0);
+                    wire.extend_from_slice(&chunk[..count]);
+                    if let Some(end) = wire.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&wire[..end]);
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (key, value) = line.split_once(':')?;
+                                key.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap();
+                        if wire.len() >= end + 4 + length {
+                            bodies.push(
+                                serde_json::from_slice::<Value>(&wire[end + 4..end + 4 + length])
+                                    .unwrap(),
+                            );
+                            break;
+                        }
+                    }
+                }
+                let error = serde_json::json!({"error": {"param": parameter, "code": "unsupported_parameter", "message": "not supported"}}).to_string();
+                let response = format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{error}",
+                    error.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+            bodies
+        });
+        let request = serde_json::json!({
+            "model": "compatibility-fixture", "messages": [{"role":"user", "content":"hello"}],
+            "stream": true, "temperature": 1, "stream_options": {"include_usage": true},
+        });
+        let fallback = super::super::openrouter_responses_fallback::ResponsesFallbackContext {
+            messages: Vec::new(),
+            system: String::new(),
+            tools: Vec::new(),
+        };
+        let (tx, _rx) = mpsc::channel(32);
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            stream_response(
+                Client::builder().no_proxy().build().unwrap(),
+                base,
+                ProviderAuth::None {
+                    label: "fixture".into(),
+                },
+                false,
+                &request,
+                bytes::Bytes::from(serde_json::to_vec(&request).unwrap()),
+                &fallback,
+                tx,
+                Arc::new(Mutex::new(None)),
+                "compatibility-fixture".into(),
+                false,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_err(), "a second rejection must stop recovery");
+        let bodies = server.await.unwrap();
+        assert_eq!(bodies[0], request);
+        let mut expected = request;
+        expected.as_object_mut().unwrap().remove("temperature");
+        assert_eq!(bodies[1], expected);
+    }
+
+    #[test]
+    fn explicit_optional_parameter_rejection_repairs_only_that_setting() {
+        let request = serde_json::json!({
+            "model": "test", "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "function"}], "max_tokens": 42,
+            "temperature": 1, "stream_options": {"include_usage": true},
+        });
+        let body = r#"{"error":{"param":"temperature","code":"unsupported_parameter","message":"not supported"}}"#;
+        let repaired =
+            repair_unsupported_optional_parameter(reqwest::StatusCode::BAD_REQUEST, body, &request)
+                .unwrap();
+        let mut expected = request.clone();
+        expected.as_object_mut().unwrap().remove("temperature");
+        assert_eq!(repaired, expected);
+        assert!(
+            repair_unsupported_optional_parameter(
+                reqwest::StatusCode::BAD_REQUEST,
+                body,
+                &repaired
+            )
+            .is_none()
+        );
+        assert!(
+            repair_unsupported_optional_parameter(
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                body,
+                &request
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn ambiguous_or_required_parameter_errors_do_not_change_the_request() {
+        let request = serde_json::json!({"tools": [], "max_tokens": 42, "temperature": 1});
+        for body in [
+            r#"{"error":{"param":"tools","code":"unsupported_parameter"}}"#,
+            r#"{"error":{"param":"max_tokens","code":"unsupported_parameter"}}"#,
+            r#"{"error":{"param":"temperature","message":"out of range"}}"#,
+            r#"{"error":{"message":"Bad request"}}"#,
+            "not json",
+        ] {
+            assert!(
+                repair_unsupported_optional_parameter(
+                    reqwest::StatusCode::BAD_REQUEST,
+                    body,
+                    &request
+                )
+                .is_none(),
+                "{body}"
+            );
+        }
+    }
 
     #[test]
     fn alphax_error_details_hide_gateway_brand_and_routing_ids() {

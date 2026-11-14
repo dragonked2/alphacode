@@ -629,6 +629,13 @@ MCP support lets you connect external tools, services, and custom integrations. 
 
 Code analysis, HTTP tools, browser automation, terminal execution, memory, and multi-agent workflows can support repeatable application-security reviews.
 
+Hunting prompts include transferable research questions distilled from disclosed
+reports. The `hunt_reasoning` tool turns observed product structure into explicit
+assumptions, prerequisites, counterexamples and proposed controlled tests.
+Structured `investigation` plans preserve controls, bounded dispatches and
+reassessment decisions. These support investigation; they do not certify findings
+or establish competitive performance. See the [reasoning curriculum and study workflow](docs/engineering/report-driven-reasoning-2026-11-14.md).
+
 ```text
 Review this API for insecure direct object references and provide reproducible evidence.
 ```

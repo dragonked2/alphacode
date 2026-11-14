@@ -81,6 +81,17 @@ impl Agent {
         &mut self,
         event_tx: mpsc::UnboundedSender<ServerEvent>,
     ) -> Result<()> {
+        crate::alphacode_provider_core::request_audit::scope(
+            self.session.id.clone(),
+            self.run_turn_streaming_mpsc_audited(event_tx),
+        )
+        .await
+    }
+
+    async fn run_turn_streaming_mpsc_audited(
+        &mut self,
+        event_tx: mpsc::UnboundedSender<ServerEvent>,
+    ) -> Result<()> {
         self.set_log_context();
         // Reset the advisory checkpoint counters for this turn.
         self.initialize_goal_contract();

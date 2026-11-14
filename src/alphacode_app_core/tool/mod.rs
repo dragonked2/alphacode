@@ -44,6 +44,7 @@ mod hakrawler;
 mod httpflow;
 mod httprobe;
 mod httpx;
+mod hunt_reasoning;
 mod invalid;
 mod investigation;
 mod jwt;
@@ -1104,6 +1105,7 @@ impl Registry {
                 "authorization_review",
                 authorization_review::AuthorizationReviewTool,
             );
+            Self::insert_tool(&mut m, "hunt_reasoning", hunt_reasoning::HuntReasoningTool);
             Self::insert_tool_timed(
                 &mut m,
                 &mut timings,

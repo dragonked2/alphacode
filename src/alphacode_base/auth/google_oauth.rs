@@ -7,6 +7,7 @@
 //! (storage format, extra metadata like project id, refresh-state record
 //! keys).
 
+use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
@@ -51,7 +52,7 @@ pub async fn refresh_access_token(
     }
 
     let resp = request
-        .send()
+        .audited_send()
         .await
         .with_context(|| format!("Failed to refresh {provider_label} OAuth token"))?;
 
