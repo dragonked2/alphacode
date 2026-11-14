@@ -19,8 +19,10 @@ pub struct InvestigationTool {
 #[derive(Deserialize)]
 struct Input {
     action: String,
-    #[serde(default)] in_scope:Vec<String>,
-    #[serde(default)] out_of_scope:Vec<String>,
+    #[serde(default)]
+    in_scope: Vec<String>,
+    #[serde(default)]
+    out_of_scope: Vec<String>,
     #[serde(default)]
     objective: String,
     #[serde(default)]
@@ -117,17 +119,34 @@ impl Tool for InvestigationTool {
             );
             runtime::ensure_started(&ctx.session_id, &params.objective)?;
             if !params.in_scope.is_empty() {
-                let policy = crate::alphacode_security_core::ScopePolicy::from_lists(&params.in_scope,&params.out_of_scope,true,&[],0,6);
+                let policy = crate::alphacode_security_core::ScopePolicy::from_lists(
+                    &params.in_scope,
+                    &params.out_of_scope,
+                    true,
+                    &[],
+                    0,
+                    6,
+                );
                 if let Some(existing) = super::scope::session_scope_policy(&ctx.session_id) {
-                    ensure!(serde_json::to_value(&existing)? == serde_json::to_value(&policy)?,"installed scope differs; cannot replace it through investigation");
+                    ensure!(
+                        serde_json::to_value(&existing)? == serde_json::to_value(&policy)?,
+                        "installed scope differs; cannot replace it through investigation"
+                    );
                 }
                 runtime::update(&ctx.session_id, |state| {
-                    ensure!(state.policy.as_ref().is_none_or(|existing| serde_json::to_value(existing).ok() == serde_json::to_value(&policy).ok()),"engagement scope is already bound; start a distinct engagement for changed authorization");
-                    state.policy=Some(policy.clone());
-                    state.research.scope=params.in_scope.clone();
+                    ensure!(
+                        state
+                            .policy
+                            .as_ref()
+                            .is_none_or(|existing| serde_json::to_value(existing).ok()
+                                == serde_json::to_value(&policy).ok()),
+                        "engagement scope is already bound; start a distinct engagement for changed authorization"
+                    );
+                    state.policy = Some(policy.clone());
+                    state.research.scope = params.in_scope.clone();
                     Ok(())
                 })?;
-                super::scope::set_session_scope(&ctx.session_id,Some(policy));
+                super::scope::set_session_scope(&ctx.session_id, Some(policy));
             }
             if let Some(limit) = params.tool_call_budget {
                 ensure!(limit > 0, "tool_call_budget must be positive");

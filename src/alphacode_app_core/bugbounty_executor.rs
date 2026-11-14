@@ -1168,9 +1168,20 @@ pub async fn run_workflow(
         &session_id,
         &format!("Assess {}", orchestrator.target),
     )?;
-    let policy=crate::alphacode_security_core::ScopePolicy::from_lists(&[orchestrator.target.clone()],&[],true,&[],0,6);
-    crate::engagement_runtime::update(&session_id,|state| { state.policy=Some(policy.clone()); state.research.scope=vec![orchestrator.target.clone()]; Ok(()) })?;
-    crate::tool::scope::set_session_scope(&session_id,Some(policy));
+    let policy = crate::alphacode_security_core::ScopePolicy::from_lists(
+        std::slice::from_ref(&orchestrator.target),
+        &[],
+        true,
+        &[],
+        0,
+        6,
+    );
+    crate::engagement_runtime::update(&session_id, |state| {
+        state.policy = Some(policy.clone());
+        state.research.scope = vec![orchestrator.target.clone()];
+        Ok(())
+    })?;
+    crate::tool::scope::set_session_scope(&session_id, Some(policy));
     let base_ctx = ToolContext {
         session_id: session_id.clone(),
         message_id: "orchestrator".to_string(),

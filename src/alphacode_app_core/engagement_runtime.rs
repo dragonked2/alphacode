@@ -158,7 +158,7 @@ pub fn restore_scope(session: &str) -> Result<()> {
     if crate::tool::scope::session_scope_policy(session).is_none()
         && let Some(policy) = read(session)?.and_then(|state| state.policy)
     {
-        crate::tool::scope::set_session_scope(session,Some(policy));
+        crate::tool::scope::set_session_scope(session, Some(policy));
     }
     Ok(())
 }
@@ -193,16 +193,16 @@ pub fn observe(
                 "tool execution failed; inspect the session transcript",
                 chrono::Utc::now(),
             );
-        } else if tool == "httpflow" {
-            if let Some(exchange) = HttpExchange::parse_http_transcript(tool, input, output) {
-                if !state
-                    .exchanges
-                    .iter()
-                    .any(|prior| prior.matches_observed(&exchange))
-                {
-                    state.research.investigation.discover(&exchange.url, tool);
-                    state.exchanges.push(exchange);
-                }
+        } else if tool == "httpflow"
+            && let Some(exchange) = HttpExchange::parse_http_transcript(tool, input, output)
+        {
+            let is_new = !state
+                .exchanges
+                .iter()
+                .any(|prior| prior.matches_observed(&exchange));
+            if is_new {
+                state.research.investigation.discover(&exchange.url, tool);
+                state.exchanges.push(exchange);
             }
         }
         Ok(())
