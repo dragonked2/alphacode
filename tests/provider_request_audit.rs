@@ -27,8 +27,11 @@ fn audit_matches_loopback_requests() {
     assert!(events[0]["prompt"].is_null());
     assert_eq!(events[1]["prompt"], events[2]["prompt"]);
     assert_ne!(events[2]["prompt"], events[3]["prompt"]);
-    assert_eq!(events[1]["session"], "fixture-task");
+    assert_eq!(events[1]["session"], events[2]["session"]);
+    assert_eq!(events[1]["session"], events[3]["session"]);
+    assert_ne!(events[1]["session"], "fixture-task");
     assert!(!data.contains("SECRET"));
+    assert!(!data.contains("fixture-task"));
     assert!(!data.contains("/v1"));
 }
 
