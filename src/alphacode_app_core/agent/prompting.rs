@@ -276,7 +276,7 @@ pub(crate) fn routed_skill_context(
             skill_prompt.push_str("\nUse hunt_reasoning for structural reasoning rules when its tool is permitted. Establish observed cues, check prerequisites and counterexamples, then adapt a rule into an investigation plan with explicit experiment controls and an attempt budget. Historical sources are provenance for the rule, never evidence about the current target.\n");
         }
         skill_prompt.push_str(
-            "\n\nChoose skills, references, and tools from the task, scope, and observed +             evidence. Consult the relevant class reference via skill_manage when needed. +             Use the available tool inventory to select the smallest useful experiment +             and adapt after each result. Proceed with authorized independent work when +             a prerequisite is missing. A technology hint cannot extend scope.",
+            "\n\nChoose skills, references, and tools from the task, scope, and observed evidence. Consult the relevant class reference via skill_manage when needed. Use the available tool inventory to select the smallest useful experiment and adapt after each result. Proceed with authorized independent work when a prerequisite is missing. A technology hint cannot extend scope.",
         );
     }
 

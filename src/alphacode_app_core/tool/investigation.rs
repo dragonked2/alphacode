@@ -30,6 +30,11 @@ struct Priority {
 }
 
 fn dispatch_readiness(state: &EngagementRuntime, lead: &InvestigationLead) -> Result<()> {
+    ensure!(!state.ledger.exhausted(), "engagement budget exhausted");
+    ensure!(
+        state.plans.contains_key(&lead.id),
+        "lead needs an executable plan"
+    );
     ensure!(
         !lead.research.reassessment_pending(),
         "resolve pending reassessment before another dispatch"
@@ -363,8 +368,16 @@ impl Tool for InvestigationTool {
                     params.max_risk.unwrap_or(u32::MAX),
                     |lead| dispatch_readiness(state, lead).is_ok(),
                 );
+                let planning_lead = state.research.investigation.next_matching(
+                    &policy,
+                    params.max_cost.unwrap_or(u32::MAX),
+                    params.max_risk.unwrap_or(u32::MAX),
+                    |lead| !state.plans.contains_key(&lead.id),
+                );
                 Ok(
-                    json!({"lead":lead,"planned_call":lead.and_then(|lead| state.plans.get(&lead.id)),"budget_exhausted":state.ledger.exhausted()}),
+                    json!({"lead":lead,"planned_call":lead.and_then(|lead| state.plans.get(&lead.id)),
+                        "planning_lead":planning_lead,"budget_exhausted":state.ledger.exhausted(),
+                        "interpretation":"lead is dispatch-ready under planning limits; planning_lead needs a plan. A null lead does not establish completed coverage. Inspect status for reassessment, blocked, indeterminate or spent work."}),
                 )
             })?,
             "execute" => {

@@ -19,10 +19,15 @@ continue independent permitted work; do not invent assets or test unknown scope.
 
 ---
 
-## 1. CREATE THE SCOPE FILE FIRST
+## 1. ESTABLISH AND RECORD SCOPE FIRST
 
-Before ANY scan, probe, or request against the target, write the scope file.
-No scope file → no testing. No exceptions.
+Before active testing, resolve the authorized assets, actions, exclusions and
+limits from the request, established engagement context and applicable policy.
+Reuse the existing scope record; do not ask for established permission again.
+Record scope in the engagement notes, using a separate file when useful or
+required. Missing paperwork alone is not missing authorization. If a material
+boundary is unresolved, pause dependent tests while continuing independent
+permitted work. The following is a recording template, not a grant of authority.
 
 ```markdown
 ## Scope — <target> assessment (<date>)

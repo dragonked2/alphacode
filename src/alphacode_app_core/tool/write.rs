@@ -31,12 +31,8 @@ struct WriteInput {
 /// Whether the argument stream was cut short and the payload rebuilt from
 /// what survived.
 ///
-/// A `write` body is the single most likely argument in a session to exceed
-/// the provider's `max_tokens`, so this is not a rare corner. When it happens
-/// the recovered content is a *prefix* of what the model meant to write, and
-/// the distinction matters: writing a prefix to a new file loses nothing, but
-/// writing one over an existing file destroys content that cannot be
-/// recovered. The second case is refused rather than performed.
+/// Incomplete arguments must never mutate a file, including append calls:
+/// otherwise a smaller retry can silently duplicate an already-written prefix.
 fn input_was_truncated(input: &Value) -> bool {
     input
         .get(crate::alphacode_message_types::TRUNCATED_INPUT_MARKER)
@@ -44,24 +40,37 @@ fn input_was_truncated(input: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether the payload carried a `content` field under any accepted spelling.
-///
-/// Used to tell "the model asked for an empty file" apart from "the model
-/// forgot the body". The two are very different: one is a completed request,
-/// the other is a mistake worth reporting.
-fn input_has_content_field(input: &Value) -> bool {
-    [
-        "content",
-        "text",
-        "data",
-        "body",
-        "file_content",
-        "contents",
-        "new_content",
-        "newContent",
-    ]
-    .iter()
-    .any(|key| input.get(*key).and_then(Value::as_str).is_some())
+/// File bodies are data: preserve exact whitespace and length, including empty
+/// strings. Generic text coercion trims and caps values and is unsafe here.
+fn input_content(input: &Value) -> Option<&str> {
+    match input {
+        Value::Object(map) => {
+            for key in [
+                "content",
+                "text",
+                "data",
+                "body",
+                "file_content",
+                "contents",
+                "new_content",
+                "newContent",
+            ] {
+                if let Some(value) = map.get(key).and_then(Value::as_str) {
+                    return Some(value);
+                }
+                if let Some(value) = map
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(key))
+                    .and_then(|(_, value)| value.as_str())
+                {
+                    return Some(value);
+                }
+            }
+            None
+        }
+        Value::Array(items) if items.len() == 1 => input_content(&items[0]),
+        _ => None,
+    }
 }
 
 /// The error for a `write` whose arguments were cut off before the body arrived.
@@ -115,7 +124,7 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &str {
-        "Create or overwrite a file. Destructive: replaces entire content. For large files, write the first chunk normally, then send each later chunk with append=true; do not resend the whole file. Use `edit` for targeted replacements. Write only what solves the problem — no boilerplate or unused scaffolding."
+        "Create or overwrite a file. Destructive: replaces entire content. Put `file_path` before `content`. Start large files with complete chunks of at most 2,000 content characters (reduce further after a cutoff), then send later chunks with append=true; do not resend the whole file. Use `edit` for targeted replacements. Write only what solves the problem — no boilerplate or unused scaffolding."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -193,34 +202,11 @@ impl Tool for WriteTool {
         // the content would write a file containing its own path. The path is
         // excluded from the search too, so `{"file_path": "a.rs", "text": "x"}`
         // cannot pick up the wrong one.
-        let content = super::coerce_text_field(
-            &input,
-            "write",
-            "content",
-            &[
-                "text",
-                "data",
-                "body",
-                "file_content",
-                "contents",
-                "new_content",
-                "newContent",
-            ],
-            false,
-            super::PATH_EXAMPLE,
-        )
-        // An empty file is a legitimate request, so only a genuinely absent
-        // field is an error — and it must name the file, not just the field.
-        .or_else(|_| {
-            if input_has_content_field(&input) {
-                Ok(String::new())
-            } else if salvaged {
-                // The call *did* name the file; the body was cut off. Say so,
-                // because the generic "missing field `content`" is what the
-                // model has already seen once and will simply retry verbatim.
-                Err(truncated_body_error(&file_path))
+        let content = input_content(&input).map(str::to_owned).ok_or_else(|| {
+            if salvaged {
+                truncated_body_error(&file_path)
             } else {
-                Err(missing_content_error(&file_path))
+                missing_content_error(&file_path)
             }
         })?;
         let params = WriteInput {
@@ -236,38 +222,23 @@ impl Tool for WriteTool {
                 .unwrap_or(false),
         };
 
+        if salvaged {
+            return Err(anyhow::anyhow!(
+                "Nothing was written to `{}`: arguments were cut off by the output token limit. \
+                 No file or directory was changed. Send file_path first and complete chunks of \
+                 at most 2,000 content characters initially; reduce further if needed. \
+                 Preserve append mode when retrying a rejected append. After a successful first \
+                 chunk, use append=true for subsequent chunks. Never resend an identical oversized call.",
+                params.file_path
+            ));
+        }
         let path = ctx.resolve_path_guarded(Path::new(&params.file_path))?;
-
-        // Create parent directories if needed
         if let Some(parent) = path.parent()
             && !parent.exists()
         {
             tokio::fs::create_dir_all(parent).await?;
         }
-
         let existed = path.exists();
-        // Refuse to replace real content with a truncated prefix. Everything
-        // that survived the cutoff is already on disk nowhere else, so this
-        // has to fail loudly rather than guess. Writing the prefix to a *new*
-        // file is safe and worth doing — the model reads its own output, sees
-        // the warning, and continues the file on the next call.
-        if salvaged && existed && !params.append {
-            let existing = tokio::fs::metadata(&path)
-                .await
-                .map(|m| m.len())
-                .unwrap_or(0);
-            if existing > 0 {
-                return Err(anyhow::anyhow!(
-                    "Refusing to overwrite the existing {existing}-byte file `{}`: this call's \
-                     arguments were cut off by the output token limit, so the recovered `content` is \
-                     only a prefix. Nothing was written. Re-send `write` with a shorter `content` \
-                     (or use `edit` to apply the change in pieces) so the file is not left \
-                     half-written.",
-                    params.file_path
-                ));
-            }
-        }
-
         // Check if file existed before and read old content for diff.
         //
         // The previous content is only used to render a human-readable diff, and
@@ -343,37 +314,17 @@ impl Tool for WriteTool {
             },
         }));
 
-        // Only reachable with `salvaged == true` when the target did not exist,
-        // because the overwrite case is refused above. Lead with the warning:
-        // the model reads this output, and it needs to know the file is a
-        // prefix rather than the finished article.
-        let warning = if salvaged {
-            format!(
-                "WARNING: this call's arguments were truncated by the output token limit, so only \
-                 the first {} bytes of `content` were recovered. This file is INCOMPLETE — read it, \
-                 then continue writing the remainder with `append=true`.\n",
-                params.content.len()
-            )
-        } else {
-            String::new()
-        };
-
         if params.append {
             Ok(ToolOutput::new(format!(
-                "Appended {} bytes ({} lines) to {}{}",
+                "Appended {} bytes ({} lines) to {}",
                 params.content.len(),
                 line_count,
-                params.file_path,
-                if salvaged {
-                    "\nWARNING: the received chunk was truncated; append the remaining content in another chunk."
-                } else {
-                    ""
-                }
+                params.file_path
             ))
             .with_title(params.file_path.clone()))
         } else if existed {
             Ok(ToolOutput::new(format!(
-                "{warning}Updated {} ({} lines){}\n{}",
+                "Updated {} ({} lines){}\n{}",
                 params.file_path,
                 line_count,
                 if diff.is_empty() { "" } else { ":" },
@@ -391,7 +342,7 @@ impl Tool for WriteTool {
                 )
             };
             Ok(ToolOutput::new(format!(
-                "{warning}Created {} ({} lines):\n{}",
+                "Created {} ({} lines):\n{}",
                 params.file_path, line_count, diff
             ))
             .with_title(params.file_path.clone()))
@@ -404,25 +355,75 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[tokio::test]
+    async fn truncated_writes_never_mutate_and_complete_chunks_recover_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = ToolContext {
+            session_id: format!("write-recovery-{}", uuid::Uuid::new_v4()),
+            message_id: "test".into(),
+            tool_call_id: "test".into(),
+            working_dir: Some(dir.path().to_path_buf()),
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let tool = WriteTool::new();
+        for append in [false, true] {
+            let input = json!({"file_path":"new/file.txt","content":"partial", "append":append,
+                crate::alphacode_message_types::TRUNCATED_INPUT_MARKER:true});
+            assert!(tool.execute(input, context.clone()).await.is_err());
+            assert!(!dir.path().join("new").exists());
+        }
+        tool.execute(
+            json!({"file_path":"file.txt","content":"first\n"}),
+            context.clone(),
+        )
+        .await
+        .unwrap();
+        for append in [false, true] {
+            let input = json!({"file_path":"file.txt","content":"partial", "append":append,
+                crate::alphacode_message_types::TRUNCATED_INPUT_MARKER:true});
+            assert!(tool.execute(input, context.clone()).await.is_err());
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+                "first\n"
+            );
+        }
+        tool.execute(
+            json!({"file_path":"file.txt","content":"second\n","append":true}),
+            context,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "first\nsecond\n"
+        );
+    }
+
     /// Recover the body the same way `execute` does, without touching the
     /// filesystem.
     fn recovered_content(input: &Value) -> Result<String> {
-        super::super::coerce_text_field(
-            input,
-            "write",
-            "content",
-            &[
-                "text",
-                "data",
-                "body",
-                "file_content",
-                "contents",
-                "new_content",
-                "newContent",
-            ],
-            false,
-            super::super::PATH_EXAMPLE,
-        )
+        input_content(input)
+            .map(str::to_owned)
+            .ok_or_else(|| missing_content_error("test"))
+    }
+
+    #[test]
+    fn file_bodies_preserve_whitespace_empty_values_and_large_content() {
+        for content in [
+            String::new(),
+            " \n\t ".into(),
+            "    indented\n".into(),
+            "x".repeat(40_000),
+        ] {
+            let input = json!({"file_path":"file.txt","content":content});
+            assert_eq!(recovered_content(&input).unwrap(), content);
+        }
+        assert_eq!(
+            recovered_content(&json!({"file_path":"file.txt","CONTENT":"\n"})).unwrap(),
+            "\n"
+        );
     }
 
     /// A bodyless `write` must be reported as a missing body, not satisfied
@@ -626,13 +627,9 @@ mod tests {
     /// `content` must not be reported as missing.
     #[test]
     fn an_explicitly_empty_content_field_is_valid() {
-        assert!(!input_has_content_field(&json!({"file_path": "a.rs"})));
-        assert!(input_has_content_field(
-            &json!({"file_path": "a.rs", "content": ""})
-        ));
-        assert!(input_has_content_field(
-            &json!({"file_path": "a.rs", "text": ""})
-        ));
+        assert!(input_content(&json!({"file_path": "a.rs"})).is_none());
+        assert!(input_content(&json!({"file_path": "a.rs", "content": ""})).is_some());
+        assert!(input_content(&json!({"file_path": "a.rs", "text": ""})).is_some());
     }
 
     /// The truncation marker is what lets `write` tell a salvaged call from a

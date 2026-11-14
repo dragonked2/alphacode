@@ -832,7 +832,10 @@ impl InvestigationIntelligence {
             .filter(|lead| {
                 matches!(
                     lead.status,
-                    InvestigationStatus::Hypothesized | InvestigationStatus::Supported
+                    InvestigationStatus::Discovered
+                        | InvestigationStatus::Hypothesized
+                        | InvestigationStatus::Supported
+                        | InvestigationStatus::Investigating
                 ) && !lead.research.reassessment_pending()
                     && eligible(lead)
                     && lead.cost <= max_cost

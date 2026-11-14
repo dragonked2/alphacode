@@ -136,7 +136,8 @@ impl Tool for ToolHelpTool {
     fn description(&self) -> &str {
         "Discover tools in this session. Use action=search with a task query to match names, \
          descriptions, and capability families without loading schemas. Then pass tools with exact \
-         names to enable only what is useful. With no arguments, list hidden tools. Registration \
+         names to enable only what is useful. Use action=inspect with one exact tool name to read \
+         its live parameter schema immediately. With no arguments, list hidden tools. Registration \
          does not guarantee an installed binary, authenticated account, or running backend."
     }
 
@@ -146,7 +147,7 @@ impl Tool for ToolHelpTool {
             "properties": {
                 "intent": super::intent_schema_property(),
                 "action": {
-                    "type": "string", "enum": ["list", "search", "enable"],
+                    "type": "string", "enum": ["list", "search", "enable", "inspect"],
                     "description": "search inspects matching tools without promoting them; enable loads selected schemas. Omitting action preserves automatic promotion for tools/query."
                 },
                 "tools": {
@@ -166,8 +167,8 @@ impl Tool for ToolHelpTool {
         let params: ToolHelpInput = serde_json::from_value(input)?;
         let action = params.action.as_deref().unwrap_or("auto");
         anyhow::ensure!(
-            matches!(action, "auto" | "list" | "search" | "enable"),
-            "unknown tool_help action; use list, search, or enable"
+            matches!(action, "auto" | "list" | "search" | "enable" | "inspect"),
+            "unknown tool_help action; use list, search, enable, or inspect"
         );
 
         // Everything the registry knows about, minus the always-advertised set.
@@ -187,6 +188,33 @@ impl Tool for ToolHelpTool {
             })
             .collect();
         let all: Vec<String> = catalog.iter().map(|(name, _)| name.clone()).collect();
+        if action == "inspect" {
+            let names = params.tools.as_deref().unwrap_or_default();
+            anyhow::ensure!(
+                names.len() == 1,
+                "inspect requires exactly one tool name in tools"
+            );
+            let name = super::Registry::resolve_tool_name(&names[0]).to_string();
+            anyhow::ensure!(
+                all.contains(&name),
+                "tool is unavailable in this session; search the live inventory"
+            );
+            let live = self
+                .live
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("live registry unavailable; enable the tool to load its schema")
+                })?;
+            let tools = live.read().await;
+            let tool = tools
+                .get(&name)
+                .ok_or_else(|| anyhow::anyhow!("tool is no longer registered"))?;
+            return Ok(ToolOutput::new(serde_json::to_string(&json!({
+                "name":name,"description":tool.description(),"parameters":tool.parameters_schema(),
+                "interpretation":"Live input contract only; prerequisites and authorization still apply."
+            }))?));
+        }
         {
             let mut sessions = SESSION_PROMOTED
                 .write()
@@ -399,6 +427,51 @@ mod tests {
             graceful_shutdown_signal: None,
             execution_mode: crate::tool::ToolExecutionMode::Direct,
         }
+    }
+
+    #[tokio::test]
+    async fn inspect_returns_live_schema_and_respects_session_visibility() {
+        let registry = super::super::Registry::empty();
+        registry
+            .register(
+                "write".into(),
+                std::sync::Arc::new(super::super::write::WriteTool::new()),
+            )
+            .await;
+        let help = ToolHelpTool::for_registry(&registry);
+        let context = ctx("th-inspect", &["write"]);
+        let output = help
+            .execute(
+                json!({"action":"inspect","tools":["write"]}),
+                context.clone(),
+            )
+            .await
+            .unwrap();
+        let contract: Value = serde_json::from_str(&output.output).unwrap();
+        assert_eq!(contract["name"], "write");
+        assert_eq!(
+            contract["parameters"]["properties"]["append"]["type"],
+            "boolean"
+        );
+        assert!(promoted_tools("th-inspect").is_empty());
+        assert!(
+            help.execute(json!({"action":"inspect","tools":["missing"]}), context)
+                .await
+                .is_err()
+        );
+        super::super::clear_session_tool_policy("th-inspect");
+        let restricted = ctx("th-inspect-denied", &["read"]);
+        super::super::set_session_tool_policy(
+            "th-inspect-denied",
+            Some(["read".into()].into_iter().collect()),
+            std::collections::HashSet::new(),
+        );
+        assert!(
+            help.execute(json!({"action":"inspect","tools":["write"]}), restricted)
+                .await
+                .is_err()
+        );
+        super::super::clear_session_tool_policy("th-inspect-denied");
     }
 
     #[tokio::test]

@@ -14,7 +14,9 @@ SUBDOMAINS → HOSTS → DIRECTORIES → INVENTORY.
 
 ## 0. SCOPE AND TOOLS (ALWAYS FIRST)
 
-1. Write the scope file (see scope skill). No scope file → no testing.
+1. Resolve and record scope (see scope skill); reuse established authorization
+   and existing notes. Pause tests with unresolved boundaries, not independent
+   permitted work. A standalone scope file is not a prerequisite unless required.
 2. Check tools ONE AT A TIME (see tool-doctor). A missing tool never
    stops recon — switch to its listed fallback immediately.
 3. NEVER use websearch to enumerate subdomains. Search engines hit

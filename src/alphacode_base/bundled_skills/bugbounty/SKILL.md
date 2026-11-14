@@ -67,9 +67,11 @@ vulnerability here" is a successful outcome.
    proven. Proving a read-only IDOR does not require proving account takeover,
    and continuing past the point of proof creates risk the owner never agreed
    to and liability for you.
-3. **Reporting designed behavior** — public profiles, error messages, and
-   version banners are not vulnerabilities. Programs reject these routinely and
-   they waste the owner's triage time.
+3. **Reporting observations without a broken boundary** — a public profile,
+   error message, or version banner alone does not establish a vulnerability.
+   Verify intended visibility and actual contents: private fields in a public
+   response, secrets in an error, or a reachable vulnerable component can justify
+   further testing. Neither the feature label nor a banner proves safety or impact.
 
 ## Investigation continuity
 
@@ -381,8 +383,14 @@ errors, and never report "clean" while the probing tooling is failing.
 
 ### PHASE -1: SCOPE (first, always — see scope skill)
 
-Write the scope file (IN-SCOPE / OUT-OF-SCOPE / severity focus / forbidden
-actions). Check every new host against it. No scope file → no testing.
+Resolve authorized assets, permitted actions, exclusions, access conditions and
+limits from the user's request, established engagement context and applicable
+program policy. Record them in the existing engagement ledger; create a scope
+file when useful or required by the engagement. A missing standalone file is not
+missing authorization. Do not ask again for established permission. If a material
+boundary remains unclear, pause only the dependent tests and continue independent
+permitted work. Check each new destination and redirect against the scope before
+testing it; discovery and reachability do not extend authorization.
 
 ### PHASE 0: RECON (adapt to scope and surface)
 

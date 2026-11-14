@@ -126,6 +126,27 @@ struct SearchInput {
 
 pub struct SessionSearchTool;
 
+#[cfg(test)]
+#[test]
+fn registry_scalar_normalization_accepts_quoted_search_options() {
+    let mut input = json!({"query":"fixture","limit":"50","max_per_session":"2",
+        "context_before":"1","context_after":"0","max_scan_sessions":"10",
+        "include_tools":"true","include_external":"false","exhaustive":"false"});
+    super::schema_preflight::normalize_scalar_arguments(
+        &SessionSearchTool::new().parameters_schema(),
+        &mut input,
+    );
+    let parsed: SearchInput = serde_json::from_value(input).unwrap();
+    assert_eq!(parsed.limit, Some(50));
+    assert_eq!(parsed.max_per_session, Some(2));
+    assert_eq!(parsed.context_before, Some(1));
+    assert_eq!(parsed.context_after, Some(0));
+    assert_eq!(parsed.max_scan_sessions, Some(10));
+    assert_eq!(parsed.include_tools, Some(true));
+    assert_eq!(parsed.include_external, Some(false));
+    assert_eq!(parsed.exhaustive, Some(false));
+}
+
 impl SessionSearchTool {
     pub fn new() -> Self {
         Self

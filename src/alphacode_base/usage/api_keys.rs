@@ -381,7 +381,8 @@ mod traffic_tests {
 
     #[tokio::test]
     async fn compatible_usage_without_balance_api_is_local() {
-        let profile = crate::provider_catalog::openai_compatible_profile_by_id("nvidia-nim").unwrap();
+        let profile =
+            crate::provider_catalog::openai_compatible_profile_by_id("nvidia-nim").unwrap();
         let report = fetch_compatible_profile_report(profile).await;
         assert!(report.extra_info.contains(&configured_key_status()));
         assert!(report.error.is_none());

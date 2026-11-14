@@ -3,6 +3,40 @@
 //! deliberately accept provider-generated string forms of numbers and booleans.
 use serde_json::Value;
 
+/// Repair unambiguous provider scalar encodings using the live tool contract.
+/// Do not descend into request bodies or coerce unions that also accept strings.
+pub(super) fn normalize_scalar_arguments(schema: &Value, input: &mut Value) {
+    let (Some(properties), Some(arguments)) =
+        (schema["properties"].as_object(), input.as_object_mut())
+    else {
+        return;
+    };
+    for (name, property) in properties {
+        let Some(value) = arguments.get_mut(name) else {
+            continue;
+        };
+        let Some(text) = value.as_str().map(str::trim) else {
+            continue;
+        };
+        let replacement = match property["type"].as_str() {
+            Some("integer") => text
+                .parse::<i64>()
+                .map(Value::from)
+                .or_else(|_| text.parse::<u64>().map(Value::from))
+                .ok(),
+            Some("boolean") => match text {
+                "true" => Some(Value::Bool(true)),
+                "false" => Some(Value::Bool(false)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(replacement) = replacement {
+            *value = replacement;
+        }
+    }
+}
+
 pub(super) fn validate_call(tool: &str, schema: &Value, input: &Value) -> Result<(), String> {
     // These native parsers recover aliases and truncated provider payloads.
     // Their advertised required keys are stricter than their accepted input;
@@ -99,6 +133,28 @@ fn check(schema: &Value, input: &Value, path: &str, depth: usize) -> Result<(), 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn scalar_repair_is_lossless_and_limited_to_declared_top_level_fields() {
+        let schema = json!({"properties": {
+            "limit":{"type":"integer"},"enabled":{"type":"boolean"},
+            "query":{"type":"string"},"union":{"type":["integer","string"]},
+            "input":{"type":"object","properties":{"limit":{"type":"integer"}}}
+        }});
+        let mut input = json!({"limit":" 50 ","enabled":"false","query":"50",
+            "union":"50","input":{"limit":"50"},"unknown":"50"});
+        normalize_scalar_arguments(&schema, &mut input);
+        assert_eq!(
+            input,
+            json!({"limit":50,"enabled":false,"query":"50",
+            "union":"50","input":{"limit":"50"},"unknown":"50"})
+        );
+        for invalid in ["1.5", "1e2", "18446744073709551616", "NaN"] {
+            let mut input = json!({"limit":invalid});
+            normalize_scalar_arguments(&schema, &mut input);
+            assert_eq!(input["limit"], invalid);
+        }
+    }
 
     #[test]
     fn reports_all_missing_fields_without_echoing_values() {

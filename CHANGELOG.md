@@ -8,6 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Normalize unambiguous quoted integer and boolean tool arguments from live
+  schemas, including `session_search` limits, before validation and dispatch.
+- Preserve exact file content, including indentation, trailing newlines, empty
+  strings and large bodies. Reject truncated writes before create, overwrite or
+  append side effects; document bounded chunk recovery.
+- Keep active security investigations selectable, separate unplanned leads from
+  executable work, and stop selecting dispatches after the engagement budget is
+  exhausted. Remove conflicting scope-file prerequisites and categorical
+  dismissal of potentially sensitive public responses.
 - Limit explicit OpenRouter catalog refresh to the catalog and active model's
   endpoints, instead of probing up to 24 models; prevent snapshot-triggered
   duplicate catalog fetches during the refresh.
@@ -20,6 +29,10 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `tool_help inspect` returns one session-permitted tool's live parameter schema
+  immediately for argument diagnosis, without claiming backend readiness.
+- Regression coverage for quoted search options, exact chunk recovery, truncated
+  file operations, live schema visibility and investigation selection.
 - Opt-in local provider HTTP dispatch audit with per-turn IDs, session IDs,
   request categories and timestamps; stream workers retain turn attribution.
   No prompts, bodies, credentials, paths or query strings are recorded.

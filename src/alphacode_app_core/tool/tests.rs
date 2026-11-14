@@ -27,6 +27,44 @@ fn isolate_process_env() -> crate::storage::TestEnvGuard {
 }
 
 #[tokio::test]
+async fn quoted_session_search_options_reach_native_bounds_without_retry_failures() {
+    let _guard = isolate_process_env();
+    let registry = Registry::empty();
+    registry
+        .register(
+            "session_search".into(),
+            Arc::new(super::session_search::SessionSearchTool::new()),
+        )
+        .await;
+    let ctx = ToolContext {
+        session_id: format!("search-scalars-{}", uuid::Uuid::new_v4()),
+        message_id: "test".into(),
+        tool_call_id: "test".into(),
+        working_dir: None,
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: ToolExecutionMode::Direct,
+    };
+    // Stop at native range validation, before reading any user's session store.
+    // The valid quoted limit and boolean must deserialize; invalid bounds
+    // must remain invalid, even after normalization.
+    for _ in 0..4 {
+        let output = registry
+            .execute(
+                "session_search",
+                json!({"query":"fixture",
+            "limit":"50","include_external":"false","max_scan_sessions":"0"}),
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(output.output.contains("max_scan_sessions"));
+        assert!(!output.output.contains("invalid type"));
+    }
+    clear_session_tool_policy(&ctx.session_id);
+}
+
+#[tokio::test]
 async fn unified_todo_registry_normalizes_before_preflight_and_retains_partial_plan() {
     let _guard = isolate_process_env();
     let registry = Registry::empty();
@@ -136,6 +174,13 @@ async fn unified_investigation_dispatch_observation_resume_and_budget_share_the_
     let proposal = registry.execute("investigation",json!({"action":"propose","asset":"https://fixture.test/object","category":"authorization","claim":"read might skip ownership"}),ctx.clone()).await.unwrap();
     let proposal: Value = serde_json::from_str(&proposal.output).unwrap();
     let lead = proposal["lead_id"].as_str().unwrap();
+    let next = registry
+        .execute("investigation", json!({"action":"next"}), ctx.clone())
+        .await
+        .unwrap();
+    let next: Value = serde_json::from_str(&next.output).unwrap();
+    assert!(next["lead"].is_null());
+    assert_eq!(next["planning_lead"]["id"], lead);
     registry.execute("investigation",json!({"action":"plan","lead_id":lead,"expected":"Nonowner receives no private canary","steps":["Compare controlled actors"],"tool":"httpflow","input":{"url":"https://fixture.test/object"}}),ctx.clone()).await.unwrap();
     let next = registry
         .execute("investigation", json!({"action":"next"}), ctx.clone())
@@ -156,6 +201,13 @@ async fn unified_investigation_dispatch_observation_resume_and_budget_share_the_
     assert_eq!(state.exchanges.len(), 1);
     assert_eq!(state.ledger.tool_calls, 1);
     assert!(state.in_flight.is_empty());
+    let next = registry
+        .execute("investigation", json!({"action":"next"}), ctx.clone())
+        .await
+        .unwrap();
+    let next: Value = serde_json::from_str(&next.output).unwrap();
+    assert!(next["lead"].is_null());
+    assert_eq!(next["budget_exhausted"], true);
     registry.execute("investigation",json!({"action":"attach","lead_id":lead,"evidence_id":executed["evidence_id"],"supports":true}),ctx.clone()).await.unwrap();
     assert!(
         registry
@@ -256,6 +308,13 @@ async fn structured_research_reassessment_and_dispatch_budget_precede_side_effec
         .unwrap();
     let executed: Value = serde_json::from_str(&executed.output).unwrap();
     let receipt = executed["evidence_id"].as_str().unwrap();
+    // Dispatch must not make an unfinished investigation disappear from selection.
+    let next = registry
+        .execute("investigation", json!({"action":"next"}), ctx.clone())
+        .await
+        .unwrap();
+    let next: Value = serde_json::from_str(&next.output).unwrap();
+    assert_eq!(next["lead"]["id"], lead);
     // A completed dispatch is immutable even before its interpretation is recorded.
     plan["experiment"]["attempt_budget"] = json!(30);
     assert!(

@@ -1794,6 +1794,11 @@ impl Registry {
         // Drop the lock before executing
         drop(tools);
 
+        // Normalize before failure hashing, preflight, hooks and dispatch so
+        // every consumer sees the same schema-backed scalar values.
+        let parameter_schema = tool.parameters_schema();
+        schema_preflight::normalize_scalar_arguments(&parameter_schema, &mut input);
+
         // Validate the same canonical payload the native parser accepts.
         // Otherwise preflight rejects recoverable todo forms before normalization.
         if resolved_name == "todo" {
@@ -1878,7 +1883,7 @@ impl Registry {
         }
 
         if let Err(reason) =
-            schema_preflight::validate_call(resolved_name, &tool.parameters_schema(), &input)
+            schema_preflight::validate_call(resolved_name, &parameter_schema, &input)
         {
             repeat_guard::record_malformed_with_error(
                 &ctx.session_id,
