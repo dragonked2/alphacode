@@ -112,7 +112,10 @@ fn normalize_read_range(params: &ReadInput) -> Result<NormalizedReadRange> {
 
     if has_start_end && has_mixed_offset {
         return Err(anyhow::anyhow!(
-            "Use either start_line/end_line (1-based) or offset (0-based), not both. `limit` may be used with either style."
+            "Conflicting read range: start_line/end_line are 1-based and offset is 0-based. Received start_line={:?}, end_line={:?}, offset={:?}. Use one coordinate style only: start_line with optional end_line/limit, or offset with limit; remove the other style.",
+            params.start_line,
+            params.end_line,
+            params.offset
         ));
     }
 
@@ -178,15 +181,15 @@ impl Tool for ReadTool {
                 },
                 "start_line": {
                     "type": "integer",
-                    "description": "1-based start line for text files."
+                    "description": "1-based start line for text files. Use with limit; omit offset. Do not mix 1-based line fields with 0-based offset."
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "0-based text line or directory entry offset. Do not combine with start_line/end_line."
+                    "description": "0-based text line or directory entry offset. Use with limit; omit start_line/end_line. Do not mix 0-based offset with 1-based line fields."
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Max text lines (default 5000) or directory entries (capped at 1000)."
+                    "description": "Max text lines (default 5000) or directory entries (capped at 1000). May be used with either start_line or offset, but do not combine the coordinate styles."
                 }
             }
         })

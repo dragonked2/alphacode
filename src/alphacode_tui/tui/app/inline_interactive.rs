@@ -1118,7 +1118,7 @@ impl App {
             .inline_interactive_state
             .as_ref()
             .is_some_and(picker_is_runtime_model_picker);
-        if picker_open && !self.auth_catalog_refresh_pending {
+        if picker_open {
             self.open_model_picker_preserving_input();
         }
     }
@@ -1142,17 +1142,6 @@ impl App {
 
     fn open_model_picker_inner(&mut self, preserve_input: bool) {
         let picker_started = std::time::Instant::now();
-        const RECENT_AUTH_BOOST_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
-        if self
-            .recent_authenticated_provider
-            .as_ref()
-            .map(|(_, at)| at.elapsed() > RECENT_AUTH_BOOST_TTL)
-            .unwrap_or(false)
-        {
-            self.recent_authenticated_provider = None;
-            self.invalidate_model_picker_cache();
-        }
-
         if self.is_remote && self.remote_model_options.is_empty() {
             self.hydrate_remote_model_catalog_cache();
         }
@@ -1165,14 +1154,8 @@ impl App {
             self.provider.model().to_string()
         };
 
-        // Never present the old catalog as authoritative immediately after a
-        // login/import. Local mode clears this when the provider's synchronous
-        // auth activation finishes; remote mode clears it when the server sends
-        // the final catalog activity after all provider work completes.
-        if self.auth_catalog_refresh_pending {
-            self.open_loading_model_picker(&current_model);
-            return;
-        }
+        // Keep usable routes visible while auth discovery continues. Catalog
+        // updates rebuild this picker in place without releasing queued prompts.
 
         let config = crate::config::config();
         let config_default_model = config.provider.default_model.clone();
@@ -1882,10 +1865,18 @@ impl App {
             };
             let a_old = if a.old { 1u8 } else { 0 };
             let b_old = if b.old { 1u8 } else { 0 };
-            a_current
-                .cmp(&b_current)
-                .then(a_favorite.cmp(&b_favorite))
+            let is_automatic_free = |entry: &PickerEntry| {
+                entry
+                    .options
+                    .iter()
+                    .any(|option| option.api_method == alphax_method)
+                    && crate::alphacode_provider_metadata::is_alphax_free_builtin_model(&entry.name)
+            };
+            is_automatic_free(b)
+                .cmp(&is_automatic_free(a))
                 .then(a_recent.cmp(&b_recent))
+                .then(a_current.cmp(&b_current))
+                .then(a_favorite.cmp(&b_favorite))
                 .then(a_usage.cmp(&b_usage))
                 .then(a_rec.cmp(&b_rec))
                 .then(a_rec_rank.cmp(&b_rec_rank))

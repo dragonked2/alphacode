@@ -95,6 +95,10 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
         body: include_str!("bundled_skills/bugbounty/SKILL.md"),
         references: &[
             (
+                "reasoning-cases",
+                include_str!("bundled_skills/bugbounty/reasoning-cases/SKILL.md"),
+            ),
+            (
                 "experiment-design",
                 include_str!("bundled_skills/bugbounty/experiment-design/SKILL.md"),
             ),

@@ -147,8 +147,8 @@ fn normalize_read_range_rejects_start_line_and_offset() {
 
     let err = normalize_read_range(&params).expect_err("mixed range styles should fail");
     assert!(
-        err.to_string().contains("Use either start_line/end_line")
-            || err.to_string().contains("not both"),
+        err.to_string().contains("Conflicting read range")
+            && err.to_string().contains("remove the other style"),
         "unexpected error: {err}"
     );
 }
@@ -248,6 +248,30 @@ fn read_tool_schema_advertises_only_canonical_public_fields() {
     assert!(properties.contains_key("limit"));
     assert!(!properties.contains_key("end_line"));
     assert!(properties.contains_key("offset"));
+}
+
+#[test]
+fn read_tool_schema_explains_mutually_exclusive_range_styles() {
+    let properties = ReadTool::new().parameters_schema()["properties"].clone();
+
+    assert!(
+        properties["start_line"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("omit offset")
+    );
+    assert!(
+        properties["offset"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("omit start_line/end_line")
+    );
+    assert!(
+        properties["limit"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("do not combine the coordinate styles")
+    );
 }
 
 #[test]

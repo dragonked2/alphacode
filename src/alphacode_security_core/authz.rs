@@ -39,9 +39,13 @@
 //!   opinions.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::alphacode_security_core::finding::{Confidence, Finding, VulnerabilityClass};
+
+#[cfg(test)]
+#[path = "authz_regression_tests.rs"]
+mod regression_tests;
 
 /// A role an identity may hold.
 ///
@@ -1124,17 +1128,105 @@ pub fn analyze_access_with_operation(
     resource_label: &str,
     operation: AccessOperation,
 ) -> AuthorizationAssessment {
-    let identity = case.identity(identity_id);
-    let resource = case.resource(resource_label);
+    analyze_access_inner(case, identity_id, resource_label, operation, None)
+}
 
-    let observations: Vec<&AccessObservation> = case
-        .observations
-        .iter()
-        .filter(|o| {
-            o.identity == identity_id && o.resource == resource_label && o.operation == operation
-        })
-        .collect();
-    let supporting_exchanges = distinct_exchanges(observations.iter().map(|o| &o.exchange_id));
+/// A run-local index: never cached across changed evidence or policies.
+#[derive(Default)]
+struct AccessIndex<'a> {
+    identities: BTreeMap<&'a str, &'a TestIdentity>,
+    resources: BTreeMap<String, &'a ResourceRef>,
+    observations: BTreeMap<(&'a str, &'a str, AccessOperation), Vec<&'a AccessObservation>>,
+    denied_controls: BTreeSet<(&'a str, AccessOperation)>,
+}
+
+impl<'a> AccessIndex<'a> {
+    fn new(case: &'a AccessCase) -> Self {
+        let mut index = Self::default();
+        // Preserve the scalar analyzer's first-declaration behavior.
+        for identity in &case.identities {
+            index.identities.entry(&identity.id).or_insert(identity);
+        }
+        for resource in &case.resources {
+            index
+                .resources
+                .entry(resource.report_label())
+                .or_insert(resource);
+        }
+        for observation in &case.observations {
+            index
+                .observations
+                .entry((
+                    &observation.identity,
+                    &observation.resource,
+                    observation.operation,
+                ))
+                .or_default()
+                .push(observation);
+            if observation.outcome == ObservedOutcome::Denied
+                && index
+                    .identities
+                    .get(observation.identity.as_str())
+                    .is_some_and(|identity| {
+                        index
+                            .resources
+                            .get(&observation.resource)
+                            .is_none_or(|resource| !resource.declares_access_for(identity))
+                    })
+            {
+                index
+                    .denied_controls
+                    .insert((&observation.identity, observation.operation));
+            }
+        }
+        index
+    }
+}
+
+fn analyze_access_inner(
+    case: &AccessCase,
+    identity_id: &str,
+    resource_label: &str,
+    operation: AccessOperation,
+    index: Option<&AccessIndex<'_>>,
+) -> AuthorizationAssessment {
+    let identity = match index {
+        Some(index) => index.identities.get(identity_id).copied(),
+        None => case.identity(identity_id),
+    };
+    let resource = match index {
+        Some(index) => index.resources.get(resource_label).copied(),
+        None => case.resource(resource_label),
+    };
+
+    let observations: Vec<&AccessObservation> = match index {
+        Some(index) => index
+            .observations
+            .get(&(identity_id, resource_label, operation))
+            .cloned()
+            .unwrap_or_default(),
+        None => case
+            .observations
+            .iter()
+            .filter(|o| {
+                o.identity == identity_id
+                    && o.resource == resource_label
+                    && o.operation == operation
+            })
+            .collect(),
+    };
+    // Denials, errors and empty/blank markers cannot corroborate a leak.
+    let supporting_exchanges = distinct_exchanges(
+        observations
+            .iter()
+            .filter(|o| {
+                o.outcome.returned_protected_data()
+                    && o.protected_data_marker
+                        .as_deref()
+                        .is_some_and(|marker| !marker.trim().is_empty())
+            })
+            .map(|o| &o.exchange_id),
+    );
 
     let mut causes = Vec::new();
     let mut requirements = Vec::new();
@@ -1375,9 +1467,12 @@ pub fn analyze_access_with_operation(
         );
     }
 
-    let marker_present = observations
-        .iter()
-        .any(|o| o.protected_data_marker.is_some());
+    let marker_present = observations.iter().any(|o| {
+        o.outcome.returned_protected_data()
+            && o.protected_data_marker
+                .as_deref()
+                .is_some_and(|marker| !marker.trim().is_empty())
+    });
     if !marker_present {
         requirements.push(AuthzRequirement {
             kind: RequirementKind::ShowProtectedData,
@@ -1394,17 +1489,29 @@ pub fn analyze_access_with_operation(
     // which can never happen — an owner is not refused its own object — so this
     // requirement could never be satisfied and every real IDOR stayed
     // inconclusive. The control is the deny on somebody else's object.
-    let control_works = case.observations.iter().any(|o| {
-        if o.identity != identity.id || o.outcome != ObservedOutcome::Denied {
-            return false;
-        }
-        // The denied resource must not be one the identity is entitled to,
-        // otherwise the denial proves nothing about object-level authorization.
-        case.resources
-            .iter()
-            .find(|r| r.report_label() == o.resource)
-            .is_none_or(|r| !r.declares_access_for(identity))
-    });
+    let control_works = index.map_or_else(
+        || {
+            case.observations.iter().any(|o| {
+                if o.identity != identity.id
+                    || o.operation != operation
+                    || o.outcome != ObservedOutcome::Denied
+                {
+                    return false;
+                }
+                // The denied resource must not be one the identity is entitled to,
+                // otherwise the denial proves nothing about object-level authorization.
+                case.resources
+                    .iter()
+                    .find(|r| r.report_label() == o.resource)
+                    .is_none_or(|r| !r.declares_access_for(identity))
+            })
+        },
+        |index| {
+            index
+                .denied_controls
+                .contains(&(identity.id.as_str(), operation))
+        },
+    );
     if !control_works {
         requirements.push(AuthzRequirement {
             kind: RequirementKind::EstablishBaseline,
@@ -1433,6 +1540,10 @@ pub fn analyze_access_with_operation(
         .any(|(i, r)| i == identity_id && r == resource_label)
     {
         causes.push(FalsePositiveCause::FixtureInconsistency);
+        requirements.push(AuthzRequirement {
+            kind: RequirementKind::EstablishBaseline,
+            detail: "the target resource is recorded as absent; reconcile the fixture before reporting access".into(),
+        });
     }
 
     let cross_tenant = identity
@@ -1499,10 +1610,18 @@ pub fn analyze_access_with_operation(
 /// Convenience for the report layer: one call produces the full matrix, so a
 /// report can state what was tested and not only what was found.
 pub fn analyze_matrix(case: &AccessCase) -> Vec<AuthorizationAssessment> {
+    let index = AccessIndex::new(case);
     let mut out = Vec::new();
     for resource in &case.resources {
+        let label = resource.report_label();
         for identity in &case.identities {
-            out.push(analyze_access(case, &identity.id, &resource.report_label()));
+            out.push(analyze_access_inner(
+                case,
+                &identity.id,
+                &label,
+                AccessOperation::Read,
+                Some(&index),
+            ));
         }
     }
     out

@@ -1155,8 +1155,24 @@ pub async fn run_workflow(
     // Every later phase re-reads live state; a restored run simply sees most
     // tasks already completed and executes only what remains.
 
+    use sha2::{Digest, Sha256};
+    let session_id = format!(
+        "bounty:{:x}",
+        Sha256::digest(format!(
+            "{}:{}",
+            orchestrator.target,
+            std::fs::canonicalize(dir)?.display()
+        ))
+    );
+    crate::engagement_runtime::ensure_started(
+        &session_id,
+        &format!("Assess {}", orchestrator.target),
+    )?;
+    let policy=crate::alphacode_security_core::ScopePolicy::from_lists(&[orchestrator.target.clone()],&[],true,&[],0,6);
+    crate::engagement_runtime::update(&session_id,|state| { state.policy=Some(policy.clone()); state.research.scope=vec![orchestrator.target.clone()]; Ok(()) })?;
+    crate::tool::scope::set_session_scope(&session_id,Some(policy));
     let base_ctx = ToolContext {
-        session_id: "bugbounty".to_string(),
+        session_id: session_id.clone(),
         message_id: "orchestrator".to_string(),
         tool_call_id: "bugbounty".to_string(),
         working_dir: Some(dir.to_path_buf()),
@@ -1204,11 +1220,26 @@ pub async fn run_workflow(
             }
         }
 
+        // The scanner graph publishes its discovery view into the same durable
+        // engagement used by the agent, proof reviewer and exports. It never
+        // promotes keyword candidates into verified findings.
+        let intelligence = orchestrator.intelligence.read().await.clone();
+        crate::engagement_runtime::update(&session_id, |state| {
+            state.research.investigation = intelligence;
+            Ok(())
+        })?;
+
         orchestrator.advance_phase().await?;
         save_state(orchestrator, dir).await?;
     }
 
     write_report(orchestrator, dir, &outcomes).await?;
+    if let Some(state) = crate::engagement_runtime::read(&session_id)? {
+        atomic_write(
+            &dir.join("engagement.json"),
+            &serde_json::to_vec_pretty(&state.summary())?,
+        )?;
+    }
     save_state(orchestrator, dir).await?;
     Ok(outcomes)
 }

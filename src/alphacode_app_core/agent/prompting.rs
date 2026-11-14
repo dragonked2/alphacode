@@ -244,6 +244,9 @@ pub(crate) fn routed_skill_context(
         if !selected_skills.contains(&workflow) {
             selected_skills.push(workflow);
         }
+        if !ctf && !selected_skills.contains(&"bug-bounty-methodology") {
+            selected_skills.push("bug-bounty-methodology");
+        }
         if !selected_skills.contains(&"nodejs-security")
             && (observed_node_stack
                 || SkillRouter::is_nodejs_stack(&task)
@@ -275,6 +278,18 @@ pub(crate) fn routed_skill_context(
         .into_iter()
         .flatten()
         .collect::<String>();
+    let mut evidence = evidence;
+    if security && !ctf {
+        match crate::engagement_runtime::ensure_started(&session.id, &task)
+            .and_then(|()| crate::engagement_runtime::read(&session.id))
+        {
+            Ok(Some(state)) => {
+                evidence.push_str(&format!("\nShared engagement checkpoint: {}. {} observed exchanges, {} leads, {} tool calls. Use investigation status/next/plan/execute/attach/verify/export; its evidence IDs, roots and retests are the runtime authority. Todo items track work, not proof. Class references remain on demand.\n", state.research.session_id,state.exchanges.len(),state.research.investigation.leads().len(),state.ledger.tool_calls));
+            }
+            Ok(None) => {},
+            Err(error) => evidence.push_str(&format!("\nEngagement checkpoint unavailable: {error}. Reconcile before claiming persisted coverage or findings.\n")),
+        }
+    }
     (skill_prompt, evidence)
 }
 

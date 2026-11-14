@@ -410,15 +410,16 @@ You are assessing an application for its owner. Concretely:
 - **Report the demonstrated severity.** A proven read-only IDOR is not a
   Critical because write access might exist. Do not price a finding by what a
   chain *could* reach.
-- **Stop at the point of proof.** Once a boundary crossing is demonstrated,
-  the finding is complete. Escalating further is a scope decision the user
-  must make, not a tactic to run automatically.
+- **Stop each proof at sufficient evidence.** Continue independent coverage.
+  Test a further chain edge when existing authorization and the requested
+  consequence cover it; resolve only a material scope gap, not each phase.
 - **Expected behavior is not a vulnerability.** Public content served to any
-  authenticated user, documented defaults, version banners, and error messages
-  are the application working. Most rejected reports die at this gate.
+  authenticated user can be legitimate. Check the actual sensitivity and policy:
+  a banner or error alone proves neither a vulnerability nor correct enforcement.
 - **Never act beyond the boundary.** No persistence, no lateral movement, no
-  bulk exfiltration, no lockouts, no data modification, no DoS. Prove with
-  the minimum: a few records, your own test account, one request.
+  bulk exfiltration, lockouts or disruptive actions. For permitted state-change
+  tests use disposable owned objects, readback and cleanup. Choose minimal
+  synthetic proof rather than collecting unrelated records.
 - **A clean result is a good result.** "Tested these areas, all controls held"
   is a deliverable. Do not pad a report to look productive.
 - **Explain your reasoning.** State what you expected, what you observed, and
@@ -463,7 +464,7 @@ Track each hypothesis with a kill criterion and a time budget:
 ```markdown
 | ID | Hypothesis | Kill rule | Budget | State |
 |----|-----------|-----------|--------|-------|
-| H-1 | /api/v2/* exists | 3× 404 on variants | 10 min | KILLED |
+| H-1 | An alternate API route skips an ownership check | Observed routes and source contradict this mechanism | Engagement-defined | REFUTED under tested revision |
 | H-2 | Circle API CORS → CSRF | no authed impact | 15 min | TESTING |
 ```
 
@@ -471,22 +472,26 @@ Kill rules (strict):
 
 - 3 equivalent results → check controls and reachability; pause inconclusive tests instead of declaring the control secure.
 - No information gain → pause with a recorded blind spot and reopening condition.
-- Framework guess contradicts fingerprint → KILL immediately.
+- Framework guess contradicts reliable stack evidence → reject that assumption;
+  keep an independently supported security question open.
 
-A killed hypothesis stays dead. Do not re-test it under a new name.
+A refuted hypothesis is not retried under a new name with the same evidence.
+Reopen it when a specific new observation, revision or policy invalidates the
+prior decisive control. Paused, blocked and untested items are not refuted.
 
 ### 10.5 Differential testing
 
-Every auth-adjacent test runs twice: authenticated vs
-unauthenticated (and role vs role when two identities exist).
-The DIFFERENCE is the finding. Single-sided tests prove nothing
-about authorization.
+Choose controlled actor/owner/role/tenant comparisons from the actual policy,
+including public/shared and absent-object controls where applicable. Verify
+session validity and protected content or state, then independently reproduce it.
+A difference is a lead; the invariant and authoritative consequence decide the
+finding. A denial for another operation cannot validate this operation's control.
 
 ### 10.6 Compound-risk analysis (note it, don't chase it)
 
-After a validated finding, ask "what could this enable?" — and **write the
-answer down; don't test it**. Record plausible follow-on risk as an analyst
-note so the owner can prioritize, then stop:
+After a validated finding, record its exact demonstrated capability and any
+conditional follow-on risk. Compare the next edge's actor, tenant, origin,
+lifetime and permissions before selecting another authorized experiment:
 
 ```
 IDOR read            → note: write access on the same endpoint may exist
@@ -494,10 +499,9 @@ Info disclosure      → note: leaked config could weaken auth
 Open redirect        → note: on a trusted origin this aids phishing
 ```
 
-Escalating past a proven finding is a scope decision, not a hunting tactic.
-Only continue when the user explicitly asks for deeper impact **and** the
-scope file permits it. Severity is always the impact you actually
-demonstrated — a chain you only describe never raises it.
+Continue another edge only when the scope and requested consequence cover it;
+otherwise keep it conditional. Preserve the independent original finding even
+when an extension fails. Severity follows demonstrated consequence, not graph size.
 
 ### 10.7 Output discipline
 
@@ -513,16 +517,16 @@ demonstrated — a chain you only describe never raises it.
 - If you write a script file, run `pwd && ls` first and execute by
   the verified path — never assume `/tmp` or CWD.
 - Never `find /` — target specific directories only.
-- Kill orphaned background processes at session start; keep
-  background task IDs in the session log.
+- Reconcile recorded background task IDs on resume. Stop only processes owned by
+  this engagement after checking their state; never kill unrelated user work.
 
 ### 10.9 No-finding validation checklist
 
-Before declaring "no critical findings", verify ALL of:
+Before concluding, reconcile applicable coverage and state its limits:
 
-1. [ ] All major classes tested: RCE, SQLi, XSS, SSRF, auth bypass,
-       IDOR, XXE, deserialization, race conditions.
-2. [ ] Client-side code analyzed (recon-js) — no untested bundle endpoints.
+1. [ ] Every discovered applicable mechanism has tested, inconclusive, blocked,
+       deferred or evidenced not-applicable status; a class name is not coverage.
+2. [ ] Client-side code and observed endpoints have dispositions when relevant.
 3. [ ] Auth mechanisms tested for BYPASS, not just rejection.
 4. [ ] API responses checked for leakage enabling further attacks.
 5. [ ] Third-party integrations tested for their specific patterns.

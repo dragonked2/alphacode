@@ -44,9 +44,30 @@ pub(crate) fn family(name: &str) -> &'static str {
         | "flag_scanner"
         | "challenge_classifier"
         | "ctf_auto_solver" => "CTF forensics reversing and crypto",
-        "ctf_web_recon" | "httpflow" | "jwt" | "subfinder" | "dnsx" | "assetfinder" | "amass"
-        | "httpx" | "httprobe" | "gau" | "waybackurls" | "katana" | "ffuf" | "feroxbuster"
-        | "gobuster" | "sqlmap" | "nuclei" | "nmap" | "naabu" | "nikto" | "dalfox" | "corsy"
+        "investigation"
+        | "authorization_review"
+        | "ctf_web_recon"
+        | "httpflow"
+        | "jwt"
+        | "subfinder"
+        | "dnsx"
+        | "assetfinder"
+        | "amass"
+        | "httpx"
+        | "httprobe"
+        | "gau"
+        | "waybackurls"
+        | "katana"
+        | "ffuf"
+        | "feroxbuster"
+        | "gobuster"
+        | "sqlmap"
+        | "nuclei"
+        | "nmap"
+        | "naabu"
+        | "nikto"
+        | "dalfox"
+        | "corsy"
         | "crlfuzz" => "Security and reconnaissance",
         _ => "Other tools",
     }
@@ -79,6 +100,12 @@ pub(crate) fn matches_query(name: &str, description: &str, query: &str) -> bool 
             "http request response replay headers cookies actor comparison authorization sessions paywall preview content comparison"
         }
         "jwt" => "json web token inspect decode",
+        "authorization_review" => {
+            "offline authorization evidence matrix ownership tenant idor bola false positive controls"
+        }
+        "investigation" => {
+            "engagement hypotheses experiments evidence proof report budget checkpoint resume retest"
+        }
         "nuclei" => "template vulnerability scanner",
         "sqlmap" => "sql injection database testing",
         "dalfox" => "cross site scripting xss scanner",

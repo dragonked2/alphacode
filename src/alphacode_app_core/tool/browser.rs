@@ -3986,6 +3986,7 @@ awaitAll(items)
         assert!(missing_tab_error("No active tab is available"));
         assert!(missing_tab_error("tab not found"));
         assert!(missing_tab_error("tab closed: 42"));
+        assert!(missing_tab_error("Invalid tab ID: 82"));
         assert!(!missing_tab_error("ReferenceError: Tab is not defined"));
     }
 

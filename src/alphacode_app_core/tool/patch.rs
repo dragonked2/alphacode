@@ -177,11 +177,7 @@ impl Tool for PatchTool {
             "touched_paths": touched,
         });
         Ok(ToolOutput::new(summary)
-            .with_title(if touched.len() == 1 {
-                touched[0].clone()
-            } else {
-                format!("{} files", touched.len())
-            })
+            .with_file_paths(touched.iter())
             .with_metadata(metadata))
     }
 }

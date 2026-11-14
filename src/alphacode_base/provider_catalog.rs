@@ -1288,7 +1288,9 @@ pub fn openai_compatible_profile_is_configured(profile: OpenAiCompatibleProfile)
     // env vars set by `apply_named_provider_profile_env`, not the built-in
     // `openai-compatible.env`. Honor those first so auth-test does not report a
     // false `not_configured` for a correctly-configured named profile (#402).
-    if let Some(configured) = active_named_provider_profile_is_configured() {
+    if profile.id == OPENAI_COMPAT_PROFILE.id
+        && let Some(configured) = active_named_provider_profile_is_configured()
+    {
         return configured;
     }
 
@@ -1299,10 +1301,6 @@ pub fn openai_compatible_profile_is_configured(profile: OpenAiCompatibleProfile)
 
     if resolved.requires_api_key {
         return false;
-    }
-
-    if profile.id == OPENAI_COMPAT_PROFILE.id && api_base_uses_localhost(&resolved.api_base) {
-        return true;
     }
 
     if profile.id == OPENAI_COMPAT_PROFILE.id

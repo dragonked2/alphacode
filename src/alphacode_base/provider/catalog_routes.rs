@@ -510,6 +510,26 @@ fn named_provider_profile_routes(
     profile_name: &str,
     profile_config: &crate::config::NamedProviderConfig,
 ) -> Vec<ModelRoute> {
+    let requires_key = !matches!(profile_config.auth, crate::config::NamedProviderAuth::None)
+        && profile_config.requires_api_key.unwrap_or_else(|| {
+            !crate::provider_catalog::api_base_uses_localhost(&profile_config.base_url)
+        });
+    let has_key = profile_config
+        .api_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty())
+        || crate::provider_catalog::load_api_key_from_env_or_config(
+            profile_config
+                .api_key_env
+                .as_deref()
+                .unwrap_or("OPENROUTER_API_KEY"),
+            profile_config
+                .env_file
+                .as_deref()
+                .unwrap_or("openrouter.env"),
+        )
+        .is_some();
+    let available = !requires_key || has_key;
     let mut models: Vec<String> = profile_config
         .models
         .iter()
@@ -549,7 +569,7 @@ fn named_provider_profile_routes(
             model,
             provider: profile_name.to_string(),
             api_method: api_method.clone(),
-            available: true,
+            available,
             detail: detail.clone(),
             cheapness: None,
         });

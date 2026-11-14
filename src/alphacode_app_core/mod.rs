@@ -38,6 +38,7 @@ pub mod build;
 pub mod catchup;
 pub mod channel;
 pub mod dedup;
+pub mod engagement_runtime;
 pub mod external_auth;
 pub mod failures;
 pub mod health;

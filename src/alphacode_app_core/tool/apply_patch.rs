@@ -99,7 +99,7 @@ fn looks_like_patch_body(text: &str) -> bool {
 
 #[cfg(test)]
 mod extract_tests {
-    use super::extract_patch_text;
+    use super::{ApplyPatchTool, Tool, extract_patch_text};
     use serde_json::json;
 
     #[test]
@@ -135,6 +135,14 @@ mod extract_tests {
             message.contains("`intent` and similar labels are optional metadata"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn patch_tool_description_recommends_workspace_relative_paths() {
+        let tool = ApplyPatchTool::new();
+        let description = tool.description();
+        assert!(description.contains("workspace-relative paths"));
+        assert!(description.contains("not absolute host paths"));
     }
 
     #[test]
@@ -180,7 +188,7 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply a Codex-style patch (*** Begin Patch / *** End Patch). Creates/modify/delete files atomically. Prefer over patch or individual edits for multi-file changes."
+        "Apply a Codex-style patch (*** Begin Patch / *** End Patch). Creates/modify/delete files atomically. Use workspace-relative paths with forward slashes in patch headers (for example, src/module.rs), not absolute host paths. Prefer over patch or individual edits for multi-file changes."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -471,11 +479,7 @@ impl Tool for ApplyPatchTool {
                 "touched_paths": touched_paths,
             });
             let output = ToolOutput::new(summary).with_metadata(metadata);
-            if touched_paths.len() == 1 {
-                Ok(output.with_title(touched_paths[0].clone()))
-            } else {
-                Ok(output.with_title(format!("{} files", touched_paths.len())))
-            }
+            Ok(output.with_file_paths(touched_paths.iter()))
         }
     }
 }

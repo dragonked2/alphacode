@@ -213,6 +213,7 @@ pub(super) fn handle_bus_event(
         }
         Ok(BusEvent::ModelsUpdated) => {
             app.invalidate_model_picker_cache();
+            app.refresh_open_model_picker_after_catalog_update();
             true
         }
         Ok(BusEvent::AuthCatalogRefreshReady) => {

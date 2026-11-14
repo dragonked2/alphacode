@@ -143,6 +143,12 @@ require compatible prerequisites and evidence for every claimed chain edge.
 
 ## PROFESSIONAL HUNT LOOP
 
+Read `reasoning-cases` when moving from an interesting observation to a causal
+test. It works through ownership versus public previews, failed repetitions,
+revocation and delayed jobs, interpreter evidence, server-side callbacks,
+business-state races, chain compatibility and source-to-deployment differences.
+Use `bug-bounty-methodology` for the compact class-specific proof-oracle matrix.
+
 Load `real-world-validation` before selecting active tests or promoting a
 candidate. It defines the experiment record, modern surface priorities,
 control-specific bypass reasoning, false-positive checks and stop criteria.

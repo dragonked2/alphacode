@@ -4,6 +4,7 @@ pub mod ambient;
 mod anew;
 mod apply_patch;
 mod assetfinder;
+mod authorization_review;
 mod bash;
 mod batch;
 mod bg;
@@ -44,6 +45,7 @@ mod httpflow;
 mod httprobe;
 mod httpx;
 mod invalid;
+mod investigation;
 mod jwt;
 mod katana;
 mod kxss;
@@ -1097,6 +1099,11 @@ impl Registry {
                 "httpflow",
                 httpflow::HttpFlowTool::new,
             );
+            Self::insert_tool(
+                &mut m,
+                "authorization_review",
+                authorization_review::AuthorizationReviewTool,
+            );
             Self::insert_tool_timed(
                 &mut m,
                 &mut timings,
@@ -1310,6 +1317,11 @@ impl Registry {
             &mut tools_map,
             "tool_help",
             tool_help::ToolHelpTool::for_registry(&registry),
+        );
+        Self::insert_tool(
+            &mut tools_map,
+            "investigation",
+            investigation::InvestigationTool::for_registry(&registry),
         );
         let base_ms = base_start.elapsed().as_millis();
 
@@ -1780,6 +1792,12 @@ impl Registry {
         // Drop the lock before executing
         drop(tools);
 
+        // Validate the same canonical payload the native parser accepts.
+        // Otherwise preflight rejects recoverable todo forms before normalization.
+        if resolved_name == "todo" {
+            input = todo::normalize_todo_input(input);
+        }
+
         // A malformed call that has already been rejected repeatedly will not become
         // well-formed by being repeated. This used to have no bound at all --
         // validation errors called `clear_failure`, so an identical empty
@@ -1881,6 +1899,7 @@ impl Registry {
         //
         // It is a no-op when the session has no engagement scope configured,
         // which is every ordinary coding session.
+        crate::engagement_runtime::restore_scope(&ctx.session_id)?;
         if let Err(reason) = scope::enforce_call(&ctx, resolved_name, &input) {
             repeat_guard::record_failure_with_error(
                 &ctx.session_id,
@@ -1947,9 +1966,19 @@ impl Registry {
             Self::tool_lifecycle_fields("start", name, resolved_name, &input, &ctx),
         );
 
+        let engagement_reserved =
+            crate::engagement_runtime::reserve(&ctx.session_id, &ctx.tool_call_id, resolved_name)?;
         let started_at = std::time::Instant::now();
         let result = tool.execute(input.clone(), ctx.clone()).await;
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        if engagement_reserved {
+            let (transcript, failed) = match &result {
+                Ok(output) => (output.output.as_str(), false),
+                Err(_) => ("tool execution failed; inspect session transcript", true),
+            };
+            crate::engagement_runtime::observe(&ctx.session_id, &ctx.tool_call_id, resolved_name, &input, transcript, failed, latency_ms)
+                .map_err(|error| anyhow::anyhow!("Tool finished but engagement journaling failed: {error}. Effects may already have occurred; reconcile the receipt before replay."))?;
+        }
         match &result {
             Ok(_) => repeat_guard::record_success(&ctx.session_id, resolved_name, &input),
             Err(error) if is_input_validation_error(error) => {

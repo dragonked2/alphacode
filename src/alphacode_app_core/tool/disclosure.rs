@@ -124,6 +124,8 @@ pub fn tier_for(name: &str) -> ToolTier {
     // are useful but not needed on a typical turn (editing variants, background
     // work, scheduling, coordination, discovery marketplace).
     const EXTENDED: &[&str] = &[
+        "authorization_review",
+        "investigation",
         "ctf_web_recon",
         // Redundant editing variants — `edit`/`apply_patch` cover the same work.
         "multiedit",

@@ -663,12 +663,12 @@ impl HttpFlowTool {
             // Read response body
             let body = read_response_body(response).await?;
 
-            // Detect bot protection (Datadome, Cloudflare, etc.)
+            // Detect an actual challenge, not merely delivery through a CDN.
             if Self::detect_bot_protection(status, &body, &response_headers) {
                 return Err(anyhow::anyhow!(
-                    "Bot protection detected (status {}). The target is using Datadome/Cloudflare bot protection. \
-                     Use the browser tool instead of httpflow for this target. \
-                     The browser tool can handle JavaScript challenges and CAPTCHAs.",
+                    "A likely bot-protection challenge was detected (status {}). This is a tool/target limitation, not a security-test result. \
+                     Do not retry the same request or bypass CAPTCHA/anti-bot controls. If ordinary interactive browsing is explicitly permitted, \
+                     the browser tool may be used once without defeating the challenge; otherwise mark this surface blocked and continue with other in-scope work.",
                     status
                 ));
             }
@@ -910,55 +910,51 @@ impl HttpFlowTool {
         Ok(ToolOutput::new(output))
     }
 
-    /// Detect bot protection (Datadome, Cloudflare, etc.)
+    /// Detect a likely bot-protection challenge, not a CDN serving ordinary content.
     ///
-    /// Returns true if the response indicates bot protection is in place.
+    /// Cloudflare's `server` and `cf-ray` headers can be present on normal 200
+    /// responses, so they are not challenge evidence on their own. A challenge
+    /// is recognized by an explicit mitigation header, a known challenge body,
+    /// or a blocked response carrying a provider/challenge marker.
     fn detect_bot_protection(status: u16, body: &str, headers: &HashMap<String, String>) -> bool {
-        // Check for common bot protection status codes
+        let body = body.to_ascii_lowercase();
+        let explicit_challenge_header = headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("cf-mitigated")
+                && value.trim().eq_ignore_ascii_case("challenge")
+        });
+        if explicit_challenge_header {
+            return true;
+        }
+
+        let provider_marker = ["datadome", "cloudflare", "perimeterx", "akamai bot manager"]
+            .iter()
+            .any(|marker| body.contains(marker));
+        let strong_challenge_marker = [
+            "cf-chl-",
+            "challenge-platform",
+            "checking your browser",
+            "verify you are human",
+            "are you a robot",
+        ]
+        .iter()
+        .any(|marker| body.contains(marker));
+        let captcha_marker = body.contains("captcha")
+            && ["verify", "challenge", "human", "robot"]
+                .iter()
+                .any(|marker| body.contains(marker));
+
         if matches!(status, 403 | 429 | 503) {
-            // Check for Datadome
-            if body.contains("datadome") || body.contains("DataDome") {
-                return true;
-            }
-            // Check for Cloudflare
-            if body.contains("cloudflare") || body.contains("Cloudflare") {
-                return true;
-            }
-            // Check for PerimeterX
-            if body.contains("perimeterx") || body.contains("PerimeterX") {
-                return true;
-            }
-            // Check for Akamai
-            if body.contains("akamai") || body.contains("Akamai") {
-                return true;
-            }
-            // Check for generic CAPTCHA
-            if body.contains("captcha") || body.contains("CAPTCHA") {
-                return true;
-            }
-            // Check for "Access Denied" or "Blocked"
-            if body.contains("Access Denied") || body.contains("access denied") {
-                return true;
-            }
-            if body.contains("blocked") || body.contains("Blocked") {
-                return true;
-            }
+            // A provider name on a blocked response is useful evidence. A
+            // generic application 403/429 is not automatically a bot defense.
+            provider_marker || strong_challenge_marker || captcha_marker
+        } else {
+            // For successful-status challenge pages require specific challenge
+            // content. Generic `server: cloudflare` / `cf-ray` headers are
+            // deliberately ignored because they also describe normal CDN traffic.
+            strong_challenge_marker
+                || captcha_marker
+                || (provider_marker && body.contains("challenge"))
         }
-
-        // Check headers for bot protection indicators
-        if let Some(server) = headers.get("server")
-            && (server.contains("cloudflare") || server.contains("Cloudflare"))
-        {
-            return true;
-        }
-
-        if let Some(cf_ray) = headers.get("cf-ray")
-            && !cf_ray.is_empty()
-        {
-            return true;
-        }
-
-        false
     }
 }
 
@@ -1006,6 +1002,64 @@ fn truncate_body(body: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_cloudflare_delivery_headers_are_not_a_bot_challenge() {
+        let headers = HashMap::from([
+            ("server".to_string(), "cloudflare".to_string()),
+            ("cf-ray".to_string(), "example-ray-id".to_string()),
+        ]);
+
+        assert!(!HttpFlowTool::detect_bot_protection(
+            200,
+            "<html><title>Application</title><body>Welcome</body></html>",
+            &headers,
+        ));
+    }
+
+    #[test]
+    fn explicit_cloudflare_mitigation_header_marks_a_200_challenge() {
+        let headers = HashMap::from([("cf-mitigated".to_string(), "challenge".to_string())]);
+
+        assert!(HttpFlowTool::detect_bot_protection(
+            200,
+            "challenge page",
+            &headers
+        ));
+    }
+
+    #[test]
+    fn challenge_body_is_detected_without_relying_on_status_code() {
+        let headers = HashMap::new();
+
+        assert!(HttpFlowTool::detect_bot_protection(
+            200,
+            "<html><title>Just a moment...</title><div id=\"cf-chl-widget\"></div></html>",
+            &headers,
+        ));
+    }
+
+    #[test]
+    fn ordinary_application_forbidden_response_is_not_mislabeled_as_bot_protection() {
+        let headers = HashMap::new();
+
+        assert!(!HttpFlowTool::detect_bot_protection(
+            403,
+            "Access denied: this account cannot view the requested record.",
+            &headers,
+        ));
+    }
+
+    #[test]
+    fn generic_just_a_moment_copy_is_not_a_bot_challenge() {
+        let headers = HashMap::new();
+
+        assert!(!HttpFlowTool::detect_bot_protection(
+            200,
+            "<html><body>Just a moment while your report loads.</body></html>",
+            &headers,
+        ));
+    }
 
     #[tokio::test]
     async fn preview_comparison_distinguishes_withheld_metadata_from_content() {

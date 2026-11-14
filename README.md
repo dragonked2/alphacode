@@ -3,7 +3,7 @@
 <div align="center">
 
 <a href="https://alphacli.github.io/">
-  <img src="logo.png" alt="AlphaCode logo: free open-source AI coding agent for the terminal" width="400">
+  <img src="logo.png" alt="AlphaCode logo: free open-source AI coding agent for the terminal" width="840">
 </a>
 
 <br>
@@ -20,21 +20,32 @@
 [![Latest release](https://img.shields.io/github/v/release/dragonked2/alphacode?style=for-the-badge&label=Release&labelColor=1a1a2e&color=D7A93F)](https://github.com/dragonked2/alphacode/releases)
 [![MIT license](https://img.shields.io/github/license/dragonked2/alphacode?style=for-the-badge&label=License&labelColor=1a1a2e&color=F5A623)](LICENSE)
 
-[![Built with Rust](https://img.shields.io/badge/Rust-native_binary-DEA584?style=flat-square&logo=rust&logoColor=white&labelColor=1a1a2e)](#build-from-source)
+[![Built with Rust](https://img.shields.io/badge/Rust-native_binary-DEA584?style=flat-square&logo=rust&logoColor=white&labelColor=1a1a2e)](#installation-options)
 [![40+ agent tools](https://img.shields.io/badge/Agent_tools-40%2B-D7A93F?style=flat-square&labelColor=1a1a2e)](#built-in-tools-skills-and-mcp)
 [![No API key required](https://img.shields.io/badge/Free_to_start-no_API_key-2CBB5D?style=flat-square&labelColor=1a1a2e)](#quick-start)
 [![Windows, macOS, Linux](https://img.shields.io/badge/Platforms-Windows_%7C_macOS_%7C_Linux-4A90D9?style=flat-square&labelColor=1a1a2e)](#install-in-30-seconds)
 [![Last commit](https://img.shields.io/github/last-commit/dragonked2/alphacode?style=flat-square&label=Last_commit&labelColor=1a1a2e&color=8E7CC3)](https://github.com/dragonked2/alphacode/commits/main)
-[![Discussions](https://img.shields.io/badge/Questions%3F-Discussions-4A90D9?style=flat-square&logo=github&logoColor=white&labelColor=1a1a2e)](https://github.com/dragonked2/alphacode/discussions)
-[![Open issues](https://img.shields.io/github/issues/dragonked2/alphacode?style=flat-square&label=Issues&labelColor=1a1a2e&color=FF6B6B)](https://github.com/dragonked2/alphacode/issues)
 
 <br>
 
+<table align="center">
+  <tr>
+    <td align="center" width="180"><h3>~28 MB</h3><sub>RAM for one session<br>(<a href="#benchmarks">see benchmarks</a>)</sub></td>
+    <td align="center" width="180"><h3>40+</h3><sub>built-in agent tools<br>files, shell, web, UI</sub></td>
+    <td align="center" width="180"><h3>No key</h3><sub>needed to start<br>built-in free AI</sub></td>
+    <td align="center" width="180"><h3>3 OSes</h3><sub>Windows, macOS,<br>and Linux</sub></td>
+  </tr>
+</table>
+
+<br>
+
+[**⚡ Install**](#install-in-30-seconds) &nbsp;·&nbsp;
 [**🚀 Quick start**](#quick-start) &nbsp;·&nbsp;
 [🎬 Demo](#demo) &nbsp;·&nbsp;
 [🧠 How it works](#how-alphacode-works) &nbsp;·&nbsp;
 [✨ Features](#features) &nbsp;·&nbsp;
-[🔌 Models](#models-and-providers) &nbsp;·&nbsp;
+[🔌 Models](#models-and-providers)
+
 [📚 Docs](docs) &nbsp;·&nbsp;
 [🌐 Website](https://alphacli.github.io/) &nbsp;·&nbsp;
 [🦊 Firefox Agent](https://addons.mozilla.org/en-US/firefox/addon/alphacode-browser-agent/) &nbsp;·&nbsp;
@@ -44,22 +55,6 @@
 </div>
 
 <br>
-
-## Demo
-
-From install to a first completed task. Click the image to open it at full size, or [watch the MP4](alphacode-demo.mp4).
-
-[![AlphaCode demo: terminal AI coding agent going from install to a first completed task](alphacode-demo.svg)](alphacode-demo.svg "Open the AlphaCode demo at full size")
-
-## Why AlphaCode
-
-| 🆓 **Free to start** | 🧠 **Use any model** | 🌐 **Beyond the editor** |
-|:---|:---|:---|
-| A built-in free AI works with no API key and no sign-up. | Claude, GPT, Gemini, Copilot, DeepSeek, Ollama, LM Studio, and any OpenAI-compatible endpoint. | Drives a real Firefox session and native desktop apps, not only files and shells. |
-| 🪶 **Lightweight** | 🔁 **Resumable** | 🐝 **Multi-agent** |
-| A native Rust binary. About 28 MB of RAM for one session in our [benchmarks](#benchmarks). | Sessions survive terminal restarts, crashes, and dropped SSH connections. | Swarm mode splits big goals across parallel agents. |
-| ✅ **Verifies its work** | 🧩 **Extensible** | 🔓 **Open source** |
-| Runs tests, reviews its own diff, and reports evidence. | Skills, MCP servers, and hooks add your own workflows. | MIT licensed. No lock-in. |
 
 ## Install in 30 seconds
 
@@ -87,6 +82,32 @@ On Windows, `alphacode --gui` opens the desktop interface.
 > [!TIP]
 > Want to read the script first, pin a version, or build from source? See [Installation options](#installation-options).
 
+## Demo
+
+From install to a first completed task. Click the image to open it at full size, or [watch the MP4](alphacode-demo.mp4).
+
+[![AlphaCode demo: terminal AI coding agent going from install to a first completed task](alphacode-demo.svg)](alphacode-demo.svg "Open the AlphaCode demo at full size")
+
+## Why AlphaCode
+
+<table>
+  <tr>
+    <td width="33%" valign="top"><h3>🆓 Free to start</h3>A built-in free AI works with no API key and no sign-up.</td>
+    <td width="33%" valign="top"><h3>🧠 Use any model</h3>Claude, GPT, Gemini, Copilot, DeepSeek, Ollama, LM Studio, and any OpenAI-compatible endpoint.</td>
+    <td width="33%" valign="top"><h3>🌐 Beyond the editor</h3>Drives a real Firefox session and native desktop apps, not only files and shells.</td>
+  </tr>
+  <tr>
+    <td valign="top"><h3>🪶 Lightweight</h3>A native Rust binary. About 28 MB of RAM for one session in our <a href="#benchmarks">benchmarks</a>.</td>
+    <td valign="top"><h3>🔁 Resumable</h3>Sessions survive terminal restarts, crashes, and dropped SSH connections.</td>
+    <td valign="top"><h3>🐝 Multi-agent</h3>Swarm mode splits big goals across parallel agents.</td>
+  </tr>
+  <tr>
+    <td valign="top"><h3>✅ Verifies its work</h3>Runs tests, reviews its own diff, and reports evidence.</td>
+    <td valign="top"><h3>🧩 Extensible</h3>Skills, MCP servers, and hooks add your own workflows.</td>
+    <td valign="top"><h3>🔓 Open source</h3>MIT licensed. No lock-in.</td>
+  </tr>
+</table>
+
 ## Find what you need
 
 | I want to…                                | Go to                                                     |
@@ -111,9 +132,9 @@ On Windows, `alphacode --gui` opens the desktop interface.
 
 <br>
 
+- [Install in 30 seconds](#install-in-30-seconds)
 - [Demo](#demo)
 - [Why AlphaCode](#why-alphacode)
-- [Install in 30 seconds](#install-in-30-seconds)
 - [What is AlphaCode?](#what-is-alphacode)
 - [How AlphaCode works](#how-alphacode-works)
 - [Quick start](#quick-start)
@@ -150,7 +171,9 @@ On Windows, `alphacode --gui` opens the desktop interface.
 ## What is AlphaCode?
 
 **AlphaCode is a free, open-source AI coding agent written in Rust that runs in your terminal.** Instead of only suggesting code in a chat window, it works directly in your development environment. It can inspect a repository, plan a task, edit files, run commands and tests, search the web, operate a real Firefox session, interact with native desktop applications, and report what it verified.
-
+<p align="center">
+  <img src="assets/alphacode-brain.svg" alt="Animated diagram of the AlphaCode Brain." width="900">
+</p>
 It is an open-source alternative to terminal coding agents such as Claude Code, Codex CLI, Aider, and OpenCode, with a focus on a small memory footprint, real-browser and desktop automation, and freedom to choose your model.
 
 ```mermaid
@@ -180,7 +203,7 @@ AlphaCode runs in a terminal, so it works alongside any editor. Open a terminal 
 **How a request flows through the brain.** Every request, from "explain this repo" to "fix this bug and prove it", follows the same loop. The model decides what to do next, a tool does it, and the result feeds back in until the work is verified.
 
 <p align="center">
-  <img src="assets/brain-flow.svg" alt="Animated diagram: a request travels clockwise through seven stages (gather context, plan, use a tool, safety check, observe, verify, report) while the model at the center reasons and decides at every step. The loop repeats until the work is verified." width="900">
+  <img src="assets/brain-flow.svg" alt="Animated diagram of the AlphaCode agent loop. A goal moves through nine steps: goal, context, plan, reason, safety check, act, observe, verify, and report. If verification fails, the loop returns to the reason step. The Rust agent core at the center draws on a system prompt, project analyzer, code search, and sessions with memory, and acts through a model router, tools, swarm agents, and a safety harness." width="900">
 </p>
 
 <details>
@@ -190,12 +213,12 @@ AlphaCode runs in a terminal, so it works alongside any editor. Open a terminal 
 
 ```mermaid
 flowchart TD
-    YOU(["You describe a goal"]) --> CTX["1. Gather context<br/>project files, saved session, memory"]
-    CTX --> PLAN["2. Plan<br/>break the goal into small steps"]
-    PLAN --> MODEL["3. Model reasons<br/>built-in free AI or your own provider"]
+    YOU(["1. You describe a goal"]) --> CTX["2. Gather context<br/>project files, saved session, memory"]
+    CTX --> PLAN["3. Plan<br/>break the goal into small steps"]
+    PLAN --> MODEL["4. Model reasons<br/>built-in free AI or your own provider"]
     MODEL --> TOOLS
 
-    subgraph TOOLS["4. Choose the right tool"]
+    subgraph TOOLS["Choose the right tool"]
         T1["Files and search<br/>read, edit, patch, alphagrep"]
         T2["Terminal<br/>bash, batch, bg"]
         T3["Web<br/>websearch, webfetch, httpflow"]
@@ -223,17 +246,17 @@ flowchart TD
 
 The same flow in words:
 
-| Step | What happens                                                                                                  |
-|-----:|---------------------------------------------------------------------------------------------------------------|
-| 1    | **Gather context.** AlphaCode looks at your project, the saved session, and project memory.                   |
-| 2    | **Plan.** It breaks your goal into small, checkable steps.                                                    |
-| 3    | **Reason.** The model you chose (the built-in free AI or your own provider) decides the next action.          |
-| 4    | **Choose a tool.** Files and search, terminal, web, Firefox and desktop, swarm agents, or skills and MCP.      |
-| 5    | **Safety check.** Risky actions pause and ask you first. If you deny one, the model re-plans.                 |
-| 6    | **Run.** The tool executes.                                                                                   |
-| 7    | **Observe.** AlphaCode reads the output, errors, or page state.                                               |
-| 8    | **Verify.** It checks the result, for example by running tests and reviewing its own diff. If not done, it loops back to step 3. |
-| 9    | **Report.** You get a summary of what changed, what was checked, and what remains.                            |
+| Step | What happens |
+|-----:|--------------|
+| 1 | **Goal.** You describe what you want in plain English. |
+| 2 | **Gather context.** AlphaCode looks at your project, the saved session, and project memory. |
+| 3 | **Plan.** It breaks your goal into small, checkable steps. |
+| 4 | **Reason.** The model you chose (the built-in free AI or your own provider) decides the next action, including which tool to use: files and search, terminal, web, Firefox and desktop, swarm agents, or skills and MCP. |
+| 5 | **Safety check.** Risky actions pause and ask you first. If you deny one, the model re-plans. |
+| 6 | **Act.** The tool runs. |
+| 7 | **Observe.** AlphaCode reads the output, errors, or page state. |
+| 8 | **Verify.** It checks the result, for example by running tests and reviewing its own diff. If the work is not done, it loops back to step 4. |
+| 9 | **Report.** You get a summary of what changed, what was checked, and what remains. |
 
 Throughout the loop, the session is saved to disk, so you can [resume it](#sessions-and-memory) after a restart, crash, or dropped SSH connection.
 
@@ -355,18 +378,18 @@ Copy, paste, and adjust. Plain English works; specific goals work better.
 
 | Capability              | What it does                                                                              |
 |-------------------------|-------------------------------------------------------------------------------------------|
-| **AI coding agent**     | Understands natural-language tasks, plans multi-step work, edits code, and checks results |
-| **Code and file tools** | Reads and writes files, applies targeted edits and patches, and searches code             |
-| **Terminal execution**  | Runs commands, batches operations, and supports background jobs with safety controls      |
-| **Web tools**           | Searches, fetches, and analyzes web content and HTTP flows                                |
-| **Firefox automation**  | Works with pages, DOM, forms, tabs, frames, screenshots, downloads, and existing sessions |
-| **Desktop automation**  | Uses platform accessibility APIs to interact with native applications                     |
-| **Swarm mode**          | Coordinates multiple agents on work that can be split into independent tasks              |
-| **Persistent sessions** | Resumes work across terminal restarts                                                     |
-| **Project memory**      | Keeps continuity during longer workflows                                                  |
-| **Skills and MCP**      | Adds reusable workflows and connections to external tools and services                    |
-| **Model choice**        | Supports multiple hosted providers, local models, and OpenAI-compatible endpoints         |
-| **Cross-platform**      | Runs on Windows, macOS, and Linux                                                         |
+| 🤖 **AI coding agent**     | Understands natural-language tasks, plans multi-step work, edits code, and checks results |
+| 📝 **Code and file tools** | Reads and writes files, applies targeted edits and patches, and searches code             |
+| ⌨️ **Terminal execution**  | Runs commands, batches operations, and supports background jobs with safety controls      |
+| 🌍 **Web tools**           | Searches, fetches, and analyzes web content and HTTP flows                                |
+| 🦊 **Firefox automation**  | Works with pages, DOM, forms, tabs, frames, screenshots, downloads, and existing sessions |
+| 🖥️ **Desktop automation**  | Uses platform accessibility APIs to interact with native applications                     |
+| 🐝 **Swarm mode**          | Coordinates multiple agents on work that can be split into independent tasks              |
+| 💾 **Persistent sessions** | Resumes work across terminal restarts                                                     |
+| 🧠 **Project memory**      | Keeps continuity during longer workflows                                                  |
+| 🧩 **Skills and MCP**      | Adds reusable workflows and connections to external tools and services                    |
+| 🔌 **Model choice**        | Supports multiple hosted providers, local models, and OpenAI-compatible endpoints         |
+| 🪟 **Cross-platform**      | Runs on Windows, macOS, and Linux                                                         |
 
 **Coding and repository work:** explore an unfamiliar codebase, trace a bug, refactor a module, add a feature, run a build, create regression tests, review a diff, or investigate a failure.
 
@@ -376,16 +399,30 @@ Copy, paste, and adjust. Plain English works; specific goals work better.
 
 AlphaCode belongs to the same family as Claude Code, Codex CLI, Aider, OpenCode, Gemini CLI, and GitHub Copilot CLI. These tools differ in licensing, supported models, and features, and they change quickly, so check each project's own documentation for current details.
 
-**AlphaCode is a good fit when you want:**
-
-- an **MIT-licensed** agent with no vendor lock-in;
-- to **start for free** with no API key, then connect any provider later;
-- to run against **local models** (Ollama, LM Studio) so model traffic stays on your machine;
-- a **real browser** (Firefox) and **native desktop apps** in the same agent that edits your code;
-- **low memory use**, especially with many concurrent sessions (see the [benchmarks](#benchmarks));
-- **multi-agent swarms** for work that splits into parallel tasks.
-
-**Consider another tool when** you need a graphical IDE rather than a terminal, or a workflow tied deeply to one vendor's models and ecosystem.
+<table>
+  <tr>
+    <th align="left" width="60%">✅ AlphaCode is a good fit when you want</th>
+    <th align="left" width="40%">↔️ Consider another tool when you need</th>
+  </tr>
+  <tr>
+    <td valign="top">
+      <ul>
+        <li>an <b>MIT-licensed</b> agent with no vendor lock-in</li>
+        <li>to <b>start for free</b> with no API key, then connect any provider later</li>
+        <li>to run against <b>local models</b> (Ollama, LM Studio) so model traffic stays on your machine</li>
+        <li>a <b>real browser</b> (Firefox) and <b>native desktop apps</b> in the same agent that edits your code</li>
+        <li><b>low memory use</b>, especially with many concurrent sessions (see the <a href="#benchmarks">benchmarks</a>)</li>
+        <li><b>multi-agent swarms</b> for work that splits into parallel tasks</li>
+      </ul>
+    </td>
+    <td valign="top">
+      <ul>
+        <li>a <b>graphical IDE</b> rather than a terminal</li>
+        <li>a workflow tied deeply to <b>one vendor's models and ecosystem</b></li>
+      </ul>
+    </td>
+  </tr>
+</table>
 
 > [!NOTE]
 > Using more than one agent is common. AlphaCode works on plain files and shell commands, so it can sit alongside whatever else you use.
@@ -638,7 +675,16 @@ The agent's instructions are not a substitute for independently reviewing the im
 
 ## Benchmarks
 
-AlphaCode is written in Rust and designed to keep runtime overhead modest. Resident memory (RAM), lower is better:
+AlphaCode is written in Rust and designed to keep runtime overhead modest. The charts show resident memory (RAM) for one active session and for ten concurrent sessions. Lower is better.
+
+<p align="center">
+  <img src="assets/benchmarks.svg" alt="Bar charts of resident memory. With one active session AlphaCode uses 27.8 MB, versus 140.0 MB for Codex CLI up to 386.6 MB for Claude Code. With ten concurrent sessions AlphaCode uses 117.0 MB, versus 334.8 MB for Codex CLI up to 3,237.2 MB for OpenCode." width="900">
+</p>
+
+<details>
+<summary><b>See the exact numbers</b></summary>
+
+<br>
 
 | Tool                   | One active session   | Ten concurrent sessions   |
 |------------------------|---------------------:|--------------------------:|
@@ -650,6 +696,8 @@ AlphaCode is written in Rust and designed to keep runtime overhead modest. Resid
 | GitHub Copilot CLI     | 333.3 MB (12.0×)     | 1,756.5 MB (15.0×)        |
 | OpenCode               | 371.5 MB (13.4×)     | 3,237.2 MB (27.7×)        |
 | Claude Code            | 386.6 MB (13.9×)     | 2,300.6 MB (19.7×)        |
+
+</details>
 
 <!-- TODO (maintainer): add the measurement date, tool versions, OS/CPU/RAM and the exact workload here. Undated benchmarks are the easiest claim for readers to dismiss. -->
 
@@ -682,7 +730,7 @@ The quick-start commands use the latest installer. Not sure which method to use?
 | Need a reproducible, pinned version          | Installer with `--version` / `-Version`   |
 | Must review scripts before running them      | Download the script, read it, then run it |
 | Don't want your PATH or shell profile edited | `--no-path` / `-NoPath`                   |
-| Want to hack on AlphaCode                    | [Build from source](#build-from-source)   |
+| Want to hack on AlphaCode                    | The "Build from source" section below   |
 
 <details>
 <summary><b>Windows</b></summary>

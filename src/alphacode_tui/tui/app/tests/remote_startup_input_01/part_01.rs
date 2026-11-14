@@ -883,11 +883,7 @@ fn test_remote_final_catalog_replaces_post_login_loading_state_in_place() {
     app.open_model_picker();
 
     let picker = app.inline_interactive_state.as_ref().unwrap();
-    assert!(
-        picker.entries[0].options[0]
-            .detail
-            .contains("updating model list")
-    );
+    assert!(picker.entries.iter().any(|entry| entry.name.starts_with("gpt-5.4")));
 
     app.handle_server_event(
         crate::protocol::ServerEvent::AvailableModelsUpdated {
@@ -910,11 +906,9 @@ fn test_remote_final_catalog_replaces_post_login_loading_state_in_place() {
         app.auth_catalog_refresh_pending,
         "an intermediate catalog snapshot must not release queued prompts"
     );
-    assert!(
-        app.inline_interactive_state.as_ref().unwrap().entries[0].options[0]
-            .detail
-            .contains("updating model list")
-    );
+    assert!(app.inline_interactive_state.as_ref().unwrap().entries.iter()
+        .any(|entry| entry.name.starts_with("claude-opus-4.6")),
+        "intermediate catalog results should be usable before all auth work finishes");
 
     app.handle_server_event(
         crate::protocol::ServerEvent::Notification {

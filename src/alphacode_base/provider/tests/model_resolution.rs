@@ -1057,6 +1057,10 @@ input = ["image"]
             "image-only configured models must not be listed"
         );
 
+        assert_eq!(provider.connected_catalog_model_request("vendor/my-model").as_deref(),
+            Some("my-gateway:vendor/my-model"));
+        provider.set_model("vendor/my-model").expect("bare named-profile catalog ID must resolve");
+
         // Selecting the picker's spec must bind the named profile runtime.
         provider
             .set_model("my-gateway:vendor/my-model")

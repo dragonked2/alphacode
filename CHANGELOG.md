@@ -4,6 +4,45 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.6] - 2026-11-14
+
+### Added
+
+- Durable engagement runtime (`engagement_runtime`) that tracks session scope,
+  policy, and investigation intelligence across the orchestrator, agent,
+  proof reviewer, and exports; the bug-bounty executor now derives a stable
+  session id from the target and workdir and writes `engagement.json`.
+- Authorization regression suite (`authz_regression_tests`) covering the
+  run-local `AccessIndex` paths for denied controls, first-declaration
+  identity/resource resolution, and exchange-backed assessments.
+- New `authorization_review` and `investigation` tools exposing the durable
+  engagement state to the agent turn.
+- `reasoning-cases` bundled skill for moving from an interesting observation
+  to a causal test (ownership vs. public preview, failed repetitions,
+  revocation, interpreter evidence, server-side callbacks, business-state
+  races, chain compatibility, and source-to-deployment differences).
+
+### Changed
+
+- Bug-bounty scanner tasks now execute through the same registry gates
+  (`Arc<dyn Tool>`) as ordinary agent calls instead of a hand-rolled match,
+  so every task benefits from the same output caps, timeouts, and input
+  validation; `dalfox` joins the supported task tool set.
+- Authorization engine (`authz.rs`) builds a run-local `AccessIndex` per
+  case and exposes `analyze_access_inner` for reuse across assessments,
+  removing per-call linear scans of identities, resources, and observations.
+- The `MultiProvider` routes memo is now `Arc<RoutesMemoEntry>`, so forks on
+  a shared server reuse one build instead of each rebuilding their own.
+- `httpflow` bot-protection detection is now challenge-specific: Cloudflare
+  `server`/`cf-ray` headers alone no longer trigger a false positive, and the
+  error message describes the surface as blocked rather than recommending a
+  CAPTCHA bypass.
+- `ALPHAX_FREE_PROFILE_ID` skips the live-model cache lookup, so the free
+  route never blocks on a catalog refresh that cannot serve it.
+- Browser Agent extension ships 1.7.1; the 1.6.4 artifact is removed from the
+  working tree and the `.crate` exclude list.
+- README architecture diagram and CI action runtimes modernized.
+
 ## [1.1.5] - 2026-11-13
 
 ### Added

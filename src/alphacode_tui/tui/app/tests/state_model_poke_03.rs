@@ -1315,7 +1315,7 @@ fn test_login_completed_spawns_auth_refresh_when_runtime_is_available() {
 }
 
 #[test]
-fn test_model_picker_waits_for_async_post_login_catalog_activation() {
+fn test_model_picker_stays_usable_during_async_post_login_catalog_activation() {
     let _env_lock = crate::storage::lock_test_env();
     ensure_test_alphacode_home_if_unset();
     clear_persisted_test_ui_state();
@@ -1344,24 +1344,8 @@ fn test_model_picker_waits_for_async_post_login_catalog_activation() {
         .inline_interactive_state
         .as_ref()
         .expect("loading model picker should be open");
-    assert_eq!(picker.entries.len(), 1);
-    assert!(
-        picker.entries[0].options[0]
-            .detail
-            .contains("updating model list")
-    );
-    // The single loading row labels the *current* model (which may legitimately
-    // still be the pre-import one until async activation lands), so check the
-    // route metadata: the stale pre-import catalog route must not be shown as a
-    // selectable ready entry.
-    assert!(
-        !picker
-            .entries
-            .iter()
-            .flat_map(|entry| entry.options.iter())
-            .any(|option| option.api_method == "openai-oauth"),
-        "the stale pre-import catalog must not be presented as ready"
-    );
+    assert!(!picker.entries.is_empty(), "existing routes remain usable during discovery");
+    assert!(app.auth_catalog_refresh_pending, "showing routes must not release queued prompts");
 
     let ready = rt.block_on(async {
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -1382,9 +1366,7 @@ fn test_model_picker_waits_for_async_post_login_catalog_activation() {
     assert!(*logged_in.lock().unwrap());
     wait_for_model_picker_load(&mut app);
 
-    // The picker refreshes in place after AuthCatalogRefreshReady (instead of
-    // being stuck forever on the "updating model list" loading row), and the
-    // freshly loaded picker shows the provider's route.
+    // Completion refreshes the picker in place with the activated catalog.
     let picker = app
         .inline_interactive_state
         .as_ref()
@@ -3025,4 +3007,36 @@ fn auto_poke_waits_for_requested_user_input_and_resumes_after_reply() {
         app.display_messages.push(reply);
         assert!(app.schedule_auto_poke_followup_if_needed());
     });
+}
+
+#[test]
+fn connected_provider_rows_follow_automatic_free_even_when_another_model_is_current() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_provider_model = Some("gpt-5.5".to_string());
+    app.remote_provider_name = Some("OpenAI".to_string());
+    app.recent_authenticated_provider = Some(("lmstudio".to_string(), Instant::now()));
+    let free = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+    app.remote_model_options = vec![
+        crate::provider::ModelRoute {
+            model: "gpt-5.5".into(), provider: "OpenAI".into(), api_method: "openai-oauth".into(),
+            available: true, detail: String::new(), cheapness: None,
+        },
+        crate::provider::ModelRoute {
+            model: "qwen3.8-9b-heretic-uncensored".into(), provider: "LM Studio".into(),
+            api_method: "openai-compatible:lmstudio".into(), available: true,
+            detail: String::new(), cheapness: None,
+        },
+        crate::provider::ModelRoute {
+            model: free.clone(), provider: "Alphax Free".into(), api_method: "openai-compatible:alphax-free".into(),
+            available: true, detail: String::new(), cheapness: None,
+        },
+    ];
+    app.open_model_picker();
+    let picker = app.inline_interactive_state.as_mut().unwrap();
+    assert_eq!(picker.entries[0].name, free);
+    assert_eq!(picker.entries[1].name, "qwen3.8-9b-heretic-uncensored");
+    picker.filter = "lm stu".into();
+    App::apply_inline_interactive_filter(picker);
+    assert!(picker.filtered.iter().any(|&index| picker.entries[index].options[0].provider == "LM Studio"));
 }

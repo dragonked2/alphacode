@@ -28,6 +28,41 @@ impl ToolOutput {
         self
     }
 
+    /// Set a compact title that identifies the files changed by a tool.
+    ///
+    /// File-mutating tools use the title in the activity row and completion
+    /// event. Keep the first few paths visible rather than collapsing a
+    /// multi-file operation to an opaque count such as "3 files".
+    pub fn with_file_paths<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<str>,
+    {
+        let mut unique_paths = Vec::new();
+        for path in paths {
+            let path = path.as_ref().trim();
+            if !path.is_empty() && !unique_paths.iter().any(|seen| seen == path) {
+                unique_paths.push(path.to_string());
+            }
+        }
+
+        if unique_paths.is_empty() {
+            return self;
+        }
+
+        let displayed = unique_paths
+            .iter()
+            .take(3)
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let mut title = displayed.join(", ");
+        if unique_paths.len() > displayed.len() {
+            title.push_str(&format!(", +{} more", unique_paths.len() - displayed.len()));
+        }
+        self.title = Some(title);
+        self
+    }
+
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
         self.metadata = Some(metadata);
         self
@@ -111,7 +146,24 @@ pub fn resolve_tool_name(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_tool_name;
+    use super::{ToolOutput, resolve_tool_name};
+
+    #[test]
+    fn file_titles_keep_touched_paths_visible() {
+        let output = ToolOutput::new("changed")
+            .with_file_paths(["src/a.rs", "src/b.rs", "src/c.rs", "src/d.rs"]);
+        assert_eq!(
+            output.title.as_deref(),
+            Some("src/a.rs, src/b.rs, src/c.rs, +1 more")
+        );
+    }
+
+    #[test]
+    fn file_titles_deduplicate_and_ignore_empty_paths() {
+        let output =
+            ToolOutput::new("changed").with_file_paths(["", "src/a.rs", "src/a.rs", "src/b.rs"]);
+        assert_eq!(output.title.as_deref(), Some("src/a.rs, src/b.rs"));
+    }
 
     #[test]
     fn resolve_tool_name_strips_function_namespace_before_alias_resolution() {

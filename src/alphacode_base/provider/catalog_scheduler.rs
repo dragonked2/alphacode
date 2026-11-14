@@ -116,12 +116,23 @@ fn sweep_stale_profile_catalogs() -> usize {
         return 0;
     }
 
+    refresh_configured_profile_catalogs("scheduled catalog sweep")
+}
+
+/// Explicit auth changes also refresh cold profiles without waiting for a sweep.
+/// The runtime hook keeps requests single-flight and applies failure backoff.
+pub(super) fn refresh_configured_profile_catalogs(context: &'static str) -> usize {
     let mut scheduled = 0usize;
 
     for profile in crate::provider_catalog::openai_compatible_profiles()
         .iter()
         .copied()
     {
+        // The automatic free alias has no live catalog; its gateway's broader
+        // /models response must never leak unrelated paid models into /model.
+        if profile.id == crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID {
+            continue;
+        }
         if !crate::provider_catalog::openai_compatible_profile_is_configured(profile) {
             continue;
         }
@@ -129,8 +140,7 @@ fn sweep_stale_profile_catalogs() -> usize {
             continue;
         }
         if super::openrouter::maybe_schedule_openai_compatible_profile_catalog_refresh(
-            profile,
-            "scheduled catalog sweep",
+            profile, context,
         ) {
             scheduled += 1;
         }
@@ -140,9 +150,7 @@ fn sweep_stale_profile_catalogs() -> usize {
     // not refreshed by the active-provider path when a direct OpenAI-compatible
     // profile occupies the shared runtime slot. The scheduler hook is a no-op
     // when that cache is already fresh.
-    if super::openrouter::maybe_schedule_standard_openrouter_catalog_refresh(
-        "scheduled catalog sweep",
-    ) {
+    if super::openrouter::maybe_schedule_standard_openrouter_catalog_refresh(context) {
         scheduled += 1;
     }
 

@@ -88,6 +88,7 @@ impl Agent {
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
         let mut empty_post_tool_continuations = 0u32;
+        let mut security_report_corrections = 0u32;
         // Automatic alternate-route attempts after a model-side refusal stop
         // (bounded by Agent::MAX_REFUSAL_ROTATIONS_PER_TURN so a policy that
         // keeps declining cannot cycle the whole pool in one request).
@@ -1167,6 +1168,11 @@ impl Agent {
 
             // If no tool calls, we're done
             if tool_calls.is_empty() {
+                if !self.is_graceful_shutdown()
+                    && self.continue_unverified_security_report(&mut security_report_corrections)?
+                {
+                    continue;
+                }
                 if self.maybe_continue_empty_post_tool_response(
                     visible_text_is_empty,
                     prompt_has_recent_tool_result,

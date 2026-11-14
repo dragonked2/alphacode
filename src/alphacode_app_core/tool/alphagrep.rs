@@ -188,7 +188,7 @@ impl Tool for AlphaGrepTool {
                 "mode": {
                     "type": "string",
                     "enum": ["grep", "find", "outline", "trace"],
-                    "description": "Mode: grep (default), find (file names), outline (one file), trace (relationship DSL)."
+                    "description": "Mode: grep (default), find (file names), outline (one file; pass its path in `file`), trace (relationship DSL). In outline mode, `path` is only the search root, not the target file."
                 },
                 "query": {
                     "type": "string",
@@ -196,7 +196,7 @@ impl Tool for AlphaGrepTool {
                 },
                 "file": {
                     "type": "string",
-                    "description": "Single file to inspect. Required for outline."
+                    "description": "Single target file to inspect. Required for outline; pass the workspace-relative path here (for example, `src/lib.rs`). The `path` field is only the search root."
                 },
                 "terms": {
                     "type": "array",
@@ -240,7 +240,17 @@ impl Tool for AlphaGrepTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: AlphaGrepInput = serde_json::from_value(input)?;
+        let mut params: AlphaGrepInput = serde_json::from_value(input)?;
+        if let Some(raw_type) = params.file_type.take() {
+            let normalized = normalize_file_type_value(&raw_type);
+            if normalized.as_deref() != Some(raw_type.trim()) {
+                logging::warn(&format!(
+                    "alphagrep normalized file type filter {:?} to {:?}",
+                    raw_type, normalized
+                ));
+            }
+            params.file_type = normalized;
+        }
         // The search walks and reads files (and for trace/outline modes also
         // loads the session and reads more files), all of which is blocking
         // work with no async yield points. Offload it
@@ -254,6 +264,25 @@ impl Tool for AlphaGrepTool {
             .await
             .map_err(|err| anyhow::anyhow!("alphagrep task failed to join: {err}"))?
     }
+}
+
+/// Repair only punctuation that can be left behind when a model truncates or
+/// leaks JSON delimiters into a scalar argument (for example, `rs}`). Do not
+/// guess at arbitrary values: the underlying alphagrep library still validates
+/// the resulting extension/filter.
+fn normalize_file_type_value(raw: &str) -> Option<String> {
+    let mut value = raw.trim().to_string();
+    while !value.is_empty()
+        && value
+            .chars()
+            .last()
+            .is_some_and(|character| matches!(character, '}' | ']' | ',' | ';'))
+    {
+        value.pop();
+        value = value.trim_end().to_string();
+    }
+    let value = value.strip_prefix('.').unwrap_or(&value).trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 fn run_alphagrep_blocking(params: &AlphaGrepInput, ctx: &ToolContext) -> Result<ToolOutput> {
@@ -498,4 +527,41 @@ fn normalized_alphagrep_glob_owned(glob: Option<&str>) -> Option<String> {
 
 fn is_match_all_glob(glob: &str) -> bool {
     matches!(glob, "*" | "**" | "**/*" | "./*" | "./**" | "./**/*")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AlphaGrepTool, Tool, normalize_file_type_value};
+
+    #[test]
+    fn outline_schema_distinguishes_target_file_from_search_root() {
+        let schema = AlphaGrepTool::new().parameters_schema();
+        let mode = schema["properties"]["mode"]["description"]
+            .as_str()
+            .expect("mode description");
+        let file = schema["properties"]["file"]["description"]
+            .as_str()
+            .expect("file description");
+
+        assert!(mode.contains("pass its path in `file`"));
+        assert!(mode.contains("`path` is only the search root"));
+        assert!(file.contains("Required for outline"));
+    }
+
+    #[test]
+    fn normalize_file_type_removes_only_obvious_json_delimiters() {
+        assert_eq!(normalize_file_type_value("rs}"), Some("rs".to_string()));
+        assert_eq!(normalize_file_type_value(".rs]"), Some("rs".to_string()));
+        assert_eq!(normalize_file_type_value("  py,  "), Some("py".to_string()));
+        assert_eq!(
+            normalize_file_type_value("typescript"),
+            Some("typescript".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_file_type_rejects_empty_values() {
+        assert_eq!(normalize_file_type_value("   "), None);
+        assert_eq!(normalize_file_type_value("}"), None);
+    }
 }

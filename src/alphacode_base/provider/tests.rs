@@ -666,6 +666,13 @@ fn model_routes_memo_serves_repeats_and_invalidates_on_auth_and_model_changes() 
         let shared = second_instance.model_routes();
         assert_eq!(baseline, shared, "shared memo must serve identical routes");
         assert!(
+            Arc::ptr_eq(
+                &first_instance.fresh_routes_memo_entry(),
+                &second_instance.fresh_routes_memo_entry(),
+            ),
+            "identical sessions should share the immutable catalog instead of copying it"
+        );
+        assert!(
             second_instance
                 .routes_memo
                 .lock()
@@ -1242,5 +1249,175 @@ fn profile_catalog_cache_needs_refresh_for_missing_cache() {
             super::catalog_scheduler::profile_catalog_cache_needs_refresh(profile),
             "a missing catalog cache must be reported as needing a refresh"
         );
+    });
+}
+
+#[test]
+fn connected_catalog_resolves_family_names_without_openrouter_credentials() {
+    with_clean_provider_test_env(|| {
+        let model = "qwen3.8-9b-heretic-uncensored";
+        crate::provider_catalog::save_env_value_to_env_file(
+            crate::provider_catalog::OPENAI_COMPAT_LOCAL_ENABLED_ENV,
+            "lmstudio.env",
+            Some("1"),
+        )
+        .unwrap();
+        save_test_openrouter_model_cache("lmstudio", "http://localhost:1234/v1", &[model]);
+        let provider = MultiProvider::new();
+        assert_eq!(
+            provider.connected_catalog_model_request(model).as_deref(),
+            Some("lmstudio:qwen3.8-9b-heretic-uncensored")
+        );
+        provider
+            .set_model(model)
+            .expect("catalog owner must win over Qwen/OpenRouter heuristics");
+        assert_eq!(provider.model(), model);
+        assert_eq!(
+            ProviderRegistry::new(&provider)
+                .active_compatible_profile_id()
+                .as_deref(),
+            Some("lmstudio")
+        );
+    });
+}
+
+#[test]
+fn named_profile_auth_does_not_configure_unrelated_builtin_profiles() {
+    with_clean_provider_test_env(|| {
+        crate::alphacode_core::env::set_var("ALPHACODE_NAMED_PROVIDER_PROFILE", "private-gateway");
+        crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_ALLOW_NO_AUTH", "1");
+        for id in ["deepseek", "lmstudio", "ollama"] {
+            let profile = crate::provider_catalog::openai_compatible_profile_by_id(id).unwrap();
+            assert!(
+                !crate::provider_catalog::openai_compatible_profile_is_configured(profile),
+                "named profile must not authenticate {id}"
+            );
+        }
+    });
+}
+
+#[test]
+fn default_local_endpoint_is_not_a_connected_provider() {
+    with_clean_provider_test_env(|| {
+        assert!(
+            !crate::provider_catalog::openai_compatible_profile_is_configured(
+                crate::provider_catalog::OPENAI_COMPAT_PROFILE
+            )
+        );
+    });
+}
+
+#[test]
+fn auth_change_refreshes_new_nonactive_profile_catalog_without_waiting_for_sweep() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _guard = runtime.enter();
+        crate::provider_catalog::save_env_value_to_env_file(
+            crate::provider_catalog::OPENAI_COMPAT_LOCAL_ENABLED_ENV,
+            "lmstudio.env",
+            Some("1"),
+        )
+        .unwrap();
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = Arc::clone(&calls);
+        external::register_profile_catalog_refresh(move |profile, context| {
+            captured.lock().unwrap().push((profile.id, context));
+            true
+        });
+        let provider = MultiProvider::new();
+        provider.on_auth_changed();
+        let calls = calls.lock().unwrap().clone();
+        register_test_external_runtimes();
+        assert!(
+            calls.contains(&("lmstudio", "auth changed")),
+            "newly connected catalog must refresh immediately: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|(id, _)| *id == "deepseek"),
+            "unconnected providers must not be probed"
+        );
+    });
+}
+
+#[test]
+fn generic_compatible_live_catalog_resolves_models_while_another_provider_is_active() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _guard = runtime.enter();
+        let provider = test_multi_provider_with_openai();
+        save_test_openai_compatible_login_config("fallback-model");
+        let model = "qwen3.8-9b-heretic-uncensored";
+        save_test_openrouter_model_cache(
+            "openai-compatible",
+            "https://example-openai-compatible.test/v1",
+            &[model, "spark-x2.6-4b"],
+        );
+        provider.on_auth_changed();
+        let routes = provider.model_routes();
+        assert!(routes.iter().any(|route| route.model == model
+            && route.available
+            && route.api_method == "openai-compatible:openai-compatible"));
+        provider
+            .set_model(model)
+            .expect("generic connected catalog must resolve Qwen without OpenRouter credentials");
+        assert_eq!(provider.model(), model);
+        assert_eq!(
+            ProviderRegistry::new(&provider)
+                .active_compatible_profile_id()
+                .as_deref(),
+            Some("openai-compatible")
+        );
+    });
+}
+
+#[test]
+fn automatic_free_profile_ignores_gateway_catalog_models() {
+    with_clean_provider_test_env(|| {
+        let profile =
+            crate::provider_catalog::openai_compatible_profile_by_id("alphax-free").unwrap();
+        let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
+        save_test_openrouter_model_cache(
+            "alphax-free",
+            &resolved.api_base,
+            &["unrelated-paid-model"],
+        );
+        let routes = direct_openai_compatible_profile_routes(profile);
+        assert!(routes.iter().any(|route| {
+            crate::alphacode_provider_metadata::is_alphax_free_builtin_model(&route.model)
+        }));
+        assert!(
+            !routes
+                .iter()
+                .any(|route| route.model == "unrelated-paid-model")
+        );
+    });
+}
+
+/// Compare snapshot-sharing cost with the former deep-copy operation. This
+/// measures catalog-copy overhead only, not provider latency or task quality.
+#[test]
+#[ignore = "manual catalog snapshot allocation benchmark"]
+fn catalog_snapshot_sharing_benchmark() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _guard = runtime.enter();
+        let provider = test_multi_provider_with_openai();
+        let catalog = provider.fresh_routes_memo_entry();
+        let iterations = 10_000;
+        let started = std::time::Instant::now();
+        for _ in 0..iterations {
+            std::hint::black_box(Arc::clone(&catalog));
+        }
+        let shared = started.elapsed();
+        let started = std::time::Instant::now();
+        for _ in 0..iterations {
+            std::hint::black_box(catalog.as_ref().clone());
+        }
+        let copied = started.elapsed();
+        println!(
+            "catalog snapshot benchmark: routes={}, iterations={iterations}, shared={shared:?}, deep_copy={copied:?}",
+            catalog.routes.len()
+        );
+        assert!(Arc::ptr_eq(&catalog, &provider.fresh_routes_memo_entry()));
     });
 }

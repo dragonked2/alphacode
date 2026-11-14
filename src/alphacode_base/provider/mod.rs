@@ -155,6 +155,9 @@ fn openai_compatible_profile_catalog_cache_is_stale(cached_at: u64, now: u64) ->
 pub(crate) fn cached_live_models_for_openai_compatible_profile(
     resolved: &crate::provider_catalog::ResolvedOpenAiCompatibleProfile,
 ) -> Option<(Vec<String>, bool)> {
+    if resolved.id == crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID {
+        return None;
+    }
     let cache = crate::provider_catalog::cached_catalog_for_resolved_compatible_profile(resolved)?;
     let cache_is_stale = crate::alphacode_provider_openrouter::current_unix_secs()
         .map(|now| openai_compatible_profile_catalog_cache_is_stale(cache.cached_at, now))
@@ -381,7 +384,7 @@ pub struct MultiProvider {
     /// a couple of seconds, saturating every core. The memo collapses those
     /// into one build per TTL window; auth/model changes invalidate it
     /// explicitly so pickers never see stale routes after a switch.
-    routes_memo: Mutex<Option<RoutesMemoEntry>>,
+    routes_memo: Mutex<Option<Arc<RoutesMemoEntry>>>,
     /// Number of model-catalog prefetches launched by the latest auth refresh.
     /// Shared by forks so the server can wait for real work rather than sleeping
     /// through a fixed quiet period after login.
@@ -414,7 +417,7 @@ struct RoutesMemoEntry {
 /// build. Instance-specific inputs (active provider/model/profile) are folded
 /// into the memo key; anything not captured is bounded by the short TTL and
 /// the auth/catalog generations.
-static GLOBAL_ROUTES_MEMO: LazyLock<Mutex<HashMap<String, RoutesMemoEntry>>> =
+static GLOBAL_ROUTES_MEMO: LazyLock<Mutex<HashMap<String, Arc<RoutesMemoEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Single-flight guard for catalog builds. During a client connect burst every
@@ -525,7 +528,7 @@ impl MultiProvider {
     /// generations. Lookup order: this instance's memo, the process-wide
     /// shared memo (so shared-server forks reuse one build), then a
     /// single-flight build that followers wait on instead of duplicating.
-    fn fresh_routes_memo_entry(&self) -> RoutesMemoEntry {
+    fn fresh_routes_memo_entry(&self) -> Arc<RoutesMemoEntry> {
         // Backstop only: invalidation is event-driven via auth/catalog
         // generations, so a completed refresh shows up on the next render.
         const ROUTES_MEMO_TTL: std::time::Duration = std::time::Duration::from_secs(60);
@@ -552,7 +555,7 @@ impl MultiProvider {
         // Shared path: another instance with the same catalog-relevant state
         // (typically a fresh fork on the shared server) built one already.
         let shared_key = self.routes_memo_key();
-        let try_shared = || -> Option<RoutesMemoEntry> {
+        let try_shared = || -> Option<Arc<RoutesMemoEntry>> {
             let shared = GLOBAL_ROUTES_MEMO.lock().ok()?;
             let entry = shared.get(&shared_key)?;
             if !fresh(entry) {
@@ -580,13 +583,13 @@ impl MultiProvider {
         }
 
         let routes = catalog_routes::multiprovider_model_routes(self);
-        let entry = RoutesMemoEntry {
+        let entry = Arc::new(RoutesMemoEntry {
             built_at: std::time::Instant::now(),
             auth_generation,
             catalog_generation: catalog_gen,
             listable_models: listable_model_names_from_routes(&routes),
             routes,
-        };
+        });
         if let Ok(mut memo) = self.routes_memo.lock() {
             *memo = Some(entry.clone());
         }
@@ -865,46 +868,40 @@ impl MultiProvider {
         Some((profile, rest))
     }
 
-    /// Find the configured OpenAI-compatible profile that serves a bare model
-    /// id, using the live route catalog as the source of truth.
-    ///
-    /// Route specs from the picker carry a `<profile>:<model>` prefix, but
-    /// hand-typed `/model <id>` and saved sessions can carry the bare id. The
-    /// active profile wins when several profiles serve the same id, so a
-    /// re-select of the current model never silently hops endpoints.
-    fn openai_compatible_profile_owning_model(
-        &self,
-        model: &str,
-    ) -> Option<crate::provider_catalog::OpenAiCompatibleProfile> {
-        let model = model.trim();
-        if model.is_empty() {
-            return None;
-        }
-
+    /// Resolve exact IDs from connected catalogs before guessing a provider
+    /// from the model's name. Prefer the active route when catalogs overlap.
+    fn connected_catalog_model_request(&self, model: &str) -> Option<String> {
         let active_profile_id = ProviderRegistry::new(self).active_compatible_profile_id();
-        let mut fallback: Option<String> = None;
-        for route in self.fresh_routes_memo_entry().routes {
-            if !route.available || route.model != model {
-                continue;
-            }
-            let Some(profile_id) = route
-                .api_method
-                .strip_prefix("openai-compatible:")
-                .map(str::trim)
-                .filter(|profile_id| !profile_id.is_empty())
-            else {
-                continue;
-            };
-            if active_profile_id.as_deref() == Some(profile_id) {
-                fallback = Some(profile_id.to_string());
-                break;
-            }
-            if fallback.is_none() {
-                fallback = Some(profile_id.to_string());
-            }
-        }
-
-        crate::provider_catalog::openai_compatible_profile_by_id(&fallback?)
+        let active_method = active_profile_id.map(|id| format!("openai-compatible:{id}"));
+        let catalog = self.fresh_routes_memo_entry();
+        let mut candidates: Vec<_> = catalog
+            .routes
+            .iter()
+            .filter(|route| route.available && route.model == model)
+            .collect();
+        candidates.sort_by_key(|route| {
+            let active = active_method.as_deref().map_or_else(
+                || {
+                    crate::alphacode_provider_core::model_route_provider_labels_related(
+                        &route.provider,
+                        self.name(),
+                    )
+                },
+                |method| route.api_method == method,
+            );
+            (
+                !active,
+                route
+                    .detail
+                    .contains("fallback: static provider model list"),
+            )
+        });
+        candidates.into_iter().find_map(|route| {
+            let request =
+                Self::model_switch_request_for_session_route(model, None, Some(&route.api_method));
+            // Placeholder routes cannot resolve a provider; avoid recursion.
+            (request != model).then_some(request)
+        })
     }
 
     /// Parse a `<name>:<model>` spec whose prefix is a user-defined named
@@ -1367,6 +1364,10 @@ impl MultiProvider {
                 Some(Arc::new(bedrock::BedrockProvider::new()));
         }
 
+        // Login must populate newly configured, non-active profiles now, rather
+        // than waiting for the scheduler's initial delay or ten-minute sweep.
+        catalog_scheduler::refresh_configured_profile_catalogs("auth changed");
+
         let active_provider = self.active_provider();
         let provider_to_refresh: Option<(Arc<dyn Provider>, &'static str)> = match active_provider {
             ActiveProvider::Claude => self
@@ -1817,9 +1818,9 @@ impl Provider for MultiProvider {
     fn set_model(&self, model: &str) -> Result<()> {
         self.spawn_anthropic_catalog_refresh_if_needed();
         self.spawn_openai_catalog_refresh_if_needed();
-        // Model/profile switches change route availability details; rebuild
-        // the catalog on next read instead of serving the memoized copy.
-        self.invalidate_routes_memo();
+        // Keep the current snapshot for catalog-based resolution. A successful
+        // switch invalidates it through set_active_provider; failed requests
+        // leave the still-valid catalog available for the next attempt.
 
         let requested_model = model.trim();
         if requested_model.is_empty() {
@@ -1889,6 +1890,10 @@ impl Provider for MultiProvider {
                 );
             }
             return self.set_model_on_provider(target, target_model);
+        }
+
+        if let Some(request) = self.connected_catalog_model_request(requested_model) {
+            return self.set_model(&request);
         }
 
         // A custom OpenAI-compatible endpoint owns opaque, provider-local model
@@ -1973,13 +1978,6 @@ impl Provider for MultiProvider {
             && let Some(target) = provider_from_model_key(target_provider)
         {
             self.set_model_on_provider(target, model)
-        } else if let Some(profile) = self.openai_compatible_profile_owning_model(model) {
-            // Bare ids from an OpenAI-compatible catalog (`celeris-1`,
-            // `mimo-v2.5`, ...) match none of the built-in model-name
-            // heuristics. Without this, `/model <bare-id>` fell through to
-            // whichever provider happened to be active and failed with a
-            // misleading "not supported by <active provider>" error.
-            self.set_model_on_openai_compatible_profile(profile, model)
         } else if model.contains('/') {
             // "/" model not owned by any active profile — fall back to OpenRouter.
             if self.openrouter_provider().is_some() {
@@ -2073,7 +2071,7 @@ impl Provider for MultiProvider {
     }
 
     fn available_models_display(&self) -> Vec<String> {
-        self.fresh_routes_memo_entry().listable_models
+        self.fresh_routes_memo_entry().listable_models.clone()
     }
 
     fn available_providers_for_model(&self, model: &str) -> Vec<String> {
@@ -2110,7 +2108,7 @@ impl Provider for MultiProvider {
     }
 
     fn model_routes(&self) -> Vec<ModelRoute> {
-        self.fresh_routes_memo_entry().routes
+        self.fresh_routes_memo_entry().routes.clone()
     }
 
     async fn prefetch_models(&self) -> Result<()> {

@@ -126,13 +126,7 @@ pub(super) fn summarize_unified_patch_input(patch_text: &str) -> String {
         }
     }
 
-    if files.len() == 1 {
-        format!("{} ({} lines)", files[0], lines)
-    } else if !files.is_empty() {
-        format!("{} files ({} lines)", files.len(), lines)
-    } else {
-        format!("({} lines)", lines)
-    }
+    summarize_patch_files(&files, lines)
 }
 
 pub(super) fn summarize_apply_patch_input(patch_text: &str) -> String {
@@ -156,13 +150,23 @@ pub(super) fn summarize_apply_patch_input(patch_text: &str) -> String {
         }
     }
 
-    if files.len() == 1 {
-        format!("{} ({} lines)", files[0], lines)
-    } else if !files.is_empty() {
-        format!("{} files ({} lines)", files.len(), lines)
-    } else {
-        format!("({} lines)", lines)
+    summarize_patch_files(&files, lines)
+}
+
+fn summarize_patch_files(files: &[String], lines: usize) -> String {
+    if files.is_empty() {
+        return format!("({lines} lines)");
     }
+
+    let displayed = files.iter().take(3).map(String::as_str).collect::<Vec<_>>();
+    let names = displayed.join(", ");
+    let suffix = files
+        .len()
+        .checked_sub(displayed.len())
+        .filter(|remaining| *remaining > 0)
+        .map(|remaining| format!(", +{remaining} more"))
+        .unwrap_or_default();
+    format!("{names}{suffix} ({lines} lines)")
 }
 
 fn parse_alphagrep_smart_subject_relation(

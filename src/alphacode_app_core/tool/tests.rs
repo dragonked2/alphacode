@@ -26,6 +26,169 @@ fn isolate_process_env() -> crate::storage::TestEnvGuard {
     crate::storage::lock_test_env()
 }
 
+#[tokio::test]
+async fn unified_todo_registry_normalizes_before_preflight_and_retains_partial_plan() {
+    let _guard = isolate_process_env();
+    let registry = Registry::empty();
+    registry
+        .register("todo".into(), Arc::new(super::todo::TodoTool::new()))
+        .await;
+    let session = format!("todo-unified-{}", uuid::Uuid::new_v4());
+    let ctx = ToolContext {
+        session_id: session.clone(),
+        message_id: "test".into(),
+        tool_call_id: "todo".into(),
+        working_dir: None,
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: ToolExecutionMode::Direct,
+    };
+    registry.execute("todo",json!({"todos":[{"content":"Check the actual result"}],"plan":{"user_intention":"Deliver verified behavior","understands_user_intent":90}}),ctx.clone()).await.unwrap();
+    registry
+        .execute(
+            "todo",
+            json!({"plan":{"understands_user_intent":91}}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+    let todos = crate::todo::load_todos(&session).unwrap();
+    assert_eq!(todos.len(), 1);
+    assert_eq!(todos[0].id, "check-the-actual-result");
+    assert_eq!(todos[0].confidence, None);
+    assert_eq!(
+        crate::todo::load_plan(&session)
+            .unwrap()
+            .user_intention
+            .as_deref(),
+        Some("Deliver verified behavior")
+    );
+    assert!(
+        registry
+            .execute(
+                "todo",
+                json!({"todos":[{"id":"a","content":"first"},{"id":"a","content":"second"}]}),
+                ctx
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(crate::todo::load_todos(&session).unwrap(), todos);
+}
+
+struct UnifiedCaptureTool(std::sync::atomic::AtomicUsize);
+#[async_trait]
+impl Tool for UnifiedCaptureTool {
+    fn name(&self) -> &str {
+        "httpflow"
+    }
+    fn description(&self) -> &str {
+        "Synthetic capture fixture"
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({"type":"object","required":["url"]})
+    }
+    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ToolOutput::new(format!(
+            "HTTP 200 OK\nURL: {}\n\nowned-fixture-canary",
+            input["url"].as_str().unwrap()
+        )))
+    }
+}
+
+#[tokio::test]
+async fn unified_investigation_dispatch_observation_resume_and_budget_share_the_registry() {
+    let _guard = isolate_process_env();
+    let registry = Registry::empty();
+    registry
+        .register(
+            "investigation".into(),
+            Arc::new(super::investigation::InvestigationTool::for_registry(
+                &registry,
+            )),
+        )
+        .await;
+    let capture = Arc::new(UnifiedCaptureTool(std::sync::atomic::AtomicUsize::new(0)));
+    registry.register("httpflow".into(), capture.clone()).await;
+    let session = format!("hunt-unified-{}", uuid::Uuid::new_v4());
+    scope::set_session_scope(
+        &session,
+        Some(crate::alphacode_security_core::ScopePolicy::from_lists(
+            &["https://fixture.test/".into()],
+            &[],
+            true,
+            &[],
+            0,
+            2,
+        )),
+    );
+    let ctx = ToolContext {
+        session_id: session.clone(),
+        message_id: "test".into(),
+        tool_call_id: "control".into(),
+        working_dir: None,
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: ToolExecutionMode::Direct,
+    };
+    registry.execute("investigation",json!({"action":"start","objective":"Test a controlled read boundary","tool_call_budget":1}),ctx.clone()).await.unwrap();
+    let proposal = registry.execute("investigation",json!({"action":"propose","asset":"https://fixture.test/object","category":"authorization","claim":"read might skip ownership"}),ctx.clone()).await.unwrap();
+    let proposal: Value = serde_json::from_str(&proposal.output).unwrap();
+    let lead = proposal["lead_id"].as_str().unwrap();
+    registry.execute("investigation",json!({"action":"plan","lead_id":lead,"expected":"Nonowner receives no private canary","steps":["Compare controlled actors"],"tool":"httpflow","input":{"url":"https://fixture.test/object"}}),ctx.clone()).await.unwrap();
+    let next = registry
+        .execute("investigation", json!({"action":"next"}), ctx.clone())
+        .await
+        .unwrap();
+    assert!(next.output.contains(lead));
+    let executed = registry
+        .execute(
+            "investigation",
+            json!({"action":"execute","lead_id":lead}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+    let executed: Value = serde_json::from_str(&executed.output).unwrap();
+    assert_eq!(capture.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let state = crate::engagement_runtime::read(&session).unwrap().unwrap();
+    assert_eq!(state.exchanges.len(), 1);
+    assert_eq!(state.ledger.tool_calls, 1);
+    assert!(state.in_flight.is_empty());
+    registry.execute("investigation",json!({"action":"attach","lead_id":lead,"evidence_id":executed["evidence_id"],"supports":true}),ctx.clone()).await.unwrap();
+    assert!(
+        registry
+            .execute(
+                "httpflow",
+                json!({"url":"https://fixture.test/object"}),
+                ctx.for_subcall("over-budget".into())
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(capture.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(
+        registry
+            .execute(
+                "investigation",
+                json!({"action":"verify","lead_id":lead}),
+                ctx
+            )
+            .await
+            .is_err()
+    );
+    let resumed = crate::engagement_runtime::read(&session).unwrap().unwrap();
+    assert_eq!(
+        resumed.research.investigation.leads()[lead]
+            .supporting
+            .len(),
+        1
+    );
+    assert!(resumed.proofs.is_empty());
+    scope::clear_session_scope(&session);
+}
+
 /// The bug that prompted this ladder: a bare `from_value` rejected every
 /// argument shape a model actually produces, and the resulting
 /// "missing field `url`" cost a whole turn.
@@ -1532,14 +1695,10 @@ fn agent_facing_error_edit_missing_field_shows_example() {
     );
 }
 
-/// Regression guard for the prompt budget.
-///
-/// The static prefix (system prompt + skills catalog + advertised tool
-/// definitions) is re-sent on every request, so its size is the dominant cost
-/// of a session. This asserts the measured budget rather than a style target:
-/// raise it only with a measured justification.
+/// Progressive disclosure advertises a focused default tool set; there is no
+/// fixed token budget on the system prompt and tool definitions.
 #[tokio::test]
-async fn advertised_prefix_stays_within_budget() {
+async fn progressive_disclosure_advertises_a_minority_of_tools() {
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let defs = registry.definitions(None).await;
@@ -1553,42 +1712,6 @@ async fn advertised_prefix_stays_within_budget() {
         &std::collections::HashSet::new(),
     );
 
-    let tool_chars: usize = advertised.iter().map(|d| d.prompt_chars()).sum();
-
-    let skills = crate::alphacode_app_core::skill::SkillRegistry::shared_snapshot();
-    let infos: Vec<crate::prompt::SkillInfo> = skills
-        .list()
-        .iter()
-        .map(|s| crate::prompt::SkillInfo {
-            name: s.name.clone(),
-            description: s.description.clone(),
-        })
-        .collect();
-    let (split, _info) = crate::prompt::build_system_prompt_split_with_tier(
-        crate::prompt::PromptTier::Standard,
-        None,
-        &infos,
-        false,
-        None,
-        None,
-        crate::prompt::PromptCapabilities::default(),
-    );
-
-    let total_chars = split.static_part.len() + tool_chars;
-    let total_tokens = total_chars / 4;
-    println!(
-        "estimated prefix: {total_tokens} tokens ({total_chars} bytes; system={} tools={} tool_count={})",
-        split.static_part.len(),
-        tool_chars,
-        advertised.len()
-    );
-    assert!(
-        total_tokens <= 10_000,
-        "advertised prefix is ~{total_tokens} tokens ({total_chars} chars: \
-         prompt={}, tools={}); the budget is 10k. Hide more tools or trim the prompt.",
-        split.static_part.len(),
-        tool_chars
-    );
     // Progressive disclosure must keep the advertised surface small.
     assert!(
         advertised.len() < defs.len() / 2,

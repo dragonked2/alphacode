@@ -444,6 +444,7 @@ fn minimal_todo_item(text: &str) -> Value {
         "content": text,
         "status": "pending",
         "priority": "medium",
+        "confidence": null,
         "id": if slug.is_empty() { "todo-1".to_string() } else { slug },
     })
 }
@@ -540,7 +541,7 @@ fn default_goal_fields(fields: &mut serde_json::Map<String, Value>) {
 /// objects, or numeric fields like `confidence` as `"90"`. Strict
 /// `serde_json::from_value` rejects these with `invalid type: string ...`,
 /// failing the entire call (issue #357; same provider quirk as #106).
-fn normalize_todo_input(input: Value) -> Value {
+pub(super) fn normalize_todo_input(input: Value) -> Value {
     // Some providers stringify the entire tool-arguments object. Unwrap one
     // layer so downstream code always sees a JSON object (or the original
     // value if the string is not valid JSON).
@@ -676,6 +677,8 @@ fn normalize_todo_input(input: Value) -> Value {
                             generated_ids.insert(normalized.len());
                         }
                         default_todo_item_fields(fields);
+                        // Unknown confidence is valid; never manufacture a score.
+                        fields.entry("confidence").or_insert(Value::Null);
                     } else {
                         default_goal_fields(fields);
                     }
@@ -769,7 +772,7 @@ impl Tool for TodoTool {
         // deliberately handwritten. Never generate it from gate constants or
         // interpolate private thresholds, because that would teach the model
         // how to target the evaluator instead of reporting an honest assessment.
-        "Read or update structured todo items and optional goal-level assessments."
+        "Read or update structured todo items and optional goal-level assessments. For writes, each todo item must include id, content, status, priority, and confidence (0-100); include completion_confidence only when completed. Omit todos/plan/goals for a read."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -779,7 +782,7 @@ impl Tool for TodoTool {
                 "intent": super::intent_schema_property(),
                 "todos": {
                     "type": "array",
-                    "description": "Todo list to save.",
+                    "description": "Todo list to save. Each item requires id, content, status, priority, and confidence (0-100); completed items may also include completion_confidence. Omit this field to retain the stored list or to perform a read-only call.",
                     "items": {
                         "type": "object",
                         "required": ["content", "status", "priority", "id", "confidence"],
@@ -805,10 +808,10 @@ impl Tool for TodoTool {
                                 "description": "Optional group label; one group per coherent goal, new direction = new group. Omit for flat list."
                             },
                             "confidence": {
-                                "type": "integer",
+                                "type": ["integer", "null"],
                                 "minimum": 0,
                                 "maximum": 100,
-                                "description": "Confidence 0-100 that this todo can be completed correctly; reassess as evidence accumulates."
+                                "description": "Confidence 0-100 that this todo can be completed correctly; null when unassessed. Reassess as evidence accumulates."
                             },
                             "completion_confidence": {
                                 "type": "integer",
@@ -822,7 +825,6 @@ impl Tool for TodoTool {
                 "plan": {
                     "type": "object",
                     "description": "Plan-level understanding. Send on first write and whenever it changes.",
-                    "required": ["user_intention", "understands_user_intent"],
                     "properties": {
                         "user_intention": {
                             "type": "string",
@@ -848,7 +850,7 @@ impl Tool for TodoTool {
                                 "description": "Group label this goal describes. Omit or null for the ungrouped list."
                             },
                             "closed_feedback_loop": {
-                                "type": "integer",
+                                "type": ["integer", "null"],
                                 "minimum": 0,
                                 "maximum": 100,
                                 "description": "0-100: how much of this goal's correctness the feedback_loop can verify on its own."
@@ -965,8 +967,8 @@ impl Tool for TodoTool {
         } else {
             (|| {
                 let todos = load_todos(&ctx.session_id)?;
-                let goals = load_goals(&ctx.session_id).unwrap_or_default();
-                let plan = load_plan(&ctx.session_id).unwrap_or_default();
+                let goals = load_goals(&ctx.session_id)?;
+                let plan = load_plan(&ctx.session_id)?;
                 build_todo_output(todos, plan, goals, None, None, Vec::new())
             })()
         };
@@ -1001,6 +1003,12 @@ mod tests {
         assert!(props.contains_key("todos"));
         assert!(props.contains_key("plan"));
         assert!(props.contains_key("goals"));
+        assert!(
+            props["todos"]["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("id, content, status, priority, and confidence")
+        );
 
         let item = props["todos"]
             .get("items")
@@ -1020,7 +1028,7 @@ mod tests {
         assert!(!item_props.contains_key("closed_feedback_loop"));
         assert_eq!(
             item_props["confidence"]["description"],
-            "Confidence 0-100 that this todo can be completed correctly; reassess as evidence accumulates."
+            "Confidence 0-100 that this todo can be completed correctly; null when unassessed. Reassess as evidence accumulates."
         );
 
         let plan_props = props["plan"]
@@ -1032,14 +1040,9 @@ mod tests {
         assert!(!plan_props.contains_key("alignment_score"));
         assert!(!plan_props.contains_key("user_intention_alignment"));
         assert_eq!(plan_props.len(), 2);
-        let plan_required = props["plan"]["required"]
-            .as_array()
-            .expect("plan should advertise required fields");
-        assert!(plan_required.iter().any(|value| value == "user_intention"));
         assert!(
-            plan_required
-                .iter()
-                .any(|value| value == "understands_user_intent")
+            props["plan"].get("required").is_none(),
+            "partial plan updates retain omitted fields"
         );
 
         let goal_props = props["goals"]

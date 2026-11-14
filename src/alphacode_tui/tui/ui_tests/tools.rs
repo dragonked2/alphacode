@@ -11,7 +11,14 @@ fn test_summarize_apply_patch_input_ignores_begin_marker() {
 fn test_summarize_apply_patch_input_multiple_files() {
     let patch = "*** Begin Patch\n*** Update File: a.txt\n@@\n-a\n+b\n*** Update File: b.txt\n@@\n-c\n+d\n*** End Patch\n";
     let summary = tools_ui::summarize_apply_patch_input(patch);
-    assert_eq!(summary, "2 files (10 lines)");
+    assert_eq!(summary, "a.txt, b.txt (10 lines)");
+}
+
+#[test]
+fn test_summarize_apply_patch_input_limits_long_file_lists() {
+    let patch = "*** Begin Patch\n*** Update File: a.txt\n*** Update File: b.txt\n*** Update File: c.txt\n*** Update File: d.txt\n*** End Patch\n";
+    let summary = tools_ui::summarize_apply_patch_input(patch);
+    assert_eq!(summary, "a.txt, b.txt, c.txt, +1 more (6 lines)");
 }
 
 #[test]

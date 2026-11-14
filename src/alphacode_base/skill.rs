@@ -2613,6 +2613,7 @@ mod tests {
             .find(|s| s.name == "bugbounty")
             .expect("`bugbounty` must be in BUNDLED_SKILLS");
         let expected_subskills = [
+            "reasoning-cases",
             "pentest-ops",
             "knowledge-broker",
             "findings-lifecycle",

@@ -109,7 +109,7 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/.alpine-cargo"
           docker run --rm \
             -e CARGO_HOME=/src/.alpine-cargo \
-            -e ALPHACODE_BUILD_SEMVER="$VERSION" \
+            -e ALPHACODE_BUILD_SEMVER="$ALPHACODE_BUILD_SEMVER" \
             -e ALPHACODE_RELEASE_BUILD=1 \
             -e ALPHACODE_BUILD_GIT_DIRTY=0 \
             -v "$GITHUB_WORKSPACE":/src \

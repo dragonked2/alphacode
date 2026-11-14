@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: "Automated bug bounty orchestration — runs the complete workflow from reconnaissance to reporting. Use when the user wants a fully automated bug bounty assessment."
+description: "Run the bounded reconnaissance/scanner task graph, retain execution audits, and continue candidate investigation and proof collection."
 ---
 
 # Bug Bounty Orchestrator
@@ -48,9 +48,13 @@ The orchestrator runs 5 phases automatically:
 - Directory brute force (gobuster)
 
 ### Phase 5: Reporting
-- Comprehensive vulnerability documentation
-- Severity classification
-- Remediation recommendations
+- Observed inventory and unverified scanner candidates
+- Task outcomes, deferred work and execution coverage
+- Raw evidence locations and investigation state
+
+The static graph does not autonomously verify every candidate or synthesize a
+complete vulnerability report. Continue with controlled investigations, relevant
+class workflows and independent reproduction before assigning findings/severity.
 
 ## Tool Chaining
 
@@ -81,17 +85,15 @@ a reachable query surface is not useful coverage.
 Workflow mechanics:
 - Each phase has explicit entry and exit criteria
 - Tool results are validated before proceeding
-- Failed tasks are retried with alternative approaches
+- Failed tasks remain explicit; choose an alternative only after reviewing the
+  failure, scope, budget and any possible prior side effects
 - Progress is tracked and reported
 
 ## Output
 
-The orchestrator produces:
-- Structured JSON report
-- Markdown summary
-- Raw tool output
-- Vulnerability details
-- Remediation recommendations
+The orchestrator produces a Markdown run summary, state/coverage JSON and bounded
+raw tool output. Candidate details are unverified until supported by proof.
+Produce remediation recommendations only for established defects.
 
 ## Execution audit and resume
 

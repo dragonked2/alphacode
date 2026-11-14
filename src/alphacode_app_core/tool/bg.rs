@@ -674,10 +674,25 @@ impl Tool for BgTool {
                     true => Ok(ToolOutput::new(format!("Task {} cancelled.", task_id))
                         .with_title(format!("bg cancel {}", task_id))
                         .with_metadata(json!({"task_id": task_id, "cancelled": true, "graceful_timeout_ms": grace.as_millis()}))),
-                    false => Err(anyhow::anyhow!(
-                        "Task {} not found or already completed.",
-                        task_id
-                    )),
+                    false => match manager.status(&task_id).await {
+                        Some(task) => Ok(ToolOutput::new(format!(
+                            "Task {} was already finished (status: {}). Nothing to cancel.",
+                            task_id,
+                            status_label(&task.status)
+                        ))
+                        .with_title(format!("bg cancel {}", task_id))
+                        .with_metadata(json!({
+                            "task_id": task_id,
+                            "cancelled": false,
+                            "already_finished": true,
+                            "status": status_label(&task.status),
+                            "graceful_timeout_ms": grace.as_millis(),
+                        }))),
+                        None => Err(anyhow::anyhow!(
+                            "Task {} not found. Use `bg action=list` to inspect tasks in this session.",
+                            task_id
+                        )),
+                    },
                 }
             }
 
