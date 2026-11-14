@@ -39,7 +39,7 @@ pub async fn send_with_initial_response_timeout(
         tokio::time::sleep(wait).await;
     };
 
-    super::request_audit::record(&request);
+    super::request_audit::record(request.url(), request.method());
     let response = tokio::time::timeout(timeout, client.execute(request))
         .await
         .map_err(|_| {

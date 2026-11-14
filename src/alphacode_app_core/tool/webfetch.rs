@@ -510,37 +510,30 @@ pub struct WebFetchTool {
 /// browser-as-a-service endpoint for anything listening on loopback. Redirects
 /// are followed by hand in `execute`, re-validating every hop.
 fn fetch_client() -> reqwest::Client {
-    fetch_client_with_tls(false)
-}
-
-fn fetch_client_with_tls(insecure: bool) -> reqwest::Client {
     use std::sync::OnceLock;
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    static INSECURE_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    let slot = if insecure { &INSECURE_CLIENT } else { &CLIENT };
-    slot.get_or_init(|| {
-        reqwest::Client::builder()
-            .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
-            .redirect(reqwest::redirect::Policy::none())
-            .danger_accept_invalid_certs(insecure)
-            .connect_timeout(Duration::from_secs(20))
-            .tcp_keepalive(Some(Duration::from_secs(30)))
-            .http2_keep_alive_interval(Some(Duration::from_secs(25)))
-            .http2_keep_alive_timeout(Duration::from_secs(20))
-            .http2_keep_alive_while_idle(true)
-            .pool_idle_timeout(Duration::from_secs(120))
-            .pool_max_idle_per_host(4)
-            .build()
-            .unwrap_or_else(|err| {
-                crate::logging::warn(&format!("webfetch: failed to build HTTP client: {err}"));
-                reqwest::Client::builder()
-                    .redirect(reqwest::redirect::Policy::none())
-                    .danger_accept_invalid_certs(insecure)
-                    .build()
-                    .expect("webfetch requires a client with automatic redirects disabled")
-            })
-    })
-    .clone()
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(20))
+                .tcp_keepalive(Some(Duration::from_secs(30)))
+                .http2_keep_alive_interval(Some(Duration::from_secs(25)))
+                .http2_keep_alive_timeout(Duration::from_secs(20))
+                .http2_keep_alive_while_idle(true)
+                .pool_idle_timeout(Duration::from_secs(120))
+                .pool_max_idle_per_host(4)
+                .build()
+                .unwrap_or_else(|err| {
+                    crate::logging::warn(&format!("webfetch: failed to build HTTP client: {err}"));
+                    reqwest::Client::builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                        .expect("webfetch requires a client with automatic redirects disabled")
+                })
+        })
+        .clone()
 }
 
 impl WebFetchTool {
@@ -555,7 +548,6 @@ impl WebFetchTool {
 /// [`super::coerce_url_arg`] before this is built.
 #[derive(Default)]
 struct WebFetchInput {
-    insecure: bool,
     format: Option<String>,
     timeout: Option<u64>,
     method: Option<String>,
@@ -582,9 +574,6 @@ impl WebFetchInput {
                 .or_else(|| value.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
         });
         Self {
-            // Only an explicit JSON boolean opts out. Strings and mistyped
-            // values keep certificate verification enabled.
-            insecure: get("insecure").and_then(Value::as_bool).unwrap_or(false),
             format: get("format")
                 .and_then(Value::as_str)
                 .map(str::trim)
@@ -637,22 +626,18 @@ struct FetchedPage {
     fallback_ua: bool,
     /// How many redirects were followed to reach this page.
     hops: usize,
-    tls_unverified: bool,
 }
 
-fn insecure_for_hop(insecure: bool, start: &str, current: &str) -> bool {
-    if !insecure {
-        return false;
+fn reject_tls_verification_bypass(input: &Value) -> Result<()> {
+    if input.get("insecure").and_then(Value::as_bool) == Some(true) {
+        anyhow::bail!(
+            "webfetch does not permit disabling TLS certificate verification. Use a hostname that matches the certificate or fix the certificate/trust chain."
+        );
     }
-    match (url::Url::parse(start), url::Url::parse(current)) {
-        (Ok(start), Ok(current)) => {
-            current.scheme() == "https" && start.origin() == current.origin()
-        }
-        _ => false,
-    }
+    Ok(())
 }
 
-fn transport_error(error: anyhow::Error, insecure: bool) -> anyhow::Error {
+fn transport_error(error: anyhow::Error) -> anyhow::Error {
     let detail = format!("{error:#}");
     let lower = detail.to_ascii_lowercase();
     let certificate = [
@@ -666,9 +651,9 @@ fn transport_error(error: anyhow::Error, insecure: bool) -> anyhow::Error {
     ]
     .iter()
     .any(|marker| lower.contains(marker));
-    if certificate && !insecure {
+    if certificate {
         anyhow::anyhow!(
-            "webfetch TLS certificate verification failed: {detail}. This is not proof that the site is unreachable. Use its certificate-matching hostname or fix the certificate/trust chain. For an explicitly intended unverified fetch, use insecure=true on a direct request to that HTTPS origin (equivalent to curl -k); cross-origin redirects keep verification enabled and results are labeled TLS-unverified."
+            "webfetch TLS certificate verification failed: {detail}. This is not proof that the site is unreachable. Use its certificate-matching hostname or fix the certificate/trust chain. TLS certificate verification cannot be disabled by webfetch."
         )
     } else {
         anyhow::anyhow!(
@@ -690,7 +675,7 @@ impl Tool for WebFetchTool {
     fn description(&self) -> &str {
         "Fetch a URL as text, Markdown or HTML. Supports HTTP methods, custom headers \
          (including cookies/auth) and request bodies for pages, APIs and authorized testing. \
-         TLS verification is enabled unless insecure=true."
+         TLS certificate verification is always enabled."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -724,11 +709,6 @@ impl Tool for WebFetchTool {
                 "timeout": {
                     "type": "integer",
                     "description": "Timeout in seconds."
-                },
-                "insecure": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Skip TLS certificate verification for this origin (curl -k). Default: false."
                 }
             }
         })
@@ -749,6 +729,9 @@ impl Tool for WebFetchTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+        // Reject the legacy opt-out explicitly; never let model-provided input
+        // disable verification for a request or any redirect hop.
+        reject_tls_verification_bypass(&input)?;
         // Recover the target before anything else. The previous strict
         // `from_value::<WebFetchInput>` reported a bare serde "missing field
         // `url`" for every shape a model actually emits — an alias key
@@ -787,10 +770,7 @@ impl Tool for WebFetchTool {
         // real number: it was hard-coded to 0, so every redirected fetch reported
         // "followed 0 redirect(s)" while having followed several.
         let mut hops_followed = 0usize;
-        let mut tls_unverified = false;
         for hop in 0..=MAX_REDIRECTS {
-            let insecure = insecure_for_hop(params.insecure, &start_url, &current_url);
-            tls_unverified |= insecure;
             match self
                 .attempt(
                     &current_url,
@@ -799,17 +779,15 @@ impl Tool for WebFetchTool {
                     drop_body,
                     timeout,
                     hops_followed,
-                    insecure,
                 )
                 .await?
             {
-                Attempt::Done(mut page) => {
-                    page.tls_unverified = tls_unverified;
+                Attempt::Done(page) => {
                     return Ok(ToolOutput::new(render_page(&page, format, &start_url))
                         .with_metadata(json!({
                             "url": page.url,
                             "redirects": page.hops,
-                            "tls_verification_disabled": page.tls_unverified,
+                            "tls_verification_disabled": false,
                         })));
                 }
                 Attempt::Redirect { status, location } => {
@@ -868,14 +846,9 @@ impl WebFetchTool {
         drop_body: bool,
         timeout: u64,
         hops: usize,
-        insecure: bool,
     ) -> Result<Attempt> {
         let mut last_err: Option<anyhow::Error> = None;
-        let client = if insecure {
-            fetch_client_with_tls(true)
-        } else {
-            self.client.clone()
-        };
+        let client = self.client.clone();
 
         for (attempt, &ua) in USER_AGENTS.iter().enumerate() {
             let custom_user_agent = params.headers.as_ref().and_then(|headers| {
@@ -913,7 +886,7 @@ impl WebFetchTool {
                     // Changing User-Agent cannot repair a failed TLS handshake,
                     // DNS lookup, or proxy connection. The transport retry
                     // policy above already handled eligible transient errors.
-                    return Err(transport_error(e, insecure));
+                    return Err(transport_error(e));
                 }
             };
 
@@ -1027,7 +1000,6 @@ impl WebFetchTool {
                 byte_truncated: truncated,
                 fallback_ua: attempt > 0,
                 hops,
-                tls_unverified: insecure,
             }));
         }
 
@@ -1126,9 +1098,6 @@ fn render_page(page: &FetchedPage, format: &str, start_url: &str) -> String {
         full_len as f64 / 1024.0,
         output.lines().count(),
     ));
-    if page.tls_unverified {
-        header.push_str("TLS-unverified: certificate verification was explicitly disabled for at least one HTTPS hop (insecure=true). Content retrieved; server identity not verified.\n");
-    }
     if page.url != start_url {
         // Redirection is security-relevant, so say it happened rather than
         // silently reporting the final URL as if it were the requested one.
@@ -1603,121 +1572,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn insecure_mode_does_not_disable_ssrf_protection() {
+    async fn legacy_insecure_flag_is_rejected_before_network_access() {
         let tool = WebFetchTool::new();
-        for url in ["https://127.0.0.1/", "https://169.254.169.254/"] {
-            let error = tool
-                .execute(
-                    json!({"url": url, "insecure": true}),
-                    direct_fetch_test_context(),
-                )
-                .await
-                .unwrap_err();
-            assert!(error.to_string().contains("Blocked"), "{error:#}");
-        }
+        let error = tool
+            .execute(
+                json!({"url": "https://example.invalid/", "insecure": true}),
+                direct_fetch_test_context(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("does not permit disabling TLS"),
+            "{error:#}"
+        );
     }
 
     #[test]
-    fn insecure_fetch_requires_an_explicit_boolean_and_stays_origin_bound() {
+    fn legacy_insecure_flag_is_only_rejected_when_explicitly_true() {
         for input in [
             json!({}),
             json!({"insecure": false}),
             json!({"insecure": "true"}),
             json!({"insecure": 1}),
         ] {
-            assert!(!WebFetchInput::from_value(&input).insecure);
+            assert!(reject_tls_verification_bypass(&input).is_ok());
         }
-        assert!(WebFetchInput::from_value(&json!({"insecure": true})).insecure);
-        let origin = "https://example.com/";
-        assert!(insecure_for_hop(
-            true,
-            origin,
-            "https://example.com:443/page"
-        ));
-        for destination in [
-            "https://other.example/",
-            "https://example.com:444/",
-            "http://example.com/",
-            "not a URL",
-        ] {
-            assert!(
-                !insecure_for_hop(true, origin, destination),
-                "{destination}"
-            );
-        }
-        assert!(!insecure_for_hop(false, origin, origin));
+        let error = reject_tls_verification_bypass(&json!({"insecure": true})).unwrap_err();
+        assert!(error.to_string().contains("does not permit disabling TLS"));
+
+        let schema = WebFetchTool::new().parameters_schema();
+        assert!(schema["properties"].get("insecure").is_none());
     }
 
     #[test]
     fn transport_errors_preserve_the_certificate_cause_and_actionable_recovery() {
         let error = anyhow::anyhow!("invalid peer certificate: NotValidForName")
             .context("error sending request for url");
-        let message = transport_error(error, false).to_string();
+        let message = transport_error(error).to_string();
         assert!(message.contains("NotValidForName"));
-        assert!(message.contains("insecure=true"));
+        assert!(message.contains("cannot be disabled"));
         assert!(message.contains("certificate-matching hostname"));
-        let other = transport_error(
-            anyhow::anyhow!("connection refused for https://example.com/certificate"),
-            false,
-        )
+        let other = transport_error(anyhow::anyhow!(
+            "connection refused for https://example.com/certificate"
+        ))
         .to_string();
-        assert!(
-            !other.contains("insecure=true"),
-            "a path mentioning certificate is not a TLS failure"
-        );
         assert!(other.contains("connection refused"));
-    }
-
-    #[test]
-    fn unverified_fetches_are_labeled_in_every_output_format() {
-        let mut page = FetchedPage {
-            url: "https://example.com/".into(),
-            body: "<p>Hello</p>".into(),
-            content_type: "text/html".into(),
-            resp_headers: HashMap::new(),
-            byte_truncated: false,
-            fallback_ua: false,
-            hops: 0,
-            tls_unverified: true,
-        };
-        for format in ["text", "markdown", "html"] {
-            assert!(render_page(&page, format, &page.url).contains("TLS-unverified"));
-        }
-        page.tls_unverified = false;
-        assert!(!render_page(&page, "text", &page.url).contains("TLS-unverified"));
-    }
-
-    #[tokio::test]
-    #[ignore = "explicit live TLS diagnostic; requires ALPHACODE_WEBFETCH_TEST_URL"]
-    async fn live_certificate_mismatch_can_be_fetched_only_with_explicit_opt_out() -> Result<()> {
-        let url = std::env::var("ALPHACODE_WEBFETCH_TEST_URL")
-            .context("set the authorized HTTPS target")?;
-        let tool = WebFetchTool::new();
-        let ctx = direct_fetch_test_context;
-        let error = tool
-            .execute(json!({"url": url, "timeout": 15}), ctx())
-            .await
-            .expect_err("the supplied fixture must have an invalid certificate");
-        println!("Verified-mode diagnostic: {error:#}");
-        assert!(error.to_string().contains("certificate"), "{error:#}");
-        let fetched = tool
-            .execute(json!({"url": url, "timeout": 15, "insecure": true}), ctx())
-            .await?;
-        assert_eq!(
-            fetched.metadata.as_ref().unwrap()["tls_verification_disabled"],
-            true
-        );
-        assert!(fetched.output.contains("TLS-unverified"));
-        println!(
-            "Explicit insecure fetch succeeded; TLS-unverified metadata and output confirmed."
-        );
-        assert!(
-            tool.execute(json!({"url": url, "timeout": 15}), ctx())
-                .await
-                .is_err(),
-            "insecure mode must not alter the default client"
-        );
-        Ok(())
     }
 
     #[test]
@@ -1814,7 +1713,6 @@ mod tests {
             byte_truncated: false,
             fallback_ua: false,
             hops,
-            tls_unverified: false,
         };
         let start = "https://example.com/";
 

@@ -9,6 +9,20 @@ tokio::task_local! {
     static SUPPRESSED: bool;
 }
 
+/// Keep per-session reporting useful without persisting caller-provided session
+/// IDs, which may also be sent to providers in attribution headers.
+fn audit_session_id(session: &str) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+
+    static KEY: OnceLock<[u8; 16]> = OnceLock::new();
+    let key = KEY.get_or_init(|| *uuid::Uuid::new_v4().as_bytes());
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts keys of any length");
+    mac.update(session.as_bytes());
+    format!("{:x}", mac.finalize().into_bytes())
+}
+
 pub(super) async fn suppress<T>(future: impl Future<Output = T>) -> T {
     SUPPRESSED.scope(true, future).await
 }
@@ -17,7 +31,10 @@ pub(super) async fn suppress<T>(future: impl Future<Output = T>) -> T {
 /// unless explicitly spawned through `spawn`.
 pub async fn scope<T>(session: String, future: impl Future<Output = T>) -> T {
     CONTEXT
-        .scope((session, uuid::Uuid::new_v4().to_string()), future)
+        .scope(
+            (audit_session_id(&session), uuid::Uuid::new_v4().to_string()),
+            future,
+        )
         .await
 }
 
@@ -40,15 +57,12 @@ where
 struct Dispatch {
     unix_ms: u128,
     pid: u32,
+    /// Random, process-local pseudonym; never the caller's session identifier.
     session: Option<String>,
     prompt: Option<String>,
     method: String,
     origin: String,
     kind: &'static str,
-}
-
-fn dispatch(request: &reqwest::Request) -> Dispatch {
-    dispatch_parts(request.url(), request.method())
 }
 
 fn dispatch_parts(url: &reqwest::Url, method: &reqwest::Method) -> Dispatch {
@@ -85,8 +99,10 @@ fn dispatch_parts(url: &reqwest::Url, method: &reqwest::Method) -> Dispatch {
 
 /// Called after admission, immediately before execute. Counts dispatch attempts,
 /// including transport failures; redirects/internal HTTP retries are invisible.
-pub(super) fn record(request: &reqwest::Request) {
-    write_dispatch(|| Some(dispatch(request)));
+pub(super) fn record(url: &reqwest::Url, method: &reqwest::Method) {
+    // Do not pass the whole Request to the audit path: it can contain OAuth,
+    // cookie, and other attribution headers. Only origin/method are retained.
+    write_dispatch(|| Some(dispatch_parts(url, method)));
 }
 
 /// Account for protocol transports that do not use reqwest. Only the origin
@@ -160,7 +176,7 @@ impl AuditedSend for reqwest::RequestBuilder {
     async fn audited_send(self) -> reqwest::Result<reqwest::Response> {
         let (client, request) = self.build_split();
         let request = request?;
-        record(&request);
+        record(request.url(), request.method());
         client.execute(request).await
     }
 }
@@ -197,14 +213,21 @@ mod tests {
             .header("Authorization", "secret")
             .build()
             .unwrap();
-        assert!(dispatch(&request).prompt.is_none());
+        assert!(
+            dispatch_parts(request.url(), request.method())
+                .prompt
+                .is_none()
+        );
         let (first, second) = scope("fixture-session".into(), async {
-            let first = dispatch(&request);
-            let second = spawn(async move { dispatch(&request) }).await.unwrap();
+            let first = dispatch_parts(request.url(), request.method());
+            let second = spawn(async move { dispatch_parts(request.url(), request.method()) })
+                .await
+                .unwrap();
             (first, second)
         })
         .await;
-        assert_eq!(first.session.as_deref(), Some("fixture-session"));
+        assert_ne!(first.session.as_deref(), Some("fixture-session"));
+        assert_eq!(first.session, second.session);
         assert!(first.prompt.is_some());
         assert_eq!(first.prompt, second.prompt);
         assert_eq!(first.kind, "models");
