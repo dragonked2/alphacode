@@ -170,8 +170,14 @@ impl ToolContext {
     pub fn resolve_path_guarded(&self, path: &Path) -> anyhow::Result<PathBuf> {
         let resolved = self.resolve_path_for_read(path);
 
-        let risk_ctx =
-            crate::alphacode_command_risk::RiskContext::from_env(self.working_dir.clone());
+        // Resolve both sides of the containment check the same way: targets
+        // are canonicalized above, and Windows may represent that result with
+        // an extended-length path or a junction-resolved spelling.
+        let working_dir = self
+            .working_dir
+            .as_ref()
+            .map(|dir| dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()));
+        let risk_ctx = crate::alphacode_command_risk::RiskContext::from_env(working_dir);
         if crate::alphacode_command_risk::is_catastrophic_target(&resolved, &risk_ctx) {
             anyhow::bail!(
                 "Refusing to touch {:?}: it resolves to {}, which is a protected \
