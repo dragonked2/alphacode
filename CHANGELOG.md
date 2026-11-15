@@ -4,6 +4,21 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.8] - 2026-11-15
+
+### Changed
+
+- Remove the engagement budget gate entirely. The `ResourceLedger` no longer
+  blocks tool dispatch: `reserve()` no longer checks `ledger.exhausted()`, and
+  the `investigation` tool's `execute`/`dispatch_readiness` no longer refuse
+  calls with "engagement budget exhausted". Work now runs non-stop until the
+  user or a program-level stop condition halts it. The `tool_call_budget`
+  parameter on `investigation start` is removed; the ledger still counts calls
+  for reporting but never enforces a ceiling.
+- The `budget_exhausted` flag in `investigation next` no longer gates
+  dispatch: the engagement ledger is unbounded, so it reports `false` and
+  structured experiments are still capped by their own `attempt_budget`.
+
 ## [1.1.7] - 2026-11-14
 
 ### Fixed

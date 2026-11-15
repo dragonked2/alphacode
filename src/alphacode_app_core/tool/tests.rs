@@ -170,7 +170,16 @@ async fn unified_investigation_dispatch_observation_resume_and_budget_share_the_
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     };
-    registry.execute("investigation",json!({"action":"start","objective":"Test a controlled read boundary","tool_call_budget":1}),ctx.clone()).await.unwrap();
+    // The engagement budget is removed: `tool_call_budget` is no longer a
+    // recognized parameter, and work continues past the old 1-call boundary.
+    registry
+        .execute(
+            "investigation",
+            json!({"action":"start","objective":"Test a controlled read boundary"}),
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
     let proposal = registry.execute("investigation",json!({"action":"propose","asset":"https://fixture.test/object","category":"authorization","claim":"read might skip ownership"}),ctx.clone()).await.unwrap();
     let proposal: Value = serde_json::from_str(&proposal.output).unwrap();
     let lead = proposal["lead_id"].as_str().unwrap();
@@ -206,30 +215,21 @@ async fn unified_investigation_dispatch_observation_resume_and_budget_share_the_
         .await
         .unwrap();
     let next: Value = serde_json::from_str(&next.output).unwrap();
-    assert!(next["lead"].is_null());
-    assert_eq!(next["budget_exhausted"], true);
+    assert_eq!(next["budget_exhausted"], false);
+    // Without an engagement budget the executed lead stays dispatch-ready, so
+    // `next` returns it and a second dispatch is allowed.
+    assert_eq!(next["lead"]["id"], lead);
     registry.execute("investigation",json!({"action":"attach","lead_id":lead,"evidence_id":executed["evidence_id"],"supports":true}),ctx.clone()).await.unwrap();
-    assert!(
-        registry
-            .execute(
-                "httpflow",
-                json!({"url":"https://fixture.test/object"}),
-                ctx.for_subcall("over-budget".into())
-            )
-            .await
-            .is_err()
-    );
-    assert_eq!(capture.0.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert!(
-        registry
-            .execute(
-                "investigation",
-                json!({"action":"verify","lead_id":lead}),
-                ctx
-            )
-            .await
-            .is_err()
-    );
+    // Without a budget, a second dispatch is allowed and the capture fires.
+    registry
+        .execute(
+            "httpflow",
+            json!({"url":"https://fixture.test/object"}),
+            ctx.for_subcall("second-dispatch".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(capture.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     let resumed = crate::engagement_runtime::read(&session).unwrap().unwrap();
     assert_eq!(
         resumed.research.investigation.leads()[lead]
@@ -265,7 +265,9 @@ async fn structured_research_reassessment_and_dispatch_budget_precede_side_effec
         graceful_shutdown_signal: None,
         execution_mode: ToolExecutionMode::Direct,
     };
-    registry.execute("investigation",json!({"action":"start","objective":"Test transfer on an unfamiliar controlled product","in_scope":["https://fixture.test/"],"tool_call_budget":10}),ctx.clone()).await.unwrap();
+    // The engagement budget is removed: `tool_call_budget` is no longer a
+    // recognized parameter, and dispatches no longer stop on a call ceiling.
+    registry.execute("investigation",json!({"action":"start","objective":"Test transfer on an unfamiliar controlled product","in_scope":["https://fixture.test/"]}),ctx.clone()).await.unwrap();
     let proposed = registry.execute("investigation",json!({"action":"propose","asset":"https://fixture.test/object","category":"authorization","claim":"Retained reference may outlive membership"}),ctx.clone()).await.unwrap();
     let proposed: Value = serde_json::from_str(&proposed.output).unwrap();
     let lead = proposed["lead_id"].as_str().unwrap();

@@ -30,7 +30,6 @@ struct Priority {
 }
 
 fn dispatch_readiness(state: &EngagementRuntime, lead: &InvestigationLead) -> Result<()> {
-    ensure!(!state.ledger.exhausted(), "engagement budget exhausted");
     ensure!(
         state.plans.contains_key(&lead.id),
         "lead needs an executable plan"
@@ -99,7 +98,6 @@ struct Input {
     status: Option<InvestigationStatus>,
     proof: Option<ProofObject>,
     root: Option<DedupCandidate>,
-    tool_call_budget: Option<u32>,
     experiment: Option<ExperimentPlan>,
     attempt: Option<ExperimentAttempt>,
     #[serde(default)]
@@ -160,7 +158,6 @@ impl Tool for InvestigationTool {
             "status":{"type":"string","enum":["hypothesized","investigating","blocked","rejected","inconclusive","paused","supported"]},
             "proof":{"type":"object","description":"ProofObject referencing exchanges captured by this engagement; assertions alone cannot pass."},
             "root":{"type":"object","description":"DedupCandidate; finding_id must be a proof-checked lead ID."},
-            "tool_call_budget":{"type":"integer","minimum":1,"description":"Optional initial tool-call ceiling. Cannot increase an existing ceiling."},
             "max_cost":{"type":"integer","minimum":0,"description":"Optional next-selection utility-cost ceiling; does not alter authorization or engagement budgets."},
             "max_risk":{"type":"integer","minimum":0,"description":"Optional next-selection risk ceiling."},
             "priority":{"type":"object","description":"Action=prioritize: relative planning estimates only, never evidence confidence or authorization.","required":["information_gain","impact_potential","cost","risk"],"properties":{
@@ -227,18 +224,6 @@ impl Tool for InvestigationTool {
                     Ok(())
                 })?;
                 super::scope::set_session_scope(&ctx.session_id, Some(policy));
-            }
-            if let Some(limit) = params.tool_call_budget {
-                ensure!(limit > 0, "tool_call_budget must be positive");
-                runtime::update(&ctx.session_id, |state| {
-                    ensure!(
-                        state.ledger.tool_call_budget == 0
-                            || limit <= state.ledger.tool_call_budget,
-                        "cannot expand an existing engagement budget"
-                    );
-                    state.ledger.tool_call_budget = limit;
-                    Ok(())
-                })?;
             }
         }
         let policy = super::scope::session_scope_policy(&ctx.session_id).unwrap_or_default();
@@ -384,7 +369,6 @@ impl Tool for InvestigationTool {
                 let call_suffix = format!(":{}:experiment", params.lead_id);
                 let call_id = format!("{}{call_suffix}", ctx.tool_call_id);
                 let plan = runtime::update(&ctx.session_id, |state| {
-                    ensure!(!state.ledger.exhausted(), "engagement budget exhausted");
                     ensure!(
                         !state.in_flight.contains_key(&params.lead_id),
                         "prior experiment has an indeterminate outcome; reconcile it before another execution"

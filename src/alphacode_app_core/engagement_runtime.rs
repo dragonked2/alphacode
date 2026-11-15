@@ -127,10 +127,6 @@ pub fn reserve(session: &str, call: &str, tool: &str) -> Result<bool> {
     }
     update(session, |state| {
         ensure!(
-            !state.ledger.exhausted(),
-            "engagement budget exhausted; checkpoint and report remaining work"
-        );
-        ensure!(
             !state.calls.contains_key(call),
             "tool call already recorded or indeterminate; reconcile before replay"
         );
