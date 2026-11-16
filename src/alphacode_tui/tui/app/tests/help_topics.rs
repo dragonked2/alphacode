@@ -152,8 +152,9 @@ fn engagement_help_explains_its_read_only_scope_in_the_rendered_tui() {
         .collect::<Vec<_>>()
         .join("");
 
+    let normalized: String = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        rendered.contains("read-only view"),
+        normalized.contains("read-only view"),
         "rendered /engagement help should identify the view as read-only"
     );
 }

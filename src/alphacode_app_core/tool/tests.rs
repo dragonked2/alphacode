@@ -256,6 +256,18 @@ async fn structured_research_reassessment_and_dispatch_budget_precede_side_effec
     let capture = Arc::new(UnifiedCaptureTool(std::sync::atomic::AtomicUsize::new(0)));
     registry.register("httpflow".into(), capture.clone()).await;
     let session = format!("reasoning-controls-{}", uuid::Uuid::new_v4());
+    // Install a session scope so `in_scope` can be recorded against an existing policy.
+    scope::set_session_scope(
+        &session,
+        Some(crate::alphacode_security_core::ScopePolicy::from_lists(
+            &["https://fixture.test/".into()],
+            &[],
+            true,
+            &[],
+            0,
+            2,
+        )),
+    );
     let ctx = ToolContext {
         session_id: session.clone(),
         message_id: "test".into(),
