@@ -331,14 +331,22 @@ impl CoverageDashboard {
             .map(|r| r.vuln_class.to_lowercase())
             .collect();
 
+        // Compare signal membership case-insensitively. `tested_classes` is
+        // lowercased, while `vuln_classes_with_signal` keeps each recorded
+        // class verbatim, so the direct `contains` below missed any class
+        // recorded with an uppercase letter (`"IDOR"`, `"SSRF"`). A class that
+        // *did* produce a signal was then also listed as refuted — the one
+        // direction that matters, because "refuted" reads as "tested and clean".
+        let signal_classes: HashSet<String> = tracker
+            .endpoint_coverage
+            .values()
+            .flat_map(|c| c.vuln_classes_with_signal.iter())
+            .map(|class| class.to_lowercase())
+            .collect();
+
         let refuted: Vec<String> = tested_classes
             .iter()
-            .filter(|class| {
-                !tracker
-                    .endpoint_coverage
-                    .values()
-                    .any(|c| c.vuln_classes_with_signal.contains(*class))
-            })
+            .filter(|class| !signal_classes.contains(*class))
             .cloned()
             .collect();
 
@@ -593,6 +601,45 @@ mod tests {
         assert!((dashboard.endpoint_coverage_pct() - 50.0).abs() < f64::EPSILON);
         // Coverage is incomplete: an errored test remains.
         assert!(!dashboard.is_exhaustive());
+    }
+
+    /// A class with a signal must never also be reported as refuted, even when
+    /// the recorded class name is not lowercase.
+    ///
+    /// `tested_classes` is lowercased but `vuln_classes_with_signal` keeps the
+    /// name verbatim, so `"IDOR"` used to match no signal and the class appeared
+    /// in *both* `signal_endpoints` and `refuted_classes`. "Refuted" reads as
+    /// "tested and clean", which is the worst possible direction for that error
+    /// on a hunt whose whole point is not to lose a live lead.
+    #[test]
+    fn a_signal_class_is_never_reported_as_refuted_regardless_of_case() {
+        let mut tracker = CoverageTracker::new();
+        tracker.set_discovered_endpoints(1);
+        tracker.record_test(record(
+            "/a",
+            "GET",
+            "IDOR",
+            TestResult::PotentialVulnerability,
+        ));
+
+        let dashboard =
+            CoverageDashboard::from_tracker(&tracker, &["IDOR".to_string(), "xss".to_string()]);
+
+        assert!(
+            !dashboard
+                .refuted_classes
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case("idor")),
+            "a class that produced a signal must not be listed as refuted: {:?}",
+            dashboard.refuted_classes
+        );
+        assert!(
+            dashboard
+                .signal_endpoints
+                .iter()
+                .any(|e| e.vuln_classes_with_signal.contains("IDOR")),
+            "the signal must remain visible on the endpoint"
+        );
     }
 
     #[test]

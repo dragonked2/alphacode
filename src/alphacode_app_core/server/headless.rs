@@ -298,8 +298,32 @@ pub(super) async fn create_headless_session(
 fn models_are_equivalent(resolved: &str, requested: &str) -> bool {
     fn normalize(model: &str) -> String {
         let model = model.trim().to_ascii_lowercase();
+        // Strip a *routing* prefix (`openai-api:`, `tokenharbor:`, a configured
+        // provider key) only when the part before the first `:` actually names
+        // a provider. Splitting on the last colon instead treated the tier
+        // suffix as the model, so every `:free` id normalized to the literal
+        // `free` and two different free models compared equal. That silently
+        // defeated this guard for exactly the ids that need it most: Token
+        // Harbor ships several `:free` models (`deepseek-v4.1-flash:free`,
+        // `mimo-v2.5:free`, ...) and the Alphax Free pool rotates between
+        // them, so a worker pinned to one of them must not be reported as
+        // running another.
+        let model = match model.split_once(':') {
+            Some((prefix, rest))
+                if !prefix.is_empty()
+                    && !rest.trim().is_empty()
+                    && (crate::provider::provider_from_model_key(prefix).is_some()
+                        || crate::provider_catalog::resolve_openai_compatible_profile_selection(
+                            prefix,
+                        )
+                        .is_some()
+                        || crate::config::config().providers.contains_key(prefix)) =>
+            {
+                rest.to_string()
+            }
+            _ => model,
+        };
         let bare = model.rsplit('/').next().unwrap_or(&model);
-        let bare = bare.split(':').next_back().unwrap_or(bare);
         bare.split('[').next().unwrap_or(bare).trim().to_string()
     }
     let resolved = normalize(resolved);
@@ -355,5 +379,35 @@ mod tests {
             "deepseek-v4-flash"
         ));
         assert!(!models_are_equivalent("gpt-5.6-sol", "gpt-5.5"));
+    }
+
+    /// A `:free` tier suffix must not collapse every free model into one.
+    ///
+    /// Normalization split on the *last* colon, so `deepseek-v4.1-flash:free`
+    /// became the literal `free`. Two different Token Harbor free models then
+    /// compared equal, which also covered every Alphax Free rotation between
+    /// `:free` members: a worker silently running a different model than the
+    /// caller pinned would have passed this guard.
+    #[test]
+    fn free_tier_suffix_does_not_erase_the_model_identity() {
+        assert!(!models_are_equivalent(
+            "deepseek-v4.1-flash:free",
+            "mimo-v2.5:free"
+        ));
+        assert!(!models_are_equivalent(
+            "deepseek-v4.1-flash:free",
+            "deepseek-v4-flash:free"
+        ));
+        // The same id compared with itself is still equivalent.
+        assert!(models_are_equivalent(
+            "deepseek-v4.1-flash:free",
+            "deepseek-v4.1-flash:free"
+        ));
+        // A genuine routing prefix on a `:free` id still normalizes away, so
+        // `tokenharbor:<id>` and `<id>` describe the same model.
+        assert!(models_are_equivalent(
+            "tokenharbor:deepseek-v4.1-flash:free",
+            "deepseek-v4.1-flash:free"
+        ));
     }
 }

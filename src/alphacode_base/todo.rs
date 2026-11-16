@@ -1,7 +1,10 @@
 use crate::storage;
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 pub use crate::alphacode_task_types::{
     TodoGoal, TodoGoalChange, TodoGoalField, TodoItem, TodoPlan, TodoPlanChange, TodoPlanField,
@@ -61,7 +64,7 @@ pub const TODO_CONFIDENCE_SPIKE: u8 = 15;
 pub const SEVERE_INTENT_MISUNDERSTANDING: u8 = 60;
 
 /// Which deferred quality check a recorded observation came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateObservationKind {
     IntentUnderstanding,
@@ -71,12 +74,10 @@ pub enum GateObservationKind {
 /// A point during the turn that would previously have interrupted the model
 /// with a quality-gate continuation.
 ///
-/// Recording instead of interrupting is the whole point: assessments like
-/// intent understanding start low and rise as the agent explores the codebase,
-/// so a check that fires the moment a score is low mostly punishes agents that
-/// are already in the process of fixing it. These observations are replayed
-/// once at turn end and filtered against the final scores, so only the points
-/// that never resolved are surfaced.
+/// Recording instead of interrupting allows an agent to improve an initial
+/// assessment while it explores the codebase. Recorded points are reviewed at
+/// turn end even if the score later improves, so earlier unverified work is
+/// not silently treated as validated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateObservation {
     pub kind: GateObservationKind,
@@ -111,7 +112,10 @@ fn observation_score_later_cleared(
             .is_some_and(|score| score >= LOW_INTENT_UNDERSTANDING),
         GateObservationKind::ClosedFeedbackLoop => goals
             .iter()
-            .find(|goal| normalized_group(goal.group.as_deref()) == observation.group)
+            .find(|goal| {
+                normalized_group_ref(goal.group.as_deref())
+                    == normalized_group_ref(observation.group.as_deref())
+            })
             .and_then(|goal| goal.closed_feedback_loop)
             .is_some_and(|score| score >= LOW_CLOSED_FEEDBACK_LOOP),
     }
@@ -139,12 +143,13 @@ pub fn build_gate_digest(
     let mut points: Vec<(GateObservationKind, Option<String>, usize, bool)> = Vec::new();
     for observation in observations {
         let cleared = observation_score_later_cleared(observation, plan, goals);
+        let group = normalized_group(observation.group.as_deref());
         match points
             .iter_mut()
-            .find(|(kind, group, _, _)| *kind == observation.kind && *group == observation.group)
+            .find(|(kind, known_group, _, _)| *kind == observation.kind && *known_group == group)
         {
             Some((_, _, count, _)) => *count += 1,
-            None => points.push((observation.kind, observation.group.clone(), 1, cleared)),
+            None => points.push((observation.kind, group, 1, cleared)),
         }
     }
     if points.is_empty() {
@@ -163,7 +168,7 @@ pub fn build_gate_digest(
             (GateObservationKind::ClosedFeedbackLoop, false) => {
                 let label = group
                     .as_deref()
-                    .map(|group| format!(" for \"{}\"", group))
+                    .map(|group| format!(" for {}", quoted_inline(group)))
                     .unwrap_or_default();
                 format!(
                     "the goal{} never closed its feedback loop: no observation reported back on whether the work satisfied the requirements. Confirm the result is actually better, with concrete evidence rather than inspection.",
@@ -173,7 +178,7 @@ pub fn build_gate_digest(
             (GateObservationKind::ClosedFeedbackLoop, true) => {
                 let label = group
                     .as_deref()
-                    .map(|group| format!(" for \"{}\"", group))
+                    .map(|group| format!(" for {}", quoted_inline(group)))
                     .unwrap_or_default();
                 format!(
                     "the goal{} was worked on before its feedback loop was closed, so the loop you ended up with never ran over that earlier work. Run it over the whole result now and report what it actually reported back.",
@@ -203,70 +208,102 @@ const LEGACY_TODO_COMPLETION_CONTINUATION_MESSAGE: &str =
 const LEGACY_TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE: &str =
     "Your completion confidence rose too sharply to count as independently validated.";
 
+/// Borrowed normalization avoids allocating during repeated group comparisons.
+fn normalized_group_ref(group: Option<&str>) -> Option<&str> {
+    group.map(str::trim).filter(|group| !group.is_empty())
+}
+
 fn normalized_group(group: Option<&str>) -> Option<String> {
-    group
-        .map(str::trim)
-        .filter(|group| !group.is_empty())
-        .map(str::to_string)
+    normalized_group_ref(group).map(str::to_owned)
 }
 
-fn group_is_complete(todos: &[TodoItem], group: &Option<String>) -> bool {
-    let mut matching = todos
-        .iter()
-        .filter(|todo| normalized_group(todo.group.as_deref()) == *group)
-        .peekable();
-    matching.peek().is_some() && matching.all(|todo| todo.status == "completed")
+fn todo_is_complete(todo: &TodoItem) -> bool {
+    todo.status.eq_ignore_ascii_case("completed")
 }
 
-/// Whether every group newly closed by this update has a sufficient assessment
-/// of ownership over its full outcome. Groups completed before this check was
-/// introduced are intentionally grandfathered so existing sessions stay writable.
+/// Aggregate completion states in O(n) rather than rescanning the full list
+/// for every goal. An empty group is not complete.
+fn completion_by_group(todos: &[TodoItem]) -> HashMap<Option<&str>, bool> {
+    let mut states = HashMap::new();
+    for todo in todos {
+        states
+            .entry(normalized_group_ref(todo.group.as_deref()))
+            .and_modify(|complete| *complete &= todo_is_complete(todo))
+            .or_insert_with(|| todo_is_complete(todo));
+    }
+    states
+}
+
+/// Snapshot the exact todo membership of each group. Sorting preserves duplicate
+/// IDs, unlike a set, and lets us compare completed scopes independently of order.
+fn group_inventories(todos: &[TodoItem]) -> HashMap<Option<&str>, Vec<(&str, &str)>> {
+    let mut groups: HashMap<Option<&str>, Vec<(&str, &str)>> = HashMap::new();
+    for todo in todos {
+        groups
+            .entry(normalized_group_ref(todo.group.as_deref()))
+            .or_default()
+            .push((todo.id.as_str(), todo.content.as_str()));
+    }
+    for items in groups.values_mut() {
+        items.sort_unstable();
+    }
+    groups
+}
+
+/// Find groups that have just closed or whose already-completed scope changed.
+/// A completed group with new, removed, or edited items must be reviewed again;
+/// unchanged legacy completed groups remain grandfathered.
+fn newly_closed_or_changed_groups(
+    previous: &[TodoItem],
+    incoming: &[TodoItem],
+) -> Vec<Option<String>> {
+    let was_complete = completion_by_group(previous);
+    let now_complete = completion_by_group(incoming);
+    let old_inventory = group_inventories(previous);
+    let new_inventory = group_inventories(incoming);
+    let mut seen = HashSet::new();
+    let mut closed = Vec::new();
+
+    for todo in incoming {
+        let group = normalized_group_ref(todo.group.as_deref());
+        if !seen.insert(group) || now_complete.get(&group) != Some(&true) {
+            continue;
+        }
+        if was_complete.get(&group) == Some(&true)
+            && old_inventory.get(&group) == new_inventory.get(&group)
+        {
+            continue;
+        }
+        closed.push(group.map(str::to_owned));
+    }
+    closed
+}
+
+/// Require sufficient ownership for each newly completed or materially changed
+/// completed group. Unchanged legacy completed groups remain writable.
 pub fn newly_completed_groups_have_sufficient_ownership(
     previous: &[TodoItem],
     incoming: &[TodoItem],
     goals: &[TodoGoal],
 ) -> bool {
-    let mut groups: Vec<Option<String>> = Vec::new();
-    for todo in incoming {
-        let group = normalized_group(todo.group.as_deref());
-        if !groups.contains(&group) {
-            groups.push(group);
-        }
-    }
-
-    groups.into_iter().all(|group| {
-        if !group_is_complete(incoming, &group) || group_is_complete(previous, &group) {
-            return true;
-        }
-        goals
-            .iter()
-            .find(|goal| normalized_group(goal.group.as_deref()) == group)
-            .and_then(|goal| goal.end_to_end_ownership)
-            .is_some_and(|score| score >= QUALITY_GATE_THRESHOLD)
-    })
+    newly_closed_or_changed_groups(previous, incoming)
+        .into_iter()
+        .all(|group| {
+            goals
+                .iter()
+                .find(|goal| normalized_group_ref(goal.group.as_deref()) == group.as_deref())
+                .and_then(|goal| goal.end_to_end_ownership)
+                .is_some_and(|score| score >= QUALITY_GATE_THRESHOLD)
+        })
 }
 
-/// Groups that this update closes: complete in `incoming`, not complete before.
-///
-/// Quality checks need these as well as the still-open groups. A turn that
-/// creates and finishes a group in a single write would otherwise record no
-/// observation at all, and the weakest goals are exactly the ones most likely to
-/// be declared done in one step.
+/// Groups newly closed by an update, including a change to an already-complete
+/// group's todo inventory (which must not silently evade completion review).
 pub fn groups_closed_by_update(
     previous: &[TodoItem],
     incoming: &[TodoItem],
 ) -> Vec<Option<String>> {
-    let mut groups: Vec<Option<String>> = Vec::new();
-    for todo in incoming {
-        let group = normalized_group(todo.group.as_deref());
-        if groups.contains(&group) {
-            continue;
-        }
-        if group_is_complete(incoming, &group) && !group_is_complete(previous, &group) {
-            groups.push(group);
-        }
-    }
-    groups
+    newly_closed_or_changed_groups(previous, incoming)
 }
 
 /// Completed todos whose final confidence increase was abrupt rather than
@@ -276,16 +313,22 @@ pub fn groups_closed_by_update(
 pub fn spike_completed_todos(todos: &[TodoItem]) -> Vec<&TodoItem> {
     todos
         .iter()
-        .filter(|todo| todo.status == "completed")
+        .filter(|todo| todo_is_complete(todo))
         .filter(|todo| match todo.confidence_history.as_slice() {
             [] => todo
                 .confidence
                 .zip(todo.completion_confidence)
                 .is_some_and(|(first, last)| last.saturating_sub(first) >= TODO_CONFIDENCE_SPIKE),
-            [_] => false,
+            [only] => todo
+                .completion_confidence
+                .is_some_and(|last| last.saturating_sub(*only) >= TODO_CONFIDENCE_SPIKE),
             history => {
                 let n = history.len();
-                history[n - 1].saturating_sub(history[n - 2]) >= TODO_CONFIDENCE_SPIKE
+                let last = history[n - 1];
+                last.saturating_sub(history[n - 2]) >= TODO_CONFIDENCE_SPIKE
+                    || todo.completion_confidence.is_some_and(|final_score| {
+                        final_score.saturating_sub(last) >= TODO_CONFIDENCE_SPIKE
+                    })
             }
         })
         .collect()
@@ -306,14 +349,35 @@ pub fn build_auto_poke_message(incomplete_count: usize) -> String {
 /// plan cannot turn one nudge into a wall of text.
 const GATE_NAMED_TODO_LIMIT: usize = 6;
 
-fn quoted_todo_label(todo: &TodoItem) -> String {
-    let content = todo.content.trim();
-    let label: String = if content.chars().count() > 80 {
-        format!("{}…", content.chars().take(79).collect::<String>())
+/// Escape untrusted todo/group strings before placing them in synthetic
+/// instructions. This keeps a single todo from adding extra prompt lines.
+fn quoted_inline(value: &str) -> String {
+    let escaped = value
+        .trim()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
+    let cleaned: String = escaped.chars().filter(|ch| !ch.is_control()).collect();
+    const MAX_LABEL_CHARS: usize = 80;
+    let mut chars = cleaned.chars();
+    let text: String = chars.by_ref().take(MAX_LABEL_CHARS).collect();
+    let label = if chars.next().is_some() {
+        format!(
+            "{}…",
+            text.chars().take(MAX_LABEL_CHARS - 1).collect::<String>()
+        )
     } else {
-        content.to_string()
+        text
     };
     format!("\"{}\"", label)
+}
+
+fn quoted_todo_label(todo: &TodoItem) -> String {
+    quoted_inline(&todo.content)
 }
 
 fn append_named_todos(message: &mut String, lead: &str, todos: &[&TodoItem]) {
@@ -340,10 +404,7 @@ fn append_named_todos(message: &mut String, lead: &str, todos: &[&TodoItem]) {
 /// of its work was doubted. Scores and thresholds stay private; only the reason
 /// category per todo is disclosed.
 pub fn build_todo_completion_continuation_message(todos: &[TodoItem]) -> String {
-    let completed: Vec<&TodoItem> = todos
-        .iter()
-        .filter(|todo| todo.status == "completed")
-        .collect();
+    let completed: Vec<&TodoItem> = todos.iter().filter(|todo| todo_is_complete(todo)).collect();
     let missing: Vec<&TodoItem> = completed
         .iter()
         .copied()
@@ -402,7 +463,7 @@ pub fn build_todo_confidence_spike_continuation_message(todos: &[TodoItem]) -> S
 pub fn build_todo_completion_repeat_message(todos: &[TodoItem]) -> String {
     let named: Vec<String> = todos
         .iter()
-        .filter(|todo| todo.status == "completed")
+        .filter(|todo| todo_is_complete(todo))
         .filter(|todo| {
             todo.completion_confidence
                 .is_none_or(|score| score < QUALITY_GATE_THRESHOLD)
@@ -463,11 +524,34 @@ pub fn todo_gate_repeat_prefix() -> &'static str {
 /// hides them (showing an "Auto-poking..." notice instead), and the session
 /// renderer uses this to avoid re-rendering them as user prompts on
 /// reload/resume/remote attach.
+/// Recognize only the exact generated incomplete-todo sentence. Loose
+/// starts_with/ends_with matching can hide actual user messages containing it.
+fn is_incomplete_poke(message: &str) -> bool {
+    let Some(rest) = message.strip_prefix("You have ") else {
+        return false;
+    };
+    for (ending, singular) in [
+        (
+            " incomplete todo. Continue working, or update the todo tool.",
+            true,
+        ),
+        (
+            " incomplete todos. Continue working, or update the todo tool.",
+            false,
+        ),
+    ] {
+        if let Some(number) = rest.strip_suffix(ending)
+            && let Ok(count) = number.parse::<usize>()
+        {
+            return (count == 1) == singular;
+        }
+    }
+    false
+}
+
 pub fn is_auto_poke_message(message: &str) -> bool {
     let trimmed = message.trim();
-    (trimmed.starts_with("You have ")
-        && trimmed.contains(" incomplete todo")
-        && trimmed.ends_with("update the todo tool."))
+    is_incomplete_poke(trimmed)
         || trimmed.starts_with(TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE)
         || trimmed.starts_with(LEGACY_TODO_HILL_CLIMBABILITY_CONTINUATION_MESSAGE)
         || trimmed.starts_with(LEGACY_TODO_ALIGNMENT_CONTINUATION_MESSAGE)
@@ -527,80 +611,149 @@ pub fn auto_poke_display_summary(message: &str) -> Option<&'static str> {
     None
 }
 
+/// Keep session IDs as single portable filename components. This prevents
+/// arbitrary file access via `../` (including Windows separator variants),
+/// control characters and collisions with our own metadata suffixes.
+pub(crate) fn validate_session_id(session_id: &str) -> Result<()> {
+    const MAX_SESSION_ID_BYTES: usize = 128;
+    ensure!(
+        !session_id.is_empty() && session_id.len() <= MAX_SESSION_ID_BYTES,
+        "session ID must contain 1..={MAX_SESSION_ID_BYTES} bytes"
+    );
+    let bytes = session_id.as_bytes();
+    ensure!(
+        bytes[0].is_ascii_alphanumeric()
+            && bytes[bytes.len() - 1].is_ascii_alphanumeric()
+            && bytes
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_' | b'.'))
+            && !session_id.contains(".."),
+        "session ID must be a portable filename component (letters, digits, '-', '_', '.')"
+    );
+    let folded = session_id.to_ascii_lowercase();
+    ensure!(
+        !["-goals", "-plan", "-gate-observations"]
+            .iter()
+            .any(|suffix| folded.ends_with(*suffix)),
+        "session ID conflicts with a reserved todo metadata suffix"
+    );
+    let stem = session_id
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let reserved = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    ensure!(
+        !reserved.contains(&stem.as_str()),
+        "reserved Windows filename used as session ID"
+    );
+    Ok(())
+}
+
+fn session_json_path(session_id: &str, suffix: &str) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
+    let base = storage::alphacode_dir()?;
+    Ok(base
+        .join("todos")
+        .join(format!("{session_id}{suffix}.json")))
+}
+
+/// Treat only a genuinely absent file as an empty/default document. Checking
+/// `Path::exists()` can silently interpret permissions problems as absence.
+/// Reject symbolic links so a session file cannot redirect access elsewhere.
+fn optional_regular_file(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            ensure!(
+                metadata.file_type().is_file(),
+                "not a regular todo file: {}",
+                path.display()
+            );
+            Ok(true)
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("inspect todo file {}", path.display())),
+    }
+}
+
+/// Refuse writing through existing symlinks and other unexpected file types.
+fn verify_write_target(path: &Path) -> Result<()> {
+    optional_regular_file(path).map(|_| ())
+}
+
 pub fn load_todos(session_id: &str) -> Result<Vec<TodoItem>> {
     let path = todo_path(session_id)?;
-    if !path.exists() {
+    if !optional_regular_file(&path)? {
         return Ok(Vec::new());
     }
-    // A present but unreadable file is not an empty todo list. Propagating the
-    // error lets writers stop before replacing valid-looking state with an
-    // empty array; callers that only need a best-effort display can still opt
-    // into `unwrap_or_default()` at their boundary.
-    storage::read_json(&path)
+    storage::read_json(&path).with_context(|| format!("read todos from {}", path.display()))
 }
 
 pub fn todos_exist(session_id: &str) -> Result<bool> {
-    Ok(todo_path(session_id)?.exists())
+    optional_regular_file(&todo_path(session_id)?)
 }
 
 pub fn save_todos(session_id: &str, todos: &[TodoItem]) -> Result<()> {
     let path = todo_path(session_id)?;
+    verify_write_target(&path)?;
     storage::write_json_fast(&path, todos)
+        .with_context(|| format!("write todos to {}", path.display()))
 }
 
 fn todo_path(session_id: &str) -> Result<PathBuf> {
-    let base = storage::alphacode_dir()?;
-    Ok(base.join("todos").join(format!("{}.json", session_id)))
+    session_json_path(session_id, "")
 }
 
-/// Goal-level assessments live beside the todo list in a separate file so the
-/// todo list format (a bare `Vec<TodoItem>` array) stays readable by every
-/// existing consumer.
+/// Goal-level assessments live beside the todo list in a separate file so
+/// legacy consumers can still read the bare `Vec<TodoItem>` JSON array.
 pub fn load_goals(session_id: &str) -> Result<Vec<TodoGoal>> {
     let path = goals_path(session_id)?;
-    if !path.exists() {
+    if !optional_regular_file(&path)? {
         return Ok(Vec::new());
     }
-    storage::read_json(&path)
+    storage::read_json(&path).with_context(|| format!("read goals from {}", path.display()))
 }
 
 /// Derive a concise session-title hint from the todo tool's persisted plan.
-///
-/// Todo groups are intended to name coherent goals, so the group containing the
-/// current (or latest incomplete) item is the strongest signal. Ungrouped plans
-/// fall back to the plan's user intention, then item text.
+/// Prefer the active item's group, then current intention, then item content.
 pub fn derive_session_title(todos: &[TodoItem], plan: &TodoPlan) -> Option<String> {
     fn non_empty(value: Option<&str>) -> Option<String> {
-        value
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
+        let text = value?.split_whitespace().collect::<Vec<_>>().join(" ");
+        if text.is_empty() {
+            return None;
+        }
+        const MAX_TITLE_CHARS: usize = 120;
+        let mut chars = text.chars();
+        let prefix: String = chars.by_ref().take(MAX_TITLE_CHARS).collect();
+        if chars.next().is_some() {
+            Some(format!(
+                "{}…",
+                prefix.chars().take(MAX_TITLE_CHARS - 1).collect::<String>()
+            ))
+        } else {
+            Some(prefix)
+        }
     }
 
     let current = todos
         .iter()
         .rev()
         .find(|todo| todo.status.eq_ignore_ascii_case("in_progress"))
-        .or_else(|| {
-            todos
-                .iter()
-                .rev()
-                .find(|todo| !todo.status.eq_ignore_ascii_case("completed"))
-        })
+        .or_else(|| todos.iter().rev().find(|todo| !todo_is_complete(todo)))
         .or_else(|| todos.last());
 
     if let Some(todo) = current {
         if let Some(group) = non_empty(todo.group.as_deref()) {
             return Some(group);
         }
-
         if let Some(user_intention) = non_empty(plan.user_intention.as_deref()) {
             return Some(user_intention);
         }
-
         return non_empty(Some(&todo.content));
     }
-
     non_empty(plan.user_intention.as_deref())
 }
 
@@ -613,121 +766,196 @@ pub fn load_session_title(session_id: &str) -> Option<String> {
 
 pub fn save_goals(session_id: &str, goals: &[TodoGoal]) -> Result<()> {
     let path = goals_path(session_id)?;
+    verify_write_target(&path)?;
     storage::write_json_fast(&path, goals)
+        .with_context(|| format!("write goals to {}", path.display()))
 }
 
 fn goals_path(session_id: &str) -> Result<PathBuf> {
-    let base = storage::alphacode_dir()?;
-    Ok(base
-        .join("todos")
-        .join(format!("{}-goals.json", session_id)))
+    session_json_path(session_id, "-goals")
 }
 
-/// The plan-level intent assessment lives in its own file beside the todo list
-/// and per-group goals, so each format stays independently readable.
 pub fn load_plan(session_id: &str) -> Result<TodoPlan> {
     let path = plan_path(session_id)?;
-    if !path.exists() {
+    if !optional_regular_file(&path)? {
         return Ok(TodoPlan::default());
     }
-    storage::read_json(&path)
+    storage::read_json(&path).with_context(|| format!("read plan from {}", path.display()))
 }
 
 pub fn save_plan(session_id: &str, plan: &TodoPlan) -> Result<()> {
     let path = plan_path(session_id)?;
+    verify_write_target(&path)?;
     storage::write_json_fast(&path, plan)
+        .with_context(|| format!("write plan to {}", path.display()))
 }
 
 fn plan_path(session_id: &str) -> Result<PathBuf> {
-    let base = storage::alphacode_dir()?;
-    Ok(base.join("todos").join(format!("{}-plan.json", session_id)))
+    session_json_path(session_id, "-plan")
 }
 
-/// Deferred quality-check observations for the current turn.
-///
-/// Kept in its own file for the same reason goals and plan are: each format
-/// stays independently readable. This one is turn-scoped rather than durable,
-/// cleared once the digest has been delivered.
-pub fn load_gate_observations(session_id: &str) -> Result<Vec<GateObservation>> {
+/// Serialize observation mutations within this process. Cross-process writers
+/// still require a storage-layer transaction or OS-level file lock.
+static GATE_OBSERVATIONS_MUTEX: Mutex<()> = Mutex::new(());
+
+fn load_gate_observations_unlocked(session_id: &str) -> Result<Vec<GateObservation>> {
     let path = gate_observations_path(session_id)?;
-    if !path.exists() {
+    if !optional_regular_file(&path)? {
         return Ok(Vec::new());
     }
     storage::read_json(&path)
+        .with_context(|| format!("read gate observations from {}", path.display()))
+}
+
+fn save_gate_observations_unlocked(
+    session_id: &str,
+    observations: &[GateObservation],
+) -> Result<()> {
+    let path = gate_observations_path(session_id)?;
+    verify_write_target(&path)?;
+    storage::write_json_fast(&path, observations)
+        .with_context(|| format!("write gate observations to {}", path.display()))
+}
+
+pub fn load_gate_observations(session_id: &str) -> Result<Vec<GateObservation>> {
+    let _guard = GATE_OBSERVATIONS_MUTEX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    load_gate_observations_unlocked(session_id)
 }
 
 pub fn save_gate_observations(session_id: &str, observations: &[GateObservation]) -> Result<()> {
-    let path = gate_observations_path(session_id)?;
-    storage::write_json_fast(&path, observations)
+    let _guard = GATE_OBSERVATIONS_MUTEX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    save_gate_observations_unlocked(session_id, observations)
 }
 
-/// Append this write's observations, capped so a very long iterative turn
-/// cannot grow the file without bound. The digest collapses repeats anyway, so
-/// dropping the oldest entries past the cap costs no information the reminder
-/// would have used.
+/// Preserve one observation for each distinct gate/group before using spare
+/// capacity for the newest repeats. A high-volume group should not evict the
+/// only warning recorded for another group. With more unique groups than the
+/// limit, the most recent groups win and the digest remains partial.
+fn cap_gate_observations(observations: &mut Vec<GateObservation>) {
+    if observations.len() <= MAX_GATE_OBSERVATIONS {
+        return;
+    }
+    let mut chosen = vec![false; observations.len()];
+    let mut keys = HashSet::new();
+    let mut remaining = MAX_GATE_OBSERVATIONS;
+
+    for index in (0..observations.len()).rev() {
+        let observation = &observations[index];
+        let key = (
+            observation.kind,
+            normalized_group(observation.group.as_deref()),
+        );
+        if keys.insert(key) {
+            chosen[index] = true;
+            remaining -= 1;
+            if remaining == 0 {
+                break;
+            }
+        }
+    }
+    for index in (0..observations.len()).rev() {
+        if remaining == 0 {
+            break;
+        }
+        if !chosen[index] {
+            chosen[index] = true;
+            remaining -= 1;
+        }
+    }
+    let mut index = 0;
+    observations.retain(|_| {
+        let keep = chosen[index];
+        index += 1;
+        keep
+    });
+}
+
+/// Append observations without losing concurrent updates from other threads in
+/// this process. The cap bounds file size while retaining distinct warnings.
 pub fn append_gate_observations(session_id: &str, new: &[GateObservation]) -> Result<()> {
     if new.is_empty() {
         return Ok(());
     }
-    let mut observations = load_gate_observations(session_id)?;
+    let _guard = GATE_OBSERVATIONS_MUTEX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut observations = load_gate_observations_unlocked(session_id)?;
     observations.extend(new.iter().cloned());
-    if observations.len() > MAX_GATE_OBSERVATIONS {
-        let excess = observations.len() - MAX_GATE_OBSERVATIONS;
-        observations.drain(0..excess);
+    cap_gate_observations(&mut observations);
+    save_gate_observations_unlocked(session_id, &observations)
+}
+
+/// Delete a file without a separate exists() check, avoiding a TOCTOU race.
+fn remove_if_present(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("remove todo file {}", path.display())),
     }
-    save_gate_observations(session_id, &observations)
 }
 
 pub fn clear_gate_observations(session_id: &str) -> Result<()> {
-    let path = gate_observations_path(session_id)?;
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    Ok(())
+    let _guard = GATE_OBSERVATIONS_MUTEX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    remove_if_present(&gate_observations_path(session_id)?)
 }
 
-/// Remove all persisted todo files for a session (todos, goals, plan, gate
-/// observations). Called by `/clear` and session reset so old-session state
-/// does not leak into a fresh session.
+/// Error-aware clearing for callers that must verify state was actually reset.
+/// Attempt all four removals even if one fails; report every failure.
+pub fn clear_session_todos_checked(session_id: &str) -> Result<()> {
+    let mut failures = Vec::new();
+    for (name, clear) in [
+        ("todos", clear_todos as fn(&str) -> Result<()>),
+        ("goals", clear_goals as fn(&str) -> Result<()>),
+        ("plan", clear_plan as fn(&str) -> Result<()>),
+        (
+            "gate observations",
+            clear_gate_observations as fn(&str) -> Result<()>,
+        ),
+    ] {
+        if let Err(error) = clear(session_id) {
+            failures.push(format!("{name}: {error:#}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "failed to fully clear todo session: {}",
+            failures.join("; ")
+        ))
+    }
+}
+
+/// Legacy signature retained for existing `/clear` callers. Failures are now
+/// surfaced rather than silently ignored; prefer the checked API in new code.
 pub fn clear_session_todos(session_id: &str) {
-    let _ = clear_todos(session_id);
-    let _ = clear_goals(session_id);
-    let _ = clear_plan(session_id);
-    let _ = clear_gate_observations(session_id);
+    if let Err(error) = clear_session_todos_checked(session_id) {
+        eprintln!("AlphaCode: {error:#}");
+    }
 }
 
 fn clear_todos(session_id: &str) -> Result<()> {
-    let path = todo_path(session_id)?;
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    Ok(())
+    remove_if_present(&todo_path(session_id)?)
 }
 
 fn clear_goals(session_id: &str) -> Result<()> {
-    let path = goals_path(session_id)?;
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    Ok(())
+    remove_if_present(&goals_path(session_id)?)
 }
 
 fn clear_plan(session_id: &str) -> Result<()> {
-    let path = plan_path(session_id)?;
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    Ok(())
+    remove_if_present(&plan_path(session_id)?)
 }
 
-/// Upper bound on retained observations per turn.
 const MAX_GATE_OBSERVATIONS: usize = 256;
 
 fn gate_observations_path(session_id: &str) -> Result<PathBuf> {
-    let base = storage::alphacode_dir()?;
-    Ok(base
-        .join("todos")
-        .join(format!("{}-gate-observations.json", session_id)))
+    session_json_path(session_id, "-gate-observations")
 }
 
 #[cfg(test)]
@@ -1382,5 +1610,252 @@ mod tests {
             Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_HOME", value),
             None => crate::alphacode_core::env::remove_var("ALPHACODE_HOME"),
         }
+    }
+
+    #[test]
+    fn session_ids_are_portable_and_cannot_escape_storage() {
+        for invalid in [
+            "",
+            "..",
+            "../escape",
+            "..\\escape",
+            "/tmp/x",
+            "C:\\tmp",
+            "a/b",
+            "a\\b",
+            "a..b",
+            "a\n",
+            "a-goals",
+            "b-plan",
+            "b-gate-observations",
+            "b-GoAlS",
+            "CON",
+            ".hidden",
+        ] {
+            assert!(
+                validate_session_id(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+        for valid in ["a", "test-session_123", "UUID.123", "a-b.c_9"] {
+            assert!(validate_session_id(valid).is_ok(), "rejected {valid:?}");
+        }
+    }
+
+    #[test]
+    fn group_normalization_applies_to_digest_and_completion() {
+        let observations = [
+            loop_observation(Some(" group "), Some(55)),
+            loop_observation(Some("group"), Some(60)),
+        ];
+        let goals = [TodoGoal {
+            group: Some("group".into()),
+            closed_feedback_loop: Some(QUALITY_GATE_THRESHOLD),
+            ..Default::default()
+        }];
+        let message = build_gate_digest(&observations, &TodoPlan::default(), &goals).unwrap();
+        assert_eq!(message.matches("\n- ").count(), 1);
+        assert!(message.contains("flagged 2 times"));
+        assert!(message.contains("was worked on before its feedback loop was closed"));
+    }
+
+    #[test]
+    fn a_changed_complete_group_cannot_bypass_ownership() {
+        let previous = [todo("existing", "completed", Some("ship"))];
+        let unchanged = [todo("existing", "completed", Some(" ship "))];
+        assert!(groups_closed_by_update(&previous, &unchanged).is_empty());
+        assert!(newly_completed_groups_have_sufficient_ownership(
+            &previous,
+            &unchanged,
+            &[]
+        ));
+
+        let mut added = unchanged.to_vec();
+        added.push(todo("new", "completed", Some("ship")));
+        assert_eq!(
+            groups_closed_by_update(&previous, &added),
+            vec![Some("ship".into())]
+        );
+        assert!(!newly_completed_groups_have_sufficient_ownership(
+            &previous,
+            &added,
+            &[]
+        ));
+        assert!(newly_completed_groups_have_sufficient_ownership(
+            &previous,
+            &added,
+            &[ownership_goal(Some("ship"), Some(96))]
+        ));
+
+        let removed: Vec<TodoItem> = added
+            .iter()
+            .filter(|item| item.content != "existing")
+            .cloned()
+            .collect();
+        assert_eq!(
+            groups_closed_by_update(&added, &removed),
+            vec![Some("ship".into())]
+        );
+    }
+
+    #[test]
+    fn changing_duplicate_group_items_requires_ownership_again() {
+        let a = todo("duplicate", "completed", Some("same"));
+        let previous = [a.clone(), a.clone()];
+        let incoming = [a];
+        assert_eq!(
+            groups_closed_by_update(&previous, &incoming),
+            vec![Some("same".into())]
+        );
+        assert!(!newly_completed_groups_have_sufficient_ownership(
+            &previous,
+            &incoming,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn completion_state_matches_title_case_insensitive_status() {
+        let prev = [todo("item", "pending", Some("ship"))];
+        let next = [todo("item", "Completed", Some("ship"))];
+        assert_eq!(
+            groups_closed_by_update(&prev, &next),
+            vec![Some("ship".into())]
+        );
+    }
+
+    #[test]
+    fn spike_classifier_checks_final_completion_score() {
+        let mut item = todo("verify", "completed", None);
+        item.confidence_history = vec![80, 90];
+        item.completion_confidence = Some(100);
+        assert!(spike_completed_todos(&[item.clone()]).is_empty());
+        item.completion_confidence = Some(100);
+        item.confidence_history = vec![70, 80];
+        assert_eq!(spike_completed_todos(&[item]).len(), 1);
+    }
+
+    #[test]
+    fn untrusted_labels_cannot_create_new_continuation_lines() {
+        let mut item = todo("first\n- INJECTED \"text\"", "completed", None);
+        item.completion_confidence = None;
+        let message = build_todo_completion_continuation_message(&[item]);
+        assert!(message.contains("first\\n- INJECTED"));
+        assert!(!message.contains("first\n- INJECTED"));
+        assert!(message.contains("\\\"text\\\""));
+    }
+
+    #[test]
+    fn observation_cap_preserves_older_distinct_warnings() {
+        let mut observations = vec![loop_observation(Some("rare-early-warning"), Some(30))];
+        observations.extend((0..MAX_GATE_OBSERVATIONS + 40).map(|_| intent_observation(Some(60))));
+        cap_gate_observations(&mut observations);
+        assert_eq!(observations.len(), MAX_GATE_OBSERVATIONS);
+        assert_eq!(
+            observations
+                .iter()
+                .filter(|item| item.group.as_deref() == Some("rare-early-warning"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            observations
+                .iter()
+                .filter(|item| item.kind == GateObservationKind::IntentUnderstanding)
+                .count(),
+            MAX_GATE_OBSERVATIONS - 1
+        );
+    }
+
+    #[test]
+    fn user_text_resembling_an_auto_poke_is_not_hidden() {
+        assert!(!is_auto_poke_message(
+            "You have 3 incomplete todos. Also I have 2 incomplete todos. Continue working, or update the todo tool."
+        ));
+        assert!(!is_auto_poke_message(
+            "You have 1 incomplete todos. Continue working, or update the todo tool."
+        ));
+        assert!(is_auto_poke_message(&build_auto_poke_message(2)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_todo_file_is_not_followed() {
+        use std::os::unix::fs::symlink;
+        let _guard = crate::storage::lock_test_env();
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", dir.path());
+        let target = dir.path().join("protected.txt");
+        std::fs::write(&target, b"protected").expect("write target");
+        let link = todo_path("link-test").expect("todo path");
+        std::fs::create_dir_all(link.parent().unwrap()).expect("create todos dir");
+        symlink(&target, &link).expect("create symlink");
+        assert!(load_todos("link-test").is_err());
+        assert!(save_todos("link-test", &[]).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"protected");
+        match previous_home {
+            Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_HOME", value),
+            None => crate::alphacode_core::env::remove_var("ALPHACODE_HOME"),
+        }
+    }
+
+    #[test]
+    fn session_titles_are_single_line_and_bounded() {
+        let current = [todo(
+            "original",
+            "in_progress",
+            Some("  First\n\tSecond   part  "),
+        )];
+        assert_eq!(
+            derive_session_title(&current, &TodoPlan::default()).as_deref(),
+            Some("First Second part")
+        );
+        let long = "x".repeat(200);
+        let current = [todo("original", "in_progress", Some(&long))];
+        let title = derive_session_title(&current, &TodoPlan::default()).unwrap();
+        assert_eq!(title.chars().count(), 120);
+        assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn concurrent_gate_observation_appends_do_not_lose_updates_in_process() {
+        let _guard = crate::storage::lock_test_env();
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", dir.path());
+
+        std::thread::scope(|scope| {
+            for index in 0..8 {
+                scope.spawn(move || {
+                    for _ in 0..8 {
+                        let observation = loop_observation(
+                            Some(if index % 2 == 0 { "a" } else { "b" }),
+                            Some(70),
+                        );
+                        append_gate_observations("parallel-append-test", &[observation])
+                            .expect("append");
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            load_gate_observations("parallel-append-test")
+                .unwrap()
+                .len(),
+            64
+        );
+
+        match previous_home {
+            Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_HOME", value),
+            None => crate::alphacode_core::env::remove_var("ALPHACODE_HOME"),
+        }
+    }
+
+    #[test]
+    fn invalid_session_ids_are_rejected_by_storage_apis() {
+        assert!(load_todos("../escape").is_err());
+        assert!(save_todos("../escape", &[]).is_err());
+        assert!(clear_session_todos_checked("../escape").is_err());
     }
 }

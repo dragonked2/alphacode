@@ -88,7 +88,15 @@ pub const TOKENHARBOR_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile
     api_key_env: "TOKENHARBOR_API_KEY",
     env_file: "tokenharbor.env",
     setup_url: "https://tokenharbor.ai/docs/getting-started/quickstart",
-    default_model: Some("tokenharbor/qwen3-max"),
+    // Verified against the live catalog and a real completion: the gateway
+    // rejects maker-prefixed ids wholesale ("Names with a maker prefix such as
+    // 'anthropic/...' are internal routing addresses and are not callable"), so
+    // the old `tokenharbor/qwen3-max` default failed every fresh login with a
+    // 404 `model_not_found`. The model-name segment alone is the callable id.
+    // `deepseek-v4.1-flash:free` is a zero-priced, tool-capable, 1M-token
+    // window model, so a new login starts on a route that costs nothing and
+    // satisfies the agent's tool-calling requirements.
+    default_model: Some("deepseek-v4.1-flash:free"),
     requires_api_key: true,
 };
 
@@ -1023,7 +1031,13 @@ pub const TOKENHARBOR_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDes
     menu_detail: "API key, one key for all models",
     recommended: false,
     target: LoginProviderTarget::OpenAiCompatible(TOKENHARBOR_PROFILE),
-    order: LoginProviderSurfaceOrder::new(Some(21), Some(21), Some(21), Some(21), Some(21)),
+    // Token Harbor is a first-class recommended lane: one key unlocks every
+    // hosted model, including a zero-priced tool-capable tier, so a new user
+    // should reach it right after the built-in free tier and the major
+    // proprietary providers instead of scrolling past ~20 niche gateways.
+    // Order 2 places it at position 5 on the single-entry (non auto-import)
+    // surfaces and position 6 in the CLI/TUI list, just behind Anthropic/OpenAI.
+    order: LoginProviderSurfaceOrder::new(Some(2), Some(2), Some(2), Some(2), Some(2)),
 };
 
 pub const DEEPSEEK_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {

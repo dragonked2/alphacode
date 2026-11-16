@@ -407,6 +407,122 @@ fn is_read_only_name(name: &str) -> bool {
     READ_ONLY_COMMANDS.contains(&lower.as_str()) || READ_ONLY_COMMANDS.contains(&stem)
 }
 
+/// How a program names the paths it writes.
+///
+/// Presence here does not mean the command is destructive; it means part of its
+/// operand list is *output*, so a protected path there can be overwritten,
+/// replaced or extended even though nothing is recursively deleted. `dd` is
+/// absent because it names its output with an `of=` operand, which the generic
+/// target scan already unwraps.
+///
+/// The distinction between "last operand" and "every operand" is load-bearing
+/// for false positives: `ln -s ../src/lib.rs link.rs` reads a path above the
+/// working directory and writes inside it, so grading every operand reported
+/// the *source* as an outside-the-workspace write and denied a routine command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteShape {
+    /// Only the final non-flag operand is written (`cp`, `install`, `rsync`,
+    /// `ln`). Everything before it is read.
+    LastOperand,
+    /// Every non-flag operand is written, so all of them are graded (`tee`,
+    /// `truncate`).
+    EveryOperand,
+    /// The final operand is written *and* the others are consumed, so both the
+    /// write and the removal are graded (`mv`).
+    LastOperandAndSources,
+}
+
+fn write_shape(program: &str) -> Option<WriteShape> {
+    match program {
+        "cp" | "install" | "rsync" | "ln" | "link" => Some(WriteShape::LastOperand),
+        "tee" | "truncate" => Some(WriteShape::EveryOperand),
+        "mv" | "move" => Some(WriteShape::LastOperandAndSources),
+        _ => None,
+    }
+}
+
+/// What happens to an operand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperandRole {
+    /// The path being written. Unknown values escalate.
+    Written,
+    /// The path being read and, for `mv`, removed. Only a protected source
+    /// escalates; an ordinary source is invisible to this check so that
+    /// `mv ~/Downloads/notes.md .` and `cp *.gz /tmp/` stay routine.
+    Consumed,
+}
+
+/// Operands of `program` paired with what the command does to them.
+///
+/// Globs and substitutions are not dropped: for a *written* operand an unknown
+/// value escalates, because `cp data.tar "$DEST"` could land anywhere. For a
+/// *consumed* operand the caller ignores unknowns, because a glob source is the
+/// ordinary shape of `cp *.gz /tmp/` and cannot be resolved from static text.
+fn write_operands(program: &str, tokens: &[Token]) -> Vec<(String, OperandRole)> {
+    let Some(shape) = write_shape(program) else {
+        return Vec::new();
+    };
+    // Operands only: a flag is never a path, and `--` ends option parsing.
+    let operands: Vec<&Token> = tokens
+        .iter()
+        .skip(1)
+        .filter(|token| !token.is_operator && !token.is_flag_for(program))
+        .collect();
+    let mut out: Vec<(String, OperandRole)> = Vec::new();
+    let last = operands.len().saturating_sub(1);
+    for (index, token) in operands.iter().enumerate() {
+        let text = token.text.as_str();
+        if text.is_empty() || text == "-" {
+            continue;
+        }
+        let role = match shape {
+            WriteShape::EveryOperand => OperandRole::Written,
+            WriteShape::LastOperand => {
+                if index == last {
+                    OperandRole::Written
+                } else {
+                    continue;
+                }
+            }
+            // `mv` writes the last operand and removes the rest, so a protected
+            // source is as destructive as a protected destination.
+            WriteShape::LastOperandAndSources => {
+                if index == last {
+                    OperandRole::Written
+                } else {
+                    OperandRole::Consumed
+                }
+            }
+        };
+        out.push((text.to_owned(), role));
+    }
+    out
+}
+
+/// Whether a write destination has no statically known value.
+///
+/// Mirrors the sigils [`paths::expand`] resolves (the home-indirection
+/// variables) and the ones it cannot (`$VAR`, `` `cmd` ``, `%VAR%`, globs).
+/// `$HOME` is *resolved* before this is consulted, so a home destination is
+/// graded as the protected path it really is rather than as merely unknown.
+fn destination_is_unresolved(raw: &str) -> bool {
+    if raw.contains(['*', '?']) {
+        return true;
+    }
+    let mut remainder = raw.to_string();
+    for resolved in [
+        "${HOME}",
+        "$HOME",
+        "${USERPROFILE}",
+        "$USERPROFILE",
+        "$env:USERPROFILE",
+        "%USERPROFILE%",
+    ] {
+        remainder = remainder.replace(resolved, "");
+    }
+    remainder.contains(['$', '`', '%'])
+}
+
 /// Whether a token is a `NAME=value` environment assignment rather than a word.
 ///
 /// Requires a valid shell identifier before the `=`. A loose `contains('=')`
@@ -744,6 +860,81 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         .iter()
         .find(|(name, _)| *name == program_name)
         .map(|(_, flags)| *flags);
+
+    // Writing *into* a protected location is as damaging as destroying it.
+    //
+    // The rest of this function asks "what would this destroy". That question
+    // cannot see `cp key ~/.ssh/authorized_keys`, `tee /etc/passwd`,
+    // `ln -sf x ~/.ssh/authorized_keys` or `rsync --delete a/ ~/`, because none
+    // of them is destructive and none writes through a redirect. Measured
+    // before this check existed, all five classified as `Safe` and ran with no
+    // reflection turn — an SSH-key persistence primitive, which is a worse
+    // outcome than the recursive delete this crate was written for. Checked
+    // before the redirect-only early return so it also grades `cp` with no
+    // redirect at all.
+    if !is_destructive && !is_curl && !is_shell_program(&program_name) {
+        for (raw, role) in write_operands(&program_name, tokens) {
+            let expanded = paths::expand(&raw, ctx);
+            let protected = paths::is_catastrophic_target(&expanded, ctx);
+            // A consumed operand that is not itself protected is uninteresting:
+            // `cp *.gz /tmp/` and `cp ~/Downloads/notes.md .` are routine, and a
+            // glob source has no resolvable value to grade.
+            if role == OperandRole::Consumed && !protected {
+                continue;
+            }
+            if protected {
+                // The wording must match the operation. `mv /etc/passwd
+                // /tmp/x` removes its source; telling the model it "would
+                // write into" that path describes an act the command never
+                // performs, so its reflection turn cannot be about the real
+                // deletion.
+                let reason = match role {
+                    OperandRole::Written => format!(
+                        "`{program_name}` would write into a protected system or \
+                         home path, which can persist code, replace credentials \
+                         or destroy data without a recursive delete"
+                    ),
+                    OperandRole::Consumed => format!(
+                        "`{program_name}` would remove or move a protected \
+                         system or home path, which destroys credentials or \
+                         data and cannot be undone"
+                    ),
+                };
+                findings.push(RiskFinding {
+                    level: RiskLevel::Catastrophic,
+                    reason,
+                    target: Some(raw.clone()),
+                });
+            } else if role == OperandRole::Written && destination_is_unresolved(&raw) {
+                // The destination is computed at runtime or is a glob, so it
+                // has no statically known value. `cp data.tar "$DEST"` could
+                // write anywhere; it must not be graded as a routine in-tree
+                // copy just because the unresolved text happens to resolve
+                // there.
+                findings.push(RiskFinding {
+                    level: RiskLevel::Confirm,
+                    reason: format!(
+                        "`{program_name}` writes to a destination computed at \
+                         runtime or matched by a glob, so the path cannot be \
+                         checked in advance"
+                    ),
+                    target: Some(raw.clone()),
+                });
+            } else if role == OperandRole::Written
+                && !paths::is_inside_working_dir(&expanded, ctx)
+                && !paths::is_temp_path(&expanded)
+            {
+                findings.push(RiskFinding {
+                    level: RiskLevel::Confirm,
+                    reason: format!(
+                        "`{program_name}` writes to a path outside the working \
+                         directory"
+                    ),
+                    target: Some(expanded.display().to_string()),
+                });
+            }
+        }
+    }
 
     let triggered = if is_destructive {
         true

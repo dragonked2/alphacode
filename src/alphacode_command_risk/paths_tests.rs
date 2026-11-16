@@ -300,3 +300,56 @@ fn expand_resolves_relative_paths_against_the_working_dir() {
     assert_eq!(expand("./build", &ctx()), cwd().join("build"));
     assert_eq!(expand("..", &ctx()), home());
 }
+
+// --- temp-root exemption must not become a protection bypass ---------------
+
+/// The temp exemption is consulted *before* the protected-path prefixes, so a
+/// hostile environment variable would otherwise switch off the absolute deny.
+#[test]
+fn a_poisoned_temp_variable_cannot_disable_protected_paths() {
+    for hostile in ["/", "/etc", "/usr", "C:/", "C:/Windows"] {
+        let path = std::path::PathBuf::from(hostile);
+        assert!(
+            !super::acceptable_temp_root_for_test(&path),
+            "`{hostile}` must never be accepted as a temp root"
+        );
+    }
+}
+
+/// The real Windows profile temp directory lives under `C:\Users`, which is a
+/// protected prefix. It has to be exempt or every scratch write is denied at
+/// the absolute tier.
+#[test]
+fn the_windows_profile_temp_directory_is_accepted() {
+    let path = std::path::PathBuf::from(r"C:\Users\tester\AppData\Local\Temp");
+    assert!(super::acceptable_temp_root_for_test(&path));
+}
+
+/// Ordinary temp directories are accepted, including a per-user cache.
+#[test]
+fn ordinary_temp_directories_are_accepted() {
+    for path in [
+        "/tmp",
+        "/var/tmp",
+        "/private/tmp",
+        "/home/tester/.cache/tmp",
+    ] {
+        assert!(
+            super::acceptable_temp_root_for_test(std::path::Path::new(path)),
+            "`{path}` should be a usable temp root"
+        );
+    }
+}
+
+/// A path under a protected tree that merely *mentions* temp is not a temp
+/// directory: `C:\Windows\Temp` must stay protected even though it ends in
+/// `/temp`.
+#[test]
+fn a_protected_directory_named_temp_is_not_exempt() {
+    for path in [r"C:\Windows\Temp", "C:/Windows/System32/temp", "/etc/temp"] {
+        assert!(
+            !super::acceptable_temp_root_for_test(std::path::Path::new(path)),
+            "`{path}` is a protected system path, not a disposable temp root"
+        );
+    }
+}

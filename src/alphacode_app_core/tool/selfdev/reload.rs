@@ -2,22 +2,9 @@ use super::*;
 pub use crate::alphacode_selfdev_types::ReloadRecoveryDirective;
 
 impl ReloadContext {
-    fn sanitize_session_id(session_id: &str) -> String {
-        session_id
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                    ch
-                } else {
-                    '_'
-                }
-            })
-            .collect()
-    }
-
     pub fn path_for_session(session_id: &str) -> Result<std::path::PathBuf> {
-        let sanitized = Self::sanitize_session_id(session_id);
-        Ok(storage::alphacode_dir()?.join(format!("reload-context-{}.json", sanitized)))
+        crate::todo::validate_session_id(session_id)?;
+        Ok(storage::alphacode_dir()?.join(format!("reload-context-{session_id}.json")))
     }
 
     fn legacy_path() -> Result<std::path::PathBuf> {

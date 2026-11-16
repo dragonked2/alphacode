@@ -1538,7 +1538,7 @@ mod tests {
         let previous_home = std::env::var_os("ALPHACODE_HOME");
         let dir = tempfile::TempDir::new().expect("tempdir");
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", dir.path());
-        let session = "ownership-gate-stale-goals";
+        let session = "ownership-gate-stale";
 
         // First write: set up a group with low ownership.
         let output = TodoTool::new()
@@ -1619,7 +1619,7 @@ mod tests {
         let previous_home = std::env::var_os("ALPHACODE_HOME");
         let dir = tempfile::TempDir::new().expect("tempdir");
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", dir.path());
-        let session = "ownership-gate-active-goals";
+        let session = "ownership-gate-active";
 
         // Complete a todo AND send a goal with low ownership.
         let output = TodoTool::new()

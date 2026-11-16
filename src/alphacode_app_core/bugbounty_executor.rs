@@ -1099,7 +1099,7 @@ async fn execute_task(
     let successes = coverage.successful_calls;
     let failures = coverage.failed_input_indices.len();
     let deferred = coverage.deferred_input_indices.len();
-    orchestrator.execution_coverage.write().await.push(coverage);
+    orchestrator.record_attempt(coverage).await;
     let raw_path = dir.join(format!("{}.txt", task.id));
     atomic_write(&raw_path, raw_text.as_bytes())?;
     if successes == 0 {

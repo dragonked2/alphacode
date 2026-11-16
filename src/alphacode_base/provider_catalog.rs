@@ -531,6 +531,30 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
             push("deepseek-v4-flash");
             push("deepseek-v4-pro");
         }
+        // Token Harbor's `/v1/models` is authenticated, so a freshly saved key
+        // has an empty picker until the first catalog refresh lands. These ids
+        // were verified against the live catalog *and* with real completions;
+        // the free rows are zero-priced and tool-capable, so they cost nothing
+        // to list and give a new login a working default before the refresh.
+        // The live catalog always wins once it is cached.
+        "tokenharbor" => {
+            // Zero-priced, tool-capable rows first: the default model lives here.
+            push("deepseek-v4.1-flash:free");
+            push("deepseek-v4-flash:free");
+            push("mimo-v2.5:free");
+            push("mimo-v2.6-flash:free");
+            // Paid flagships, so the picker is useful beyond the free tier.
+            push("deepseek-v4.1-flash");
+            push("deepseek-v4-pro");
+            push("gpt-6-astra");
+            push("gpt-5.6-sol");
+            push("claude-opus-5.5");
+            push("gemini-3.8-flash");
+            push("glm-5.3");
+            push("qwen3.8-max");
+            push("kimi-k3.1-pro");
+            push("minimax-m3.1-flash");
+        }
         "comtegra" => {
             push("gpt-oss-120b");
             push("qwen35-122b");

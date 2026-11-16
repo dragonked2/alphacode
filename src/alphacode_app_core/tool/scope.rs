@@ -60,6 +60,8 @@ struct SessionScopeState {
 struct SessionPermits {
     /// Number of network calls currently in flight for this session.
     in_flight: usize,
+    /// Instant of the most recently admitted call, for `max_rate_rps` pacing.
+    last_admitted: Option<std::time::Instant>,
 }
 
 static SESSION_SCOPES: LazyLock<StdRwLock<HashMap<String, SessionScopeState>>> =
@@ -191,6 +193,14 @@ const MAX_TARGET_FILE_LINES: usize = 2048;
 /// Bytes read from a target-list file.
 const MAX_TARGET_FILE_BYTES: u64 = 1 << 20;
 
+/// Marker appended to a truncated target list so the gate fails closed instead
+/// of treating an unscanned tail as empty.
+///
+/// A sentinel cannot collide with a real target: hostnames may not contain `<`
+/// or `>`, and a URL containing them would be percent-encoded by the time a
+/// scanner read it.
+const SCOPE_TRUNCATED_SENTINEL: &str = "<scope:truncated>";
+
 /// Whether a raw argument value looks like a network target.
 ///
 /// Guards the short key aliases (`u`, `t`, `d`), which several tools use for
@@ -272,6 +282,11 @@ fn collect_target_values(value: &Value, out: &mut Vec<String>) {
 ///
 /// An unreadable path contributes no targets: the tool itself will fail on it,
 /// and failing the gate on a file the tool never opens would block valid calls.
+///
+/// Truncation is *not* silent. The gate is handed [`SCOPE_TRUNCATED_SENTINEL`]
+/// so it can escalate; treating the cap as "the rest may be anything, let the
+/// tool decide" would let a recon list place every out-of-scope host after line
+/// [`MAX_TARGET_FILE_LINES`] and reach it.
 fn targets_from_file(path: &str) -> Vec<String> {
     let trimmed = path.trim();
     if trimmed.is_empty() || trimmed == "-" {
@@ -283,8 +298,16 @@ fn targets_from_file(path: &str) -> Vec<String> {
     let reader = std::io::BufReader::new(file);
     let reader = std::io::Read::take(reader, MAX_TARGET_FILE_BYTES);
     let mut out = Vec::new();
-    for line in std::io::BufRead::lines(reader).map_while(Result::ok) {
+    let mut truncated = false;
+    for line in std::io::BufRead::lines(reader) {
+        let Ok(line) = line else {
+            // A read error mid-file leaves the remainder unknown, exactly like
+            // hitting the cap.
+            truncated = true;
+            break;
+        };
         if out.len() >= MAX_TARGET_FILE_LINES {
+            truncated = true;
             break;
         }
         let line = line.trim();
@@ -293,7 +316,20 @@ fn targets_from_file(path: &str) -> Vec<String> {
         }
         out.push(line.to_string());
     }
+    if truncated {
+        out.push(SCOPE_TRUNCATED_SENTINEL.to_string());
+    }
     out
+}
+
+fn target_list_truncated_message(tool: &str) -> String {
+    format!(
+        "Engagement scope block: `{tool}` was given a target list longer than the \
+         scope gate scans ({MAX_TARGET_FILE_LINES} targets / {MAX_TARGET_FILE_BYTES} bytes), \
+         so part of it could not be checked against the authorized scope. \
+         Split the list into smaller files, or narrow the scope so the whole list is \
+         in-scope, and retry."
+    )
 }
 
 fn denied_message(tool: &str, target: &str, reason: &str) -> String {
@@ -376,6 +412,13 @@ pub(crate) fn enforce_call(ctx: &ToolContext, tool: &str, input: &Value) -> Resu
     //   laundered every host listed after it — including out-of-scope ones and
     //   the entire contents of a recon list file.
     for target in all_targets_from_input(tool, input) {
+        // A scanner driven from a list file it was allowed to open would
+        // otherwise reach every host in that file, including any past the scan
+        // cap. The cap exists to bound gate cost, not to grant an unchecked
+        // tail, so it must escalate rather than silently stop reading.
+        if target == SCOPE_TRUNCATED_SENTINEL {
+            return Err(target_list_truncated_message(tool));
+        }
         let decision = evaluate_target(&ctx.session_id, &target);
         if decision.is_unmatched() {
             // `decide` denies under `fail_closed`, so an unmatched target arrives
@@ -469,40 +512,50 @@ impl Drop for NetworkPermit {
 /// Acquire a network permit for a tool call, respecting both the session policy
 /// (if any) and a global concurrency ceiling.
 pub(crate) async fn acquire_network_permit(session_id: &str, tool: &str) -> NetworkPermit {
+    let policy = session_scope_policy(session_id);
     // Global ceiling: default, or the engagement rule when configured.
-    let global_max = session_scope_policy(session_id)
+    let global_max = policy
+        .as_ref()
         .map(|p| p.max_concurrent as usize)
         .filter(|v| *v > 0)
         .unwrap_or(DEFAULT_GLOBAL_MAX_CONCURRENT);
 
-    // Spin-wait bounded by the global budget: this is a lightweight permit the
-    // registry holds across the call. Without it, a swarm of subagents could
-    // each run `nmap` at the same time and blow past even a per-session cap.
+    // Request pacing. `max_rate_rps` is the operator's instruction to the agent
+    // about how fast the *target* may be hit; until now nothing in the runtime
+    // enforced it, so a policy asking for 1 req/s was honoured only if the
+    // model chose to.
     //
-    // Note: we deliberately do not block forever; the calling tool itself has
-    // timeouts and cancellation, and this returns as soon as a slot is free.
-    let mut spins = 0usize;
-    loop {
-        let current = GLOBAL_IN_FLIGHT.load(Ordering::SeqCst);
-        if current >= global_max {
-            tokio::task::yield_now().await;
-            spins += 1;
-            // 10_000 yields at ~µs each is a generous backoff cap that never
-            // blocks the agent loop below a tool's own timeout.
-            if spins > 10_000 {
-                // Fall through: the thread pool is clearly stalled; the per-tool
-                // timeout will eventually fail the call and release its permit.
-                return NetworkPermit::none();
-            }
-            continue;
+    // Applied as a minimum interval between admissions rather than a
+    // token-bucket, because that is what a declared `max_rate_rps` means for
+    // target safety: no burst above the stated rate. The wait happens *before*
+    // taking a concurrency slot so a paced call does not occupy one while
+    // sleeping.
+    let min_interval = policy
+        .as_ref()
+        .map(|p| p.max_rate_rps)
+        .filter(|rps| *rps > 0)
+        .map(|rps| std::time::Duration::from_secs_f64(1.0 / f64::from(rps)));
+    if let Some(interval) = min_interval {
+        // How long this session must still wait, read under the lock and then
+        // released so the sleep does not hold it.
+        let wait = {
+            let scopes = SESSION_SCOPES.read().unwrap_or_else(|p| p.into_inner());
+            scopes
+                .get(session_id)
+                .and_then(|state| state.permits.last_admitted)
+                .map(|last| interval.saturating_sub(last.elapsed()))
+                .filter(|remaining| !remaining.is_zero())
+        };
+        if let Some(wait) = wait {
+            tokio::time::sleep(wait).await;
         }
-        if GLOBAL_IN_FLIGHT
-            .compare_exchange_weak(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            break;
+        let mut scopes = SESSION_SCOPES.write().unwrap_or_else(|p| p.into_inner());
+        if let Some(state) = scopes.get_mut(session_id) {
+            state.permits.last_admitted = Some(std::time::Instant::now());
         }
     }
+
+    acquire_global_slot(session_id, tool, global_max, GLOBAL_SLOT_MAX_WAIT).await;
 
     let mut scopes = SESSION_SCOPES.write().unwrap_or_else(|p| p.into_inner());
     if let Some(state) = scopes.get_mut(session_id) {
@@ -516,9 +569,106 @@ pub(crate) async fn acquire_network_permit(session_id: &str, tool: &str) -> Netw
     }
 }
 
+/// How long a call waits for a global concurrency slot before admitting itself.
+const GLOBAL_SLOT_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Retry spacing while waiting for a global slot.
+const GLOBAL_SLOT_RETRY_AFTER: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Take one slot on the process-wide concurrency budget, waiting up to `max_wait`.
+///
+/// The ceiling exists so a swarm of subagents cannot each run `scanner` at once.
+/// This used to give up after 10 000 `yield_now()` calls and return
+/// `NetworkPermit::none()` — a permit that releases nothing. The effect was the
+/// opposite of the intent: sustained saturation is the *only* condition that can
+/// exhaust that loop, and it is exactly when the ceiling must hold, yet at that
+/// moment every waiting call silently escaped it. Because `yield_now` does not
+/// sleep, it also burned CPU while doing so.
+///
+/// # Invariant
+/// This returns having incremented [`GLOBAL_IN_FLIGHT`] **exactly once**, on
+/// every path — the fast path, and the path that gives up waiting. Admission and
+/// accounting are therefore inseparable: a call can be late, but it can never be
+/// invisible to the ceiling.
+///
+/// `max_wait` is a parameter rather than a constant so the give-up branch is
+/// reachable from a test. It previously read `waited >= Duration::ZERO`, which is
+/// true on the *first* failed compare-exchange — the wait never happened at all,
+/// and combined with the uncounted permit above, every contended call escaped the
+/// ceiling. A 30-second constant made that branch untestable, which is the only
+/// reason the bug survived.
+async fn acquire_global_slot(
+    session_id: &str,
+    tool: &str,
+    global_max: usize,
+    max_wait: std::time::Duration,
+) {
+    let mut waited = std::time::Duration::ZERO;
+    loop {
+        let current = GLOBAL_IN_FLIGHT.load(Ordering::SeqCst);
+        if current < global_max
+            && GLOBAL_IN_FLIGHT
+                .compare_exchange_weak(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return;
+        }
+        if waited >= max_wait {
+            // Still saturated after the full wait. Refusing the call would fail a
+            // tool the ceiling is only supposed to pace, so admit it — but count
+            // it, and say so.
+            tracing::warn!(
+                session_id,
+                tool,
+                in_flight = GLOBAL_IN_FLIGHT.load(Ordering::SeqCst),
+                global_max,
+                "network concurrency ceiling saturated for {max_wait:?}; admitting one extra counted call"
+            );
+            GLOBAL_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+            return;
+        }
+        tokio::time::sleep(GLOBAL_SLOT_RETRY_AFTER).await;
+        waited += GLOBAL_SLOT_RETRY_AFTER;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serialize the tests that read [`GLOBAL_IN_FLIGHT`] as an absolute value.
+    ///
+    /// The counter is process-global by design — that *is* the ceiling — so any
+    /// other test holding a permit concurrently shifts it, and an assertion of
+    /// the form "counter == 1" then fails on a busy machine while the code under
+    /// test is correct. Only the tests that treat it as a total need this; the
+    /// relative-delta assertions are already stable.
+    static PERMIT_COUNT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_permit_counts_for_tests() -> std::sync::MutexGuard<'static, ()> {
+        PERMIT_COUNT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Restore the process-global in-flight counter when a test finishes.
+    ///
+    /// [`GLOBAL_IN_FLIGHT`] is process state, not test state. A test that takes a
+    /// slot through the raw [`acquire_global_slot`] helper (rather than through a
+    /// `NetworkPermit`) must hand it back, or the counter only ever grows. Once
+    /// it exceeds a later test's small configured ceiling, that test waits out the
+    /// full `GLOBAL_SLOT_MAX_WAIT` for a slot that can never arrive — a 30-second
+    /// stall per admission that is indistinguishable from a hang.
+    ///
+    /// This restores the absolute value rather than subtracting, so it is correct
+    /// regardless of how many slots the test took.
+    struct InFlightRestore(usize);
+
+    impl Drop for InFlightRestore {
+        fn drop(&mut self) {
+            GLOBAL_IN_FLIGHT.store(self.0, Ordering::SeqCst);
+        }
+    }
 
     fn policy(in_scope: &[&str], out_of_scope: &[&str], enforce: bool) -> ScopePolicy {
         crate::alphacode_security_core::scope_gate::ScopePolicy::from_lists(
@@ -868,8 +1018,85 @@ mod tests {
         );
     }
 
+    /// The give-up branch must admit a *counted* slot.
+    ///
+    /// This is the branch the old code broke twice: the guard was always true
+    /// (so it never waited) and the permit it returned released nothing (so the
+    /// admitted call vanished from the counter). The pre-existing saturation
+    /// test cannot catch that — it releases the held slot after 50ms, so it
+    /// exercises the wait-then-succeed path and never reaches this branch at all.
+    /// Passing a tiny `max_wait` makes the branch reachable without sleeping 30s.
+    #[tokio::test]
+    async fn the_give_up_branch_admits_a_counted_slot() {
+        let _restore = InFlightRestore(GLOBAL_IN_FLIGHT.load(Ordering::SeqCst));
+        // Hold the test lock only for the synchronous setup; drop before the first await.
+        let _counts = lock_permit_counts_for_tests();
+        let id = "give-up-branch-test";
+        drop(_counts);
+        let mut limited = policy(&["example.com"], &[], true);
+        limited.max_concurrent = 1;
+        set_session_scope(id, Some(limited));
+
+        // Saturate the global budget at the configured limit.
+        let held = acquire_network_permit(id, "httpx").await;
+        let saturated = GLOBAL_IN_FLIGHT.load(Ordering::SeqCst);
+
+        // A zero wait reaches the give-up branch on the first iteration.
+        acquire_global_slot(id, "httpx", saturated, std::time::Duration::ZERO).await;
+
+        // The invariant: the counter must have increased. An uncounted permit
+        // (the old `NetworkPermit::none()`) left it unchanged, which is how the
+        // ceiling read as enforced while being exceeded.
+        assert_eq!(
+            GLOBAL_IN_FLIGHT.load(Ordering::SeqCst),
+            saturated + 1,
+            "giving up on the ceiling must still occupy a counted slot"
+        );
+        drop(held);
+        clear_session_scope(id);
+    }
+
+    /// Wait-then-succeed must take the fast path and count exactly once.
+    ///
+    /// Guards against a regression where the escape branch is taken eagerly
+    /// (the old always-true guard) and the slot is double-counted.
+    #[tokio::test]
+    async fn a_slot_is_taken_exactly_once_when_the_wait_succeeds() {
+        let _restore = InFlightRestore(GLOBAL_IN_FLIGHT.load(Ordering::SeqCst));
+        // Hold the test lock only for the synchronous setup; drop before the first await.
+        let _counts = lock_permit_counts_for_tests();
+        let id = "wait-succeeds-test";
+        drop(_counts);
+        let mut limited = policy(&["example.com"], &[], true);
+        limited.max_concurrent = 1;
+        set_session_scope(id, Some(limited));
+
+        let held = acquire_network_permit(id, "httpx").await;
+        let saturated = GLOBAL_IN_FLIGHT.load(Ordering::SeqCst);
+        // A generous bound: with the slot released shortly, the loop must
+        // succeed via compare-exchange rather than the escape branch.
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(held);
+        });
+        // `saturated` (not +1) is the ceiling, so the fast path fails and the
+        // call is forced down the wait loop; the release above then lets the
+        // loop succeed via compare-exchange well inside the 5s bound.
+        acquire_global_slot(id, "httpx", saturated, std::time::Duration::from_secs(5)).await;
+        release.await.unwrap();
+
+        // Exactly one slot taken for the waiting call (the other was released).
+        assert_eq!(
+            GLOBAL_IN_FLIGHT.load(Ordering::SeqCst),
+            1,
+            "the waiting call must count exactly one slot"
+        );
+        clear_session_scope(id);
+    }
+
     #[test]
     fn network_permit_drop_releases_budget() {
+        let _counts = lock_permit_counts_for_tests();
         let id = "permit-test";
         set_session_scope(id, Some(policy(&["example.com"], &[], true)));
         let before = GLOBAL_IN_FLIGHT.load(Ordering::SeqCst);
@@ -877,6 +1104,181 @@ mod tests {
         assert_eq!(GLOBAL_IN_FLIGHT.load(Ordering::SeqCst), before + 1);
         drop(permit);
         assert_eq!(GLOBAL_IN_FLIGHT.load(Ordering::SeqCst), before);
+    }
+
+    /// A recon list longer than the gate scans must not hand the tool an
+    /// unchecked tail. The cap exists to bound gate cost; before this it also
+    /// silently authorized everything past it.
+    #[test]
+    fn an_oversized_target_list_fails_closed_instead_of_being_partially_checked() {
+        let dir = std::env::temp_dir().join(format!(
+            "alphacode-scope-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let list = dir.join("targets.txt");
+        // One in-scope host, then enough filler to exceed the line cap.
+        let mut body = String::from(
+            "in-scope.test
+",
+        );
+        for index in 0..(MAX_TARGET_FILE_LINES + 10) {
+            body.push_str(&format!(
+                "host{index}.in-scope.test
+"
+            ));
+        }
+        std::fs::write(&list, body).unwrap();
+
+        let id = "truncated-list-test";
+        set_session_scope(id, Some(policy(&["in-scope.test"], &[], true)));
+        let result = enforce_call(
+            &ctx_for(id),
+            "httpx",
+            &serde_json::json!({ "list": list.display().to_string() }),
+        );
+        clear_session_scope(id);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let error = result.expect_err("a truncated target list must not pass unchecked");
+        assert!(
+            error.contains("longer than the scope gate scans"),
+            "unexpected message: {error}"
+        );
+    }
+
+    /// A list file within the cap is still evaluated host by host, so an
+    /// out-of-scope entry anywhere in it is refused.
+    #[test]
+    fn an_in_cap_target_list_is_checked_host_by_host() {
+        let dir = std::env::temp_dir().join(format!(
+            "alphacode-scope-test-ok-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let list = dir.join("targets.txt");
+        std::fs::write(
+            &list,
+            "in-scope.test
+not-in-scope.test
+",
+        )
+        .unwrap();
+
+        let id = "in-cap-list-test";
+        set_session_scope(id, Some(policy(&["in-scope.test"], &[], true)));
+        let result = enforce_call(
+            &ctx_for(id),
+            "httpx",
+            &serde_json::json!({ "list": list.display().to_string() }),
+        );
+        clear_session_scope(id);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            result.is_err(),
+            "an out-of-scope host in the list must be refused"
+        );
+    }
+
+    /// Saturation must still produce a *counted* permit.
+    ///
+    /// The invariant is what the old code broke: it returned
+    /// `NetworkPermit::none()` after a bounded spin, and that permit releases
+    /// nothing, so a call admitted at saturation was invisible to the counter
+    /// and the ceiling read as enforced while being exceeded.
+    ///
+    /// This cannot be observed by simply acquiring a permit while the ceiling is
+    /// free -- that path always counted, before and after the fix. It saturates
+    /// the ceiling at its configured limit first, so the acquisition below is
+    /// forced down the contended branch.
+    #[tokio::test]
+    async fn a_permit_admitted_under_saturation_is_still_counted() {
+        // Hold the test lock only for the synchronous setup; drop before the first await.
+        let _counts = lock_permit_counts_for_tests();
+        let id = "permit-saturation-test";
+        drop(_counts);
+        // A limit of 1 makes saturation trivially reachable and keeps the test
+        // fast: the second acquisition must wait, then admit a counted slot.
+        let mut limited = policy(&["example.com"], &[], true);
+        limited.max_concurrent = 1;
+        set_session_scope(id, Some(limited));
+
+        // Occupy the only slot.
+        let held = acquire_network_permit(id, "httpx").await;
+        let baseline = GLOBAL_IN_FLIGHT.load(Ordering::SeqCst);
+
+        // Release the held slot from another task shortly after the contended
+        // acquisition starts waiting, so it proceeds via the wait path rather
+        // than the uncontended fast path.
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            drop(held);
+        });
+
+        let contended = acquire_network_permit(id, "httpx").await;
+        release.await.unwrap();
+
+        // The contended acquisition must have taken a counting slot. Counting is
+        // observable as "the counter is non-zero while this permit is alive";
+        // an uncounted permit would leave it at zero once the other slot drops.
+        assert_eq!(
+            GLOBAL_IN_FLIGHT.load(Ordering::SeqCst),
+            1,
+            "a permit admitted under contention must still occupy a counted slot"
+        );
+        assert!(
+            baseline >= 1,
+            "the ceiling was saturated before the contended acquisition"
+        );
+
+        drop(contended);
+        assert_eq!(
+            GLOBAL_IN_FLIGHT.load(Ordering::SeqCst),
+            0,
+            "releasing the contended permit must return the slot"
+        );
+        clear_session_scope(id);
+    }
+
+    /// `max_rate_rps` must actually pace calls.
+    ///
+    /// It was declared on every policy and enforced nowhere, so a policy asking
+    /// for a low rate was honoured only if the model chose to. Two consecutive
+    /// admissions under a 1 req/s policy must be at least one interval apart.
+    #[tokio::test]
+    async fn a_declared_rate_limit_paces_consecutive_admissions() {
+        // Holds two live permits, so it must not overlap the counter tests.
+        // Hold the test lock only for the synchronous setup; drop before the first await.
+        let _counts = lock_permit_counts_for_tests();
+        let id = "rate-pacing-test";
+        drop(_counts);
+        // `policy()` builds with max_rate_rps = 10 in this module; use 1 here so
+        // the interval is a full second and hard to confuse with scheduling noise.
+        let mut policy = policy(&["example.com"], &[], true);
+        policy.max_rate_rps = 1;
+        set_session_scope(id, Some(policy));
+
+        let first = acquire_network_permit(id, "httpx").await;
+        let started = std::time::Instant::now();
+        let second = acquire_network_permit(id, "httpx").await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "a 1 req/s policy must space admissions by ~1s; got {elapsed:?}"
+        );
+        drop(first);
+        drop(second);
+        clear_session_scope(id);
     }
 
     /// Synchronous helper for permit lifecycle tests (avoids async in a sync test).

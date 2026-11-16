@@ -116,7 +116,7 @@ fn is_safe_device_sink_looking_at_raw(raw: &str) -> bool {
 /// Kept as a helper so the glob rule can ask the same question without
 /// duplicating the comparison, and without editing the most safety-critical
 /// predicate in the crate.
-fn is_inside_working_dir(path: &Path, ctx: &RiskContext) -> bool {
+pub fn is_inside_working_dir(path: &Path, ctx: &RiskContext) -> bool {
     ctx.working_dir.as_ref().is_some_and(|dir| {
         let cwd = normalize_for_compare(&normalize(dir));
         let comparable = normalize_for_compare(&normalize(path));
@@ -586,10 +586,124 @@ fn is_safe_device_sink(path: &Path) -> bool {
 
 /// Temp directories are conventionally disposable, so deleting inside them is
 /// not worth a reflection turn.
-fn is_temp_path(path: &Path) -> bool {
-    ["/tmp", "/var/tmp", "/private/tmp"]
+///
+/// The Windows locations are read from the environment rather than hardcoded,
+/// and that is load-bearing: `%TEMP%` on a default install is
+/// `C:\Users\<name>\AppData\Local\Temp`, which sits under the catastrophic
+/// `c:/users` prefix. Without these entries every scratch write an agent makes
+/// on Windows — a build log, captured output, a test fixture — was graded
+/// Catastrophic and refused. Because the catastrophic tier is absolute, that
+/// false positive is unrecoverable for the agent rather than merely annoying.
+fn temp_paths() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = ["/tmp", "/var/tmp", "/private/tmp"]
         .iter()
-        .any(|prefix| path.starts_with(prefix))
+        .map(PathBuf::from)
+        .collect();
+    for var in ["TEMP", "TMP", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+            let path = PathBuf::from(value);
+            if acceptable_temp_root(&path) {
+                roots.push(path);
+            }
+        }
+    }
+    roots
+}
+
+/// A temp root must be a real, non-trivial directory.
+///
+/// This is a security boundary, not tidiness: the temp exemption in
+/// [`is_catastrophic_target`] returns early, so a `TMPDIR=/` (or `C:\`, or
+/// `/etc`) in the environment would otherwise disable the absolute deny for the
+/// whole filesystem. Require at least two path components and reject any
+/// directory that is itself on a protected list.
+fn acceptable_temp_root(path: &Path) -> bool {
+    let normalized = normalize(path);
+    let comparable = normalize_for_compare(&normalized);
+
+    // The well-known POSIX temp roots are accepted first, because `/var/tmp`
+    // lives under the protected `/var` tree and the general guard below would
+    // otherwise reject the directory this exemption exists for.
+    const CANONICAL_TEMP: &[&str] = &["/tmp", "/var/tmp", "/private/tmp"];
+    if CANONICAL_TEMP
+        .iter()
+        .any(|root| matches_protected(&comparable, root))
+    {
+        return true;
+    }
+
+    // Only a filesystem root is rejected by depth alone: `/etc` and `/usr` both
+    // have a single component, and the tree guard below is what rejects them.
+    let depth = normalized
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .count();
+    if depth == 0 {
+        return false;
+    }
+
+    // System trees are never disposable, at any depth. `/etc/temp` and
+    // `C:\Windows\Temp` are privileged locations, not scratch space.
+    const FORBIDDEN_TREES: &[&str] = &[
+        "/etc",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/boot",
+        "/dev",
+        "/proc",
+        "/sys",
+        "/root",
+        "/var",
+        "/system",
+        "/library",
+        "c:/windows",
+        "c:/program files",
+        "c:/program files (x86)",
+        "c:/programdata",
+    ];
+    if FORBIDDEN_TREES
+        .iter()
+        .any(|tree| matches_protected(&comparable, tree))
+    {
+        return false;
+    }
+
+    // A user's *home* directory is protected, but a scratch directory deeper
+    // inside it is not: `~/.cache/tmp` is a legitimate TMPDIR, while `~` itself
+    // is the directory whose deletion the catastrophic tier exists to prevent.
+    // Accepting the account root here would disable that protection outright.
+    const USER_ROOTS: &[&str] = &["/home", "/users", "c:/users"];
+    for root in USER_ROOTS {
+        let root = normalize_for_compare(Path::new(root));
+        if comparable == root {
+            return false;
+        }
+        if let Some(tail) = comparable.strip_prefix(&format!("{root}/")) {
+            let remaining_levels = tail.split('/').filter(|part| !part.is_empty()).count();
+            if remaining_levels <= 1 {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+pub fn is_temp_path(path: &Path) -> bool {
+    let candidate = normalize(path);
+    temp_paths().iter().any(|root| {
+        let root = normalize(root);
+        candidate == root || candidate.starts_with(&root)
+    })
+}
+
+/// Test hook for the temp-root predicate, which is otherwise private.
+#[cfg(test)]
+fn acceptable_temp_root_for_test(path: &Path) -> bool {
+    acceptable_temp_root(path)
 }
 
 #[cfg(test)]

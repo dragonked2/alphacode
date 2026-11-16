@@ -51,25 +51,13 @@ pub(super) struct GarbageCollectionStats {
     pub errors: usize,
 }
 
-fn sanitize_session_id(session_id: &str) -> String {
-    session_id
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 fn recovery_dir() -> Result<PathBuf> {
     Ok(crate::storage::alphacode_dir()?.join("reload-recovery"))
 }
 
 pub(super) fn path_for_session(session_id: &str) -> Result<PathBuf> {
-    Ok(recovery_dir()?.join(format!("{}.json", sanitize_session_id(session_id))))
+    crate::todo::validate_session_id(session_id)?;
+    Ok(recovery_dir()?.join(format!("{session_id}.json")))
 }
 
 fn remove_record_files(path: &std::path::Path) -> Result<()> {
@@ -402,14 +390,27 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_session_id_strips_path_traversal_and_separators() {
+    fn sanitize_session_id_rejects_path_traversal_and_separators() {
         // A malicious or merely unusual session id must never be able to escape
-        // the recovery directory or collide with sibling paths.
-        assert_eq!(sanitize_session_id("../../etc/passwd"), "______etc_passwd");
-        assert_eq!(sanitize_session_id("a/b\\c"), "a_b_c");
-        assert_eq!(sanitize_session_id("sess.with space"), "sess_with_space");
+        // the recovery directory or collide with sibling paths. Invalid ids
+        // are rejected outright rather than silently mapped to underscores,
+        // which would let `../../etc/passwd` survive as `______etc_passwd`.
+        for invalid in ["../../etc/passwd", "a/b\\c", "sess.with space", "", "a..b"] {
+            assert!(
+                path_for_session(invalid).is_err(),
+                "session id {invalid:?} should be rejected"
+            );
+        }
         // Already-safe ids are preserved verbatim.
-        assert_eq!(sanitize_session_id("session-abc_123"), "session-abc_123");
+        assert_eq!(
+            path_for_session("session-abc_123")
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "session-abc_123.json"
+        );
     }
 
     #[test]
@@ -418,17 +419,18 @@ mod tests {
         let _home = IsolatedHome::new();
 
         let dir = recovery_dir()?;
-        let evil = path_for_session("../../escape")?;
+        let safe = path_for_session("session-safe")?;
         assert!(
-            evil.starts_with(&dir),
-            "traversal session id escaped recovery dir: {} not under {}",
-            evil.display(),
+            safe.starts_with(&dir),
+            "safe session path escaped recovery dir: {} not under {}",
+            safe.display(),
             dir.display()
         );
         assert_eq!(
-            evil.file_name().and_then(|n| n.to_str()),
-            Some("______escape.json")
+            safe.file_name().and_then(|n| n.to_str()),
+            Some("session-safe.json")
         );
+        assert!(path_for_session("../../escape").is_err());
         Ok(())
     }
 

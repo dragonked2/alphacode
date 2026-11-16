@@ -667,3 +667,97 @@ fn declared_default_survives_a_missing_catalog() {
         resolve_openai_compatible_profile(crate::provider_catalog::OPENAI_COMPAT_PROFILE);
     assert_eq!(resolved.default_model.as_deref(), Some("alpha"));
 }
+
+// ---------------------------------------------------------------------------
+// Token Harbor
+// ---------------------------------------------------------------------------
+
+/// The default model must be callable *as written*.
+///
+/// The gateway rejects maker-prefixed ids wholesale ("Names with a maker prefix
+/// such as 'anthropic/...' are internal routing addresses and are not
+/// callable"). The shipped default used to be `tokenharbor/qwen3-max`, which is
+/// exactly that shape and returned HTTP 404 `model_not_found` on a real
+/// completion — so every fresh Token Harbor login started on an unroutable
+/// model. This pins the id *and* its shape.
+#[test]
+fn tokenharbor_default_model_is_callable_and_unprefixed() {
+    let profile = openai_compatible_profile_by_id("tokenharbor")
+        .expect("tokenharbor profile must be registered");
+    let default_model = profile
+        .default_model
+        .expect("tokenharbor declares a default model");
+    assert_eq!(default_model, "deepseek-v4.1-flash:free");
+    assert!(
+        !default_model.contains('/'),
+        "Token Harbor rejects maker-prefixed ids; {default_model:?} would 404"
+    );
+    // The free tier is the point: a fresh login must not silently bill.
+    assert!(
+        default_model.ends_with(":free"),
+        "{default_model:?} should start on the zero-priced tier"
+    );
+    assert!(
+        openai_compatible_profile_static_models(profile)
+            .iter()
+            .any(|model| model == default_model),
+        "default model {default_model} is not in the seed list, so a fresh \
+         login would show an empty picker"
+    );
+}
+
+/// The seed list is what a freshly saved key sees before its authenticated
+/// `/v1/models` refresh lands, so it must mirror ids the gateway actually
+/// serves. Every entry here was verified against the live catalog and the free
+/// rows were verified with real completions.
+#[test]
+fn tokenharbor_seed_models_mirror_the_served_catalog() {
+    let profile = openai_compatible_profile_by_id("tokenharbor")
+        .expect("tokenharbor profile must be registered");
+    assert_eq!(
+        openai_compatible_profile_static_models(profile),
+        vec![
+            "deepseek-v4.1-flash:free",
+            "deepseek-v4-flash:free",
+            "mimo-v2.5:free",
+            "mimo-v2.6-flash:free",
+            "deepseek-v4.1-flash",
+            "deepseek-v4-pro",
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "claude-opus-5.5",
+            "gemini-3.8-flash",
+            "glm-5.3",
+            "qwen3.8-max",
+            "kimi-k3.1-pro",
+            "minimax-m3.1-flash",
+        ]
+    );
+    // No maker-prefixed ids may sneak in: those are internal routing addresses.
+    for model in openai_compatible_profile_static_models(profile) {
+        assert!(
+            !model.contains('/'),
+            "seed model {model:?} carries a maker prefix the gateway refuses"
+        );
+    }
+}
+
+/// A `:free` id from Token Harbor is not an Alphax Free pool member.
+///
+/// Both providers publish `:free` ids, and only the Alphax Free gateway's pool
+/// may be relabelled with that product name. Getting this wrong shows the user
+/// "Alphax Free" for a provider they never logged into.
+#[test]
+fn tokenharbor_free_ids_do_not_borrow_the_alphax_free_label() {
+    for model in [
+        "deepseek-v4.1-flash:free",
+        "deepseek-v4-flash:free",
+        "mimo-v2.5:free",
+    ] {
+        assert_eq!(
+            crate::alphacode_app_core::agent::free_pool_rotation::free_pool_display_name(model),
+            None,
+            "{model} belongs to Token Harbor, not the Alphax Free pool"
+        );
+    }
+}

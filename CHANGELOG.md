@@ -4,6 +4,58 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.9] - 2026-11-15
+
+### Fixed
+
+- Token Harbor's default model was `tokenharbor/qwen3-max`, which the gateway
+  rejects with HTTP 404 `model_not_found` ("Names with a maker prefix ... are
+  internal routing addresses and are not callable"), so every fresh login started
+  on an unroutable model. The default is now `deepseek-v4.1-flash:free`, verified
+  against the live catalog and with a real completion: a zero-priced,
+  tool-capable, 1M-token-window route. A bundled seed list (free tier first)
+  keeps the picker populated until the authenticated `/v1/models` refresh lands.
+- `models_are_equivalent` normalized on the *last* colon, so every `:free` id
+  collapsed to the literal `free` and two different free models compared equal.
+  That disabled the wrong-model guard for exactly the ids that need it most
+  (Token Harbor's several `:free` models, and any Alphax Free rotation between
+  them): a worker silently running a different model than the caller pinned would
+  have passed. Normalization now strips only a genuine routing prefix.
+- The DeepSeek V4 context table claimed 2M tokens while the line ships a 1M
+  window. Compaction budgeted against a window the gateway does not have, so a
+  large session failed with a context overflow instead of compacting first. Now
+  1,000,000, the smallest window observed across live catalogs for the family.
+- `:free` tier tags leaked into displayed model names, rendering Token Harbor's
+  default as `Deepseek V4.1 Flash:free`. The header now drops the tag; prose
+  surfaces show it as a `(free)` marker so a free model stays distinguishable
+  from its paid sibling.
+- Network concurrency permits admitted at saturation were never counted. The
+  wait loop's guard read `waited >= Duration::ZERO`, true on the first failed
+  compare-exchange, so the intended bounded wait never ran; and the saturated
+  branch returned `NetworkPermit::none()`, a permit that releases nothing. The
+  ceiling reported as enforced while being exceeded. The branch now takes the
+  extra slot through the same atomic the fast path uses and returns a real,
+  counted permit.
+- The coverage dashboard could list a class as both signaled and refuted.
+  `tested_classes` is lowercased while `vuln_classes_with_signal` keeps each
+  recorded class verbatim, so a class recorded as `"IDOR"` matched no signal and
+  appeared in `refuted_classes` — the direction that reads as "tested and clean".
+  Signal membership is now compared case-insensitively.
+
+### Changed
+
+- Token Harbor moves to the front of the provider lists (position 6 in the
+  CLI/TUI login list, 5 on the bootstrap/auto-init/auth-status surfaces), right
+  behind the built-in free tier and the major proprietary providers, instead of
+  sitting past ~20 niche gateways. One key covers every hosted model, including a
+  zero-priced tool-capable tier, so a new user should reach it immediately.
+
+### Added
+
+- Regression coverage for the callable-default invariant, the seed list, the
+  `:free` equivalence collapse, `:free` display rendering, the counted
+  saturation permit and case-insensitive refutation.
+
 ## [1.1.8] - 2026-11-15
 
 ### Changed

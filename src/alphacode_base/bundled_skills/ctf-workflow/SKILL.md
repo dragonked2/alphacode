@@ -38,21 +38,33 @@ paths. If its schema is not advertised yet, discover it with `tool_help` first.
 Its missing-page control helps detect wildcard 200/403 responses. Keep
 200, redirects, 401, 403, 404, 429 and 5xx separate. A 403 is a forbidden response,
 not proof that the requested route exists; compare a missing-route baseline.
-Stop on rate limits. Do not use a server error alone as exploit evidence.
+Pause the affected remote path on a rate limit and continue independent local or
+artifact analysis; resume remote checks only as challenge rules allow. Do not use
+a server error alone as exploit evidence.
 
-Limit each hypothesis to three initial discriminating experiments. Three
-equivalent results trigger a control and reachability check, not automatic
-refutation. Masked or non-discriminating results remain inconclusive; changing a payload's spelling does not create a
-new hypothesis. After ten probing tool calls, checkpoint and pivot. Reopen a
-closed hypothesis only with recorded new evidence. Never turn failed guesses
-into unbounded password loops: use only credentials supported by challenge
-artifacts or hints, unless a finite search space is explicitly the challenge's
-intended task. Record its bound, scope, stop condition, and time budget first.
+Start each hypothesis with a small batch of discriminating experiments (usually
+no more than three before reassessing); this is a checkpoint, not a hard cap.
+Extend the investigation when new evidence, a reachable state or a reduced search
+space makes further work useful and it remains within challenge rules and real
+resource limits. Three equivalent results trigger a control and reachability
+check, not automatic refutation. Masked or non-discriminating results remain
+inconclusive; changing a payload's spelling does not create a new hypothesis.
+Treat the runtime reminder after ten consecutive probing tool calls without an
+analysis/checkpoint as a cue to record new evidence and reassess reachability,
+controls and remaining budget—not as a forced stop or automatic pivot. Continue
+toward the verified challenge objective while a useful, permitted next step
+remains; pivot only when evidence and expected information gain justify it.
+Reopen a closed hypothesis only with recorded new evidence. Never turn failed
+guesses into unbounded password loops: use only credentials supported by
+challenge artifacts or hints, unless a finite search space is explicitly the
+challenge's intended task. Record its bound, scope, stop condition and time budget.
 
-The checkpoint reminder prompts a ledger update and a change of hypothesis
-when the evidence warrants it. Continue with the next authorized experiment
-until the objective is verified or a concrete blocker prevents progress.
-A per-pass timeout leaves partial observations available for the next pass.
+The checkpoint reminder prompts a ledger update and reassessment; it does not
+force a change of hypothesis or end the task. Continue with the next useful
+authorized experiment until the objective is verified, the user stops, or a
+concrete scope/operational blocker prevents progress. A per-pass timeout leaves
+partial observations available for the next pass; resume from the checkpoint
+when execution can continue.
 
 Browser work uses a background tab owned by this session. After tab
 death or a timeout, inspect state before repeating an action. Never retarget
@@ -128,6 +140,48 @@ byte count, blurred placeholder, reflected input, or success status does not
 demonstrate access to the hidden payload. Treat unequal or truncated captures
 without a verified challenge marker as inconclusive. Record a solve only when
 the recovered flag or required state satisfies the challenge's success check.
+
+## The attempt ledger: what was tried is part of the evidence
+
+Record every hypothesis *attempt* in the challenge ledger, including the ones
+that produced nothing, with the observation that justifies moving on:
+
+```
+H<n> surface=<param|file|endpoint|function> mechanism=<sqli|ssti|lattice|...>
+attempt: <what was sent, with the exact input bytes>
+observed: <actual response / offset / trace / exit>
+disposition: confirmed | failed | not_applicable | blocked
+reopen_if: <new artifact, new hint, new decoded layer, reduced search space>
+```
+
+A `failed` entry is not permission to retry: it names what would have to change.
+An `attempt` cut short by a timeout, a crash, or an uninstalled tool is `blocked`,
+not `failed` — the mechanism is still untested, and treating a blocked attempt as
+a failed one is how a solvable challenge gets abandoned. Similarly, a wildcard
+`200`, a reflected payload, a matching word, or an error page is an observation,
+never a solve.
+
+Before moving from one hypothesis to an unrelated one, re-read the ledger. The
+most common wasted stretch in a challenge is re-deriving a negative already
+recorded two steps earlier; the second most common is abandoning a blocked
+mechanism that a one-line fix would have unblocked.
+
+### Negative observations carry the same obligation as positive ones
+
+"No SQLi here", "that offset is wrong", "the binary strips the flag" are claims,
+and a claim needs the observation behind it. If you cannot state the input and the
+observed output, the entry is `inconclusive` — not `failed`. Keep the distinction
+visible in the ledger, because an inconclusive entry is the one worth re-examining
+with a materially different technique, and a genuinely failed one is not.
+
+### Search-space discipline
+
+Before any brute force or enumeration, record the **bound**: the alphabet, the
+length, the keyspace size, the time per attempt, and the resulting expected
+duration. A search whose bound is unknown is not a plan, it is a stall. If the
+bound exceeds the remaining budget, either reduce it with evidence (a hint, a
+partial leak, a timing side channel) or record it as `blocked` with the bound —
+do not start it and hope.
 
 ## Hypothesis kill rules
 

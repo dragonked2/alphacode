@@ -213,6 +213,47 @@ fn is_vulnerability_line(line: &str) -> bool {
 /// they never cancel pending runnable coverage.
 const NO_SIGNAL_TURN_LIMIT: u32 = 10;
 
+/// Whether a failed task's error is one a second attempt can plausibly clear.
+///
+/// Retrying is not free: another attempt spends budget and sends more traffic
+/// at the target. This therefore retries only *transient* conditions and
+/// deliberately excludes the ones that are permanent by construction.
+fn retry_is_safe(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    // Permanent by construction: retrying replays the same mistake.
+    const PERMANENT: &[&str] = &[
+        "no inputs hydrated",
+        "prerequisite phase first",
+        "indeterminate outcome",
+        "could not start",
+        "failed to run",
+        "not found",
+        "not installed",
+        "permission denied",
+        "unknown task",
+        "scope",
+    ];
+    if PERMANENT.iter().any(|marker| lower.contains(marker)) {
+        return false;
+    }
+    // Transient: the tool started but the environment, network or a peer was
+    // momentarily unavailable.
+    const TRANSIENT: &[&str] = &[
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection refused",
+        "temporarily unavailable",
+        "resource temporarily unavailable",
+        "too many open files",
+        "would block",
+        "broken pipe",
+        "unexpected eof",
+        "dns",
+    ];
+    TRANSIENT.iter().any(|marker| lower.contains(marker))
+}
+
 /// Why the orchestrator stopped working.
 ///
 /// The whole point of this enum is that "it stopped" is never an acceptable
@@ -1044,6 +1085,32 @@ impl BugBountyOrchestrator {
         }
     }
 
+    /// Record one executor attempt, superseding any earlier attempt of the same
+    /// task on the same target.
+    ///
+    /// A retry produces a fresh audit for an existing `(target, task_id)` pair.
+    /// Keeping the older record alongside it would report the hunt as
+    /// `CoverageIncomplete` forever, because [`TaskCoverage::is_partial`] scans
+    /// every historical attempt: `stop_decision` and the dashboard would both
+    /// keep surfacing a gap that the successful retry had already closed. Only
+    /// the latest attempt describes the current coverage state, so the older
+    /// ones are replaced rather than accumulated.
+    pub async fn record_attempt(&self, coverage: TaskCoverage) {
+        let mut attempts = self.execution_coverage.write().await;
+        let superseded: Vec<usize> = attempts
+            .iter()
+            .enumerate()
+            .filter(|(_, prior)| {
+                prior.target == coverage.target && prior.task_id == coverage.task_id
+            })
+            .map(|(index, _)| index)
+            .collect();
+        for index in superseded.into_iter().rev() {
+            attempts.remove(index);
+        }
+        attempts.push(coverage);
+    }
+
     /// Mark a task as completed and fold its output into the accumulators.
     pub async fn complete_task(&self, task_id: &str, result: String) -> Result<()> {
         // The `write` guard is released before ingesting: `ingest_tool_output`
@@ -1064,6 +1131,10 @@ impl BugBountyOrchestrator {
             })?;
             task.completed = true;
             task.result = Some(result.clone());
+            // A task that eventually succeeded has no outstanding retry debt.
+            // Leaving the counter at the limit would make the run report an
+            // exhausted budget it did not actually spend.
+            task.retry_count = 0;
             task.tool.clone()
         };
         self.ingest_tool_output(&tool, &result).await;
@@ -1222,8 +1293,19 @@ impl BugBountyOrchestrator {
     /// The task graph bounds *execution*; it does not establish that every
     /// discovered surface was exercised. Surfaces that were never reached are
     /// reported as gaps, never as a clean result.
+    ///
+    /// The universe of vuln classes is the *planned task graph*, not the set of
+    /// attempts that happened to run. Deriving it from `execution_coverage` made
+    /// `untested_classes` vacuous by construction: a task that never ran has no
+    /// attempt, so it never entered the universe, so it could never be reported
+    /// as untested. A phase whose tools were all missing therefore produced a
+    /// dashboard reading "nothing untested" — the exact silent-clean-target
+    /// result the module docstring promises to prevent. `tasks` is the right
+    /// source because it is populated by `initialize()` (or restored on resume)
+    /// and contains work that was planned and never executed.
     pub async fn coverage_dashboard(&self) -> CoverageDashboard {
-        let (subdomains, urls) = tokio::join!(self.subdomains.read(), self.urls.read());
+        let (subdomains, urls, tasks) =
+            tokio::join!(self.subdomains.read(), self.urls.read(), self.tasks.read(),);
         let attempts = self.execution_coverage.read().await;
 
         let mut tracker = CoverageTracker::new();
@@ -1231,7 +1313,9 @@ impl BugBountyOrchestrator {
 
         // Each executor attempt is one "test" of the surface it was given.
         // A failed or partial attempt stays incomplete so the dashboard can
-        // surface it rather than quietly counting it as done.
+        // surface it rather than quietly counting it as done. Only a *method*
+        // and *class* pair that finished is recorded as a completed test, so a
+        // partial attempt is reported as a gap instead of a refutation.
         for attempt in attempts.iter() {
             let result = if attempt.is_partial() {
                 coverage::TestResult::Error
@@ -1260,7 +1344,14 @@ impl BugBountyOrchestrator {
             });
         }
 
-        let all_classes: Vec<String> = attempts.iter().map(|a| a.task_id.clone()).collect();
+        // The planned universe. `BTreeSet` keeps the dashboard deterministic so
+        // two runs over the same task graph report gaps in the same order.
+        let all_classes: Vec<String> = tasks
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
         CoverageDashboard::from_tracker(&tracker, &all_classes)
     }
 
@@ -1406,12 +1497,57 @@ impl BugBountyOrchestrator {
                 }
             }
 
+            // A failed task is not a finished one.
+            //
+            // This used to retain nothing: every id in the wave was removed
+            // from `remaining` regardless of outcome, so a task that failed
+            // transiently (a tool that timed out, a scanner that raced its own
+            // prerequisite) was dropped after a single attempt. The declared
+            // `max_retries` on every task was dead config — nothing ever
+            // incremented `retry_count` — and the phase then reported success
+            // for work that never produced output. Retry only errors that a
+            // second attempt can actually clear.
+            let retry_ids = self.note_failed_attempts(&wave).await;
+            // A task stays queued only while an attempt remains; everything
+            // else is finished (succeeded, or out of retries).
             let finished: Vec<&String> = wave.iter().map(|(id, _)| id).collect();
-            remaining.retain(|id| !finished.contains(&id));
+            remaining.retain(|id| !finished.contains(&id) || retry_ids.contains(id));
             all_results.extend(wave);
         }
 
         all_results
+    }
+
+    /// Record one failed attempt per retryable task and return the ids that
+    /// still have an attempt left.
+    ///
+    /// `max_retries` was declared on every task but never consumed, so the
+    /// graph promised retries the engine never performed. Only failures a
+    /// second attempt can plausibly clear are retried; see [`retry_is_safe`].
+    async fn note_failed_attempts(&self, wave: &[(String, Result<String>)]) -> HashSet<String> {
+        let mut retry_ids = HashSet::new();
+        let mut tasks = self.tasks.write().await;
+        for (id, result) in wave {
+            let Err(err) = result else { continue };
+            if !retry_is_safe(&err.to_string()) {
+                continue;
+            }
+            let Some(task) = tasks.get_mut(id) else {
+                continue;
+            };
+            if task.retry_count >= task.max_retries {
+                continue;
+            }
+            task.retry_count += 1;
+            tracing::warn!(
+                "Task {} failed (attempt {}/{}); retrying: {err}",
+                id,
+                task.retry_count,
+                task.max_retries,
+            );
+            retry_ids.insert(id.clone());
+        }
+        retry_ids
     }
 
     /// Subset of `candidate_ids` whose dependencies are all complete.
@@ -2104,6 +2240,227 @@ mod tests {
                 .contains(&"recon_assetfinder".to_string())
         );
     }
+    /// A planned task that never ran must be reported as an untested gap, not
+    /// silently omitted. The universe of classes used to be derived from the
+    /// attempts that happened to run, which made `untested_classes` vacuous by
+    /// construction: work that never executed never entered the universe.
+    #[tokio::test]
+    async fn dashboard_reports_unrun_planned_tasks_as_untested() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        orchestrator.initialize().await.unwrap();
+        // Nothing has run: every planned task is a gap.
+        let dashboard = orchestrator.coverage_dashboard().await;
+        let planned = orchestrator.tasks.read().await.len();
+        assert!(planned > 0, "initialize() must produce a task graph");
+        assert_eq!(
+            dashboard.untested_classes.len(),
+            planned,
+            "every unrun planned task must be an untested gap"
+        );
+        assert!(dashboard.tested_endpoints.is_empty());
+        // The task graph, not the attempt log, defines the universe.
+        assert!(!dashboard.is_exhaustive());
+    }
+
+    #[tokio::test]
+    async fn a_failed_task_is_retried_only_when_the_error_is_transient() {
+        for (error, expected) in [
+            ("httpx timed out after 60s", true),
+            ("connection reset by peer", true),
+            (
+                "no httpx inputs hydrated — run the prerequisite phase first",
+                false,
+            ),
+            ("tool could not start", false),
+            ("prior input 3 has an indeterminate outcome", false),
+            ("scope policy denied the target", false),
+        ] {
+            assert_eq!(retry_is_safe(error), expected, "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_stays_queued_until_retries_are_exhausted() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        orchestrator.initialize().await.unwrap();
+        {
+            let mut tasks = orchestrator.tasks.write().await;
+            for task in tasks.values_mut() {
+                task.max_retries = 2;
+            }
+        }
+        let attempts = AtomicU32::new(0);
+        let results = orchestrator
+            .execute_phase_tasks(BountyPhase::Reconnaissance, |_task: &BountyTask| {
+                let attempts = &attempts;
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Err::<String, anyhow::Error>(anyhow::anyhow!("connection reset by peer"))
+                }
+            })
+            .await;
+        // Four recon tasks, each given one initial attempt plus two retries.
+        assert_eq!(attempts.load(Ordering::SeqCst), 12);
+        assert_eq!(results.len(), 12);
+        assert!(results.iter().all(|(_, r)| r.is_err()));
+        // Only the phase that ran has consumed its attempts; every other phase
+        // is untouched, so scope the assertion to the executed phase.
+        let tasks = orchestrator.tasks.read().await;
+        let recon: Vec<&BountyTask> = tasks
+            .values()
+            .filter(|task| task.phase == BountyPhase::Reconnaissance)
+            .collect();
+        assert_eq!(recon.len(), 4, "recon phase task count changed");
+        assert!(
+            recon
+                .iter()
+                .all(|task| task.retry_count == task.max_retries),
+            "every attempted task should have exhausted its declared retries"
+        );
+        assert!(
+            tasks
+                .values()
+                .filter(|task| task.phase != BountyPhase::Reconnaissance)
+                .all(|task| task.retry_count == 0),
+            "tasks outside the executed phase must not be charged an attempt"
+        );
+    }
+
+    /// A successful retry must supersede the partial attempt it replaced.
+    ///
+    /// `TaskCoverage::is_partial` scans *every* recorded attempt, so keeping the
+    /// earlier partial record after a retry succeeds makes `stop_decision`
+    /// report `CoverageIncomplete` forever and the dashboard surface a gap that
+    /// no longer exists. This drives the production [`record_attempt`], not a
+    /// local re-implementation.
+    #[tokio::test]
+    async fn a_successful_retry_supersedes_the_partial_attempt_it_replaced() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        orchestrator.initialize().await.unwrap();
+        let attempt = |successful: usize, partial: bool| TaskCoverage {
+            target: "example.com".to_string(),
+            task_id: "recon_subfinder".to_string(),
+            tool: "subfinder".to_string(),
+            inputs_planned: 2,
+            inputs_attempted: if partial { 1 } else { 2 },
+            successful_calls: successful,
+            in_flight_input_index: partial.then_some(1),
+            failed_input_indices: Vec::new(),
+            deferred_input_indices: Vec::new(),
+            omitted_observation_lines: 0,
+            aggregate_output_truncated: false,
+            stop_reason: if partial { "interrupted" } else { "complete" }.to_string(),
+            input_manifest: String::new(),
+            raw_artifacts: Vec::new(),
+        };
+
+        orchestrator.record_attempt(attempt(1, true)).await;
+        assert!(
+            orchestrator
+                .execution_coverage
+                .read()
+                .await
+                .iter()
+                .any(TaskCoverage::is_partial),
+            "a partial attempt is a real gap before the retry"
+        );
+
+        orchestrator.record_attempt(attempt(2, false)).await;
+        let attempts = orchestrator.execution_coverage.read().await;
+        assert_eq!(attempts.len(), 1, "the retry must replace, not accumulate");
+        assert!(
+            !attempts.iter().any(TaskCoverage::is_partial),
+            "a successful retry leaves no outstanding gap"
+        );
+        drop(attempts);
+        assert_ne!(
+            orchestrator.stop_decision(0).await,
+            StopReason::CoverageIncomplete,
+            "the hunt must not stay stuck in CoverageIncomplete after a clean retry"
+        );
+    }
+
+    /// A *different* task on the same target must not be superseded: the
+    /// replacement is scoped to one task, or a run would keep only its final
+    /// task's audit.
+    #[tokio::test]
+    async fn recording_an_attempt_does_not_discard_other_tasks_audits() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        orchestrator.initialize().await.unwrap();
+        let attempt = |task: &str| TaskCoverage {
+            target: "example.com".to_string(),
+            task_id: task.to_string(),
+            tool: "subfinder".to_string(),
+            inputs_planned: 1,
+            inputs_attempted: 1,
+            successful_calls: 1,
+            in_flight_input_index: None,
+            failed_input_indices: Vec::new(),
+            deferred_input_indices: Vec::new(),
+            omitted_observation_lines: 0,
+            aggregate_output_truncated: false,
+            stop_reason: "complete".to_string(),
+            input_manifest: String::new(),
+            raw_artifacts: Vec::new(),
+        };
+        orchestrator
+            .record_attempt(attempt("recon_subfinder"))
+            .await;
+        orchestrator.record_attempt(attempt("recon_amass")).await;
+        assert_eq!(orchestrator.execution_coverage.read().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn completing_a_task_clears_its_retry_debt() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        orchestrator.initialize().await.unwrap();
+        {
+            let mut tasks = orchestrator.tasks.write().await;
+            let task = tasks.get_mut("recon_subfinder").unwrap();
+            task.retry_count = task.max_retries;
+        }
+        orchestrator
+            .complete_task("recon_subfinder", "a.example.com".to_string())
+            .await
+            .unwrap();
+        let tasks = orchestrator.tasks.read().await;
+        let task = tasks.get("recon_subfinder").unwrap();
+        assert!(task.completed);
+        assert_eq!(
+            task.retry_count, 0,
+            "a completed task has no outstanding retry debt"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_permanent_failure_is_not_retried() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        orchestrator.initialize().await.unwrap();
+        let attempts = AtomicU32::new(0);
+        let results = orchestrator
+            .execute_phase_tasks(BountyPhase::Reconnaissance, |_task: &BountyTask| {
+                let attempts = &attempts;
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Err::<String, anyhow::Error>(anyhow::anyhow!(
+                        "no dnsx inputs hydrated — run the prerequisite phase first"
+                    ))
+                }
+            })
+            .await;
+        let recon_tasks = orchestrator
+            .tasks
+            .read()
+            .await
+            .values()
+            .filter(|t| t.phase == BountyPhase::Reconnaissance)
+            .count();
+        assert_eq!(attempts.load(Ordering::SeqCst) as usize, recon_tasks);
+        assert_eq!(results.len(), recon_tasks);
+    }
+
     #[tokio::test]
     async fn unresolved_investigation_prevents_claiming_surface_exhaustion() {
         let orchestrator = BugBountyOrchestrator::new("lab.example");

@@ -270,6 +270,16 @@ fn test_reload_context_path() {
 }
 
 #[test]
+fn test_reload_context_path_rejects_traversal_and_reserved_ids() {
+    for invalid in ["../escape", "a/b", "a\\b", "", "CON", "session-plan"] {
+        assert!(
+            ReloadContext::path_for_session(invalid).is_err(),
+            "session id {invalid:?} should be rejected"
+        );
+    }
+}
+
+#[test]
 fn test_reload_context_save_and_load_for_session_uses_session_scoped_file() {
     let _storage_guard = crate::storage::lock_test_env();
     let temp_home = tempfile::TempDir::new().expect("temp home");

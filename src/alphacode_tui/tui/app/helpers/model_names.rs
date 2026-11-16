@@ -57,6 +57,15 @@ pub(crate) fn pretty_model_display_name(model: &str) -> String {
     // confused with its floating alias, but read as a date instead of being
     // glued onto the version number.
     let (core, snapshot_date) = split_snapshot_date(core);
+    // The `:free` tier tag is a gateway billing marker, not a name. Without
+    // this the dashed title-casing below ran over the whole id and produced
+    // `Deepseek V4.1 Flash:free` — faithful, but it reads like a typo. Keep the
+    // fact visible as a marker instead of dropping it, so a free-tier model is
+    // still recognisable and never mistaken for its paid sibling.
+    let (core, tier_marker) = match core.strip_suffix(":free") {
+        Some(base) if !base.trim().is_empty() => (base, Some("free".to_string())),
+        _ => (core, None),
+    };
 
     let lower = core.to_ascii_lowercase();
     let mut pretty = if lower.starts_with("gpt-") {
@@ -74,7 +83,11 @@ pub(crate) fn pretty_model_display_name(model: &str) -> String {
     // Merge the date/route markers into one parenthetical so a dated 1M row
     // reads `Claude Sonnet 4.5 (2025-09-29, 1M)` rather than stacking two
     // separate groups.
-    let markers: Vec<String> = snapshot_date.into_iter().chain(bracket_suffix).collect();
+    let markers: Vec<String> = snapshot_date
+        .into_iter()
+        .chain(bracket_suffix)
+        .chain(tier_marker)
+        .collect();
     if !markers.is_empty() {
         pretty.push_str(&format!(" ({})", markers.join(", ")));
     }
@@ -674,6 +687,32 @@ mod tests {
             "Alphax Free",
             "a non-pool `:free` id must not borrow the Alphax Free name"
         );
+    }
+
+    /// A `:free` tier tag must read as a marker, not glue onto the model name.
+    ///
+    /// Title-casing ran over the whole id, so Token Harbor's default model
+    /// rendered as `Deepseek V4.1 Flash:free`. The tag is a billing marker, so
+    /// it belongs in the parenthetical group next to snapshots and route
+    /// markers — while still being visible, because free vs paid siblings share
+    /// a name.
+    #[test]
+    fn free_tier_ids_render_as_a_marker_not_a_suffix() {
+        // The digit-bearing segment keeps its own casing (`v4.1`), matching
+        // this module's existing convention for version tokens (see the
+        // Bedrock `v1:0` cases below).
+        assert_eq!(
+            pretty_model_display_name("deepseek-v4.1-flash:free"),
+            "Deepseek v4.1 Flash (free)"
+        );
+        assert_ne!(
+            pretty_model_display_name("deepseek-v4.1-flash:free"),
+            pretty_model_display_name("deepseek-v4.1-flash"),
+            "the free tier must stay distinguishable from its paid sibling"
+        );
+        // A `:free`-only id has no model name to show, so it is left verbatim
+        // rather than rendered as an empty string with a dangling marker.
+        assert_eq!(pretty_model_display_name(":free"), ":free");
     }
 
     #[test]

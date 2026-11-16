@@ -517,3 +517,139 @@ fn extended_windows_paths_retain_destructive_target_protection() {
         &context
     ));
 }
+
+// --- C10: writing *into* a protected path, without destroying anything -------
+//
+// The rest of the gate asks "what would this destroy". `cp`, `tee`, `install`,
+// `rsync`, `ln` and `mv` are not destructive and write through no redirect, so
+// all of these previously classified as Safe. `cp key ~/.ssh/authorized_keys`
+// is an SSH-key persistence primitive — a worse outcome than the recursive
+// delete the crate was originally written for, and it ran with no reflection
+// turn at all.
+
+#[test]
+fn copying_into_a_credential_store_is_not_safe() {
+    assert_not_safe("cp /tmp/key ~/.ssh/authorized_keys");
+    assert_not_safe("cp -f /tmp/k ~/.ssh/id_rsa");
+    assert_not_safe("cp /tmp/x $HOME/.ssh/authorized_keys");
+    assert_not_safe("rsync -a /tmp/k/ ~/.ssh/");
+    assert_not_safe("rsync -a --delete /tmp/x/ ~/");
+    assert_not_safe("ln -sf /tmp/x ~/.ssh/authorized_keys");
+}
+
+#[test]
+fn writing_a_protected_path_with_tee_or_install_is_not_safe() {
+    assert_not_safe("tee ~/.ssh/authorized_keys");
+    assert_not_safe("tee -a ~/.ssh/authorized_keys");
+    assert_not_safe("tee /etc/passwd");
+    assert_not_safe("install -m 600 /tmp/x ~/.ssh/authorized_keys");
+    assert_not_safe("install -m 4755 /tmp/x /usr/local/bin/x");
+}
+
+#[test]
+fn relocating_a_credential_store_is_not_safe() {
+    // `mv` removes its source, so the source is graded as well as the target.
+    assert_not_safe("mv ~/.ssh /tmp/x");
+    assert_not_safe("mv /etc/passwd /tmp/x");
+    assert_not_safe("mv /tmp/evil ~/.ssh/authorized_keys");
+}
+
+/// The other half of the contract: grading write destinations must not deny
+/// ordinary development work. `ln -s ../src/lib.rs link.rs` reads a path above
+/// the working directory and writes inside it.
+#[test]
+fn ordinary_copies_and_links_in_the_working_directory_stay_allowed() {
+    for command in [
+        "cp src/main.rs /tmp/main.rs.bak",
+        "cp -r assets/ build/",
+        "mv target/debug/app target/debug/app2",
+        "tee build.log",
+        "tee -a build.log",
+        "ln -s ../src/lib.rs link.rs",
+        "rsync -a src/ /tmp/backup/",
+        "install -m 644 README.md docs/README.md",
+    ] {
+        assert_eq!(
+            level_of(command),
+            RiskLevel::Safe,
+            "FALSE POSITIVE: `{command}` should stay routine"
+        );
+    }
+}
+
+/// A destination produced at runtime or by a glob has no statically known
+/// value, so the gate escalates it instead of assuming it landed somewhere
+/// harmless. This is the one case where over-approximation is correct: `cp
+/// data.tar "$DEST"` can write anywhere, and resolving `$DEST` to the working
+/// directory (which is what `expand` does with unresolved text) would have
+/// graded it as a routine in-tree copy.
+#[test]
+fn runtime_and_glob_write_destinations_are_escalated_not_assumed() {
+    for command in [
+        "tee \"$OUT\"",
+        "cp data.tar \"$DEST\"",
+        "cp -r build/ \"$DEST\"",
+    ] {
+        assert_not_safe(command);
+        assert!(
+            !level_of(command).is_absolute_deny(),
+            "`{command}` has an unknown destination, not a known protected one"
+        );
+    }
+    // A destination that only *looks* computed, because `expand` knows how to
+    // resolve it, is graded as the concrete protected path.
+    assert_eq!(
+        level_of("cp /tmp/key $HOME/.ssh/authorized_keys"),
+        RiskLevel::Catastrophic
+    );
+}
+
+/// A glob in a *consumed* position is the ordinary shape of a bulk copy, and a
+/// source outside the workspace is read, not written. Grading those was how the
+/// first version of this check denied routine work.
+#[test]
+fn glob_and_outside_sources_are_not_treated_as_destinations() {
+    for command in [
+        "cp *.gz /tmp/",
+        "cp ~/Downloads/notes.md .",
+        "cp -r ../sibling/crate/src ./vendor/",
+        "mv build/*.log /tmp/",
+    ] {
+        assert_eq!(
+            level_of(command),
+            RiskLevel::Safe,
+            "FALSE POSITIVE: `{command}` reads the outside path and writes inside"
+        );
+    }
+}
+
+/// A `mv` source is *removed*, not written to. The refusal text has to say so,
+/// because the model's reflection turn reasons from it: telling it "would write
+/// into" describes an act the command never performs and invites a justification
+/// that does not address the actual deletion.
+#[test]
+fn a_moved_credential_store_is_described_as_removal_not_a_write() {
+    let assessment = assess("mv ~/.ssh /tmp/x", &ctx());
+    assert_eq!(assessment.level, RiskLevel::Catastrophic);
+    let explanation = assessment.explanation();
+    assert!(
+        explanation.contains("remove or move"),
+        "expected removal wording, got: {explanation}"
+    );
+    assert!(
+        !explanation.contains("write into"),
+        "a `mv` source is removed, not written: {explanation}"
+    );
+}
+
+/// A `cp` destination is genuinely a write, and keeps that wording.
+#[test]
+fn a_copied_credential_target_is_described_as_a_write() {
+    let assessment = assess("cp /tmp/key ~/.ssh/authorized_keys", &ctx());
+    assert_eq!(assessment.level, RiskLevel::Catastrophic);
+    let explanation = assessment.explanation();
+    assert!(
+        explanation.contains("write into"),
+        "expected write wording, got: {explanation}"
+    );
+}

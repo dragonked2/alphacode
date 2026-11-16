@@ -790,18 +790,22 @@ mod tests {
         );
         assert_eq!(
             resolve_login_selection("6", &providers).map(|provider| provider.id),
-            Some("alphacode")
+            Some("tokenharbor")
         );
         assert_eq!(
             resolve_login_selection("7", &providers).map(|provider| provider.id),
-            Some("copilot")
+            Some("alphacode")
         );
         assert_eq!(
             resolve_login_selection("8", &providers).map(|provider| provider.id),
-            Some("openrouter")
+            Some("copilot")
         );
         assert_eq!(
             resolve_login_selection("9", &providers).map(|provider| provider.id),
+            Some("openrouter")
+        );
+        assert_eq!(
+            resolve_login_selection("10", &providers).map(|provider| provider.id),
             Some("bedrock")
         );
         assert_eq!(
@@ -812,6 +816,45 @@ mod tests {
             resolve_login_selection("alphax-free", &providers).map(|provider| provider.id),
             Some("alphax-free")
         );
+    }
+
+    #[test]
+    fn tokenharbor_sits_near_the_top_of_every_login_surface() {
+        use LoginProviderSurface::*;
+
+        let provider =
+            resolve_login_provider("tokenharbor").expect("tokenharbor login provider must resolve");
+        for alias in ["token-harbor", "thk"] {
+            assert_eq!(
+                resolve_login_provider(alias).map(|resolved| resolved.id),
+                Some("tokenharbor"),
+                "alias {alias:?} must resolve to tokenharbor"
+            );
+        }
+
+        // One key covers every hosted model, including a zero-priced
+        // tool-capable tier, so it is meant to be reachable immediately rather
+        // than after scrolling past ~20 niche gateways. These ranks are the
+        // regression guard for that placement: a plain order number is easy to
+        // "tidy" back into the tail of the list without anyone noticing.
+        for (surface, list, expected_rank) in [
+            (CliLogin, cli_login_providers(), 6usize),
+            (TuiLogin, tui_login_providers(), 6),
+            (ServerBootstrap, server_bootstrap_login_providers(), 5),
+            (AutoInit, auto_init_login_providers(), 5),
+            (AuthStatus, auth_status_login_providers(), 5),
+        ] {
+            assert!(provider.order.for_surface(surface).is_some());
+            let rank = list
+                .iter()
+                .position(|candidate| candidate.id == "tokenharbor")
+                .map(|index| index + 1)
+                .unwrap_or_else(|| panic!("tokenharbor missing from {surface:?}"));
+            assert_eq!(
+                rank, expected_rank,
+                "tokenharbor must sit at position {expected_rank} on {surface:?}"
+            );
+        }
     }
 
     #[test]

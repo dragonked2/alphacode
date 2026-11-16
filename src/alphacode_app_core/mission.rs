@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -225,22 +225,11 @@ fn save(mission: &Mission) -> Result<()> {
 }
 
 fn mission_path(session_id: &str) -> Result<PathBuf> {
+    crate::todo::validate_session_id(session_id)
+        .with_context(|| format!("invalid mission session id {session_id:?}"))?;
     Ok(crate::storage::alphacode_dir()?
         .join("missions")
-        .join(format!("{}.json", sanitize_session_id(session_id))))
-}
-
-fn sanitize_session_id(session_id: &str) -> String {
-    session_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+        .join(format!("{session_id}.json")))
 }
 
 fn default_long_horizon_intent(objective: &str) -> String {
@@ -381,5 +370,16 @@ mod verification_tests {
             contract.success_criteria[1].check,
             CriterionCheck::ModelAsserted
         );
+    }
+
+    #[test]
+    fn mission_storage_rejects_path_traversal_and_reserved_ids() {
+        for invalid in ["../escape", "a/b", "a\\b", "", "CON", "session-plan"] {
+            assert!(
+                mission_path(invalid).is_err(),
+                "session id {invalid:?} should be rejected"
+            );
+        }
+        assert!(mission_path("session-safe_123").is_ok());
     }
 }

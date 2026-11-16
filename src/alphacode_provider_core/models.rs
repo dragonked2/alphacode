@@ -438,8 +438,17 @@ pub fn open_weight_family_context_limit(model: &str) -> Option<usize> {
     }
 
     // --- DeepSeek (check V4 before V3 so the more specific match wins) ---
+    // The V4 line (4, 4.1, ...) ships a 1M-token window, not the 2M this table
+    // used to claim. Over-advertising here is not a harmless guess: compaction
+    // would budget against a window the serving gateway does not have, so a
+    // large session built past the real cap and the request failed with a
+    // context overflow instead of compacting first. 1,000,000 is the smallest
+    // window observed across live catalogs for this family
+    // (`deepseek-v4-flash` reports 1,000,000; `deepseek-v4.1-flash` reports
+    // 1,048,576), so it is the safe floor; a live `/v1/models` row still wins
+    // when the profile publishes one.
     if m.contains("deepseek-v4") {
-        return Some(2_000_000);
+        return Some(1_000_000);
     }
     if m.contains("deepseek-v3.2") || m.contains("deepseek-v3p2") || m.contains("deepseek-v3-2") {
         return Some(163_840);
@@ -931,6 +940,35 @@ mod tests {
     /// M2/M2.1/M2.5/M2.7/M3 id (with any common suffix) to that window, and
     /// must NOT match ids that merely contain the brand token as a
     /// coincidence.
+    /// The DeepSeek V4 family ships a 1M window, not the 2M the table claimed.
+    ///
+    /// Over-advertising is not a harmless guess: compaction budgets against this
+    /// number, so a 2M answer let a large session build past the real cap and the
+    /// request failed with a context overflow instead of compacting first. The
+    /// value is pinned against two live catalogs (`deepseek-v4-flash` reported
+    /// 1,000,000; `deepseek-v4.1-flash` reported 1,048,576), taking the smaller as
+    /// the safe floor.
+    #[test]
+    fn deepseek_v4_resolves_to_one_million_not_two_million() {
+        for id in [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "deepseek-v4.1-flash",
+            "deepseek-v4.1-flash:free",
+        ] {
+            assert_eq!(
+                open_weight_family_context_limit(id),
+                Some(1_000_000),
+                "{id} must resolve to the verified 1M window"
+            );
+        }
+        // The V3 family keeps its own, smaller window.
+        assert_eq!(
+            open_weight_family_context_limit("deepseek-v3.2"),
+            Some(163_840)
+        );
+    }
+
     #[test]
     fn minimax_m2_and_m3_resolve_to_204k() {
         // Direct API ids (hyphenated, case-preserved or lowercased).

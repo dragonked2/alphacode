@@ -285,6 +285,12 @@ fn prettify_model_id(model: &str) -> String {
         // provider instead of mangling them into a single stem.
         return model.to_string();
     }
+    // A `:free` tier tag is a gateway billing marker, not part of the model's
+    // name. Left attached, the segment split below rendered
+    // `Deepseek V4.1 Flash:free` — faithful to the wire id, but it reads like a
+    // typo in the header. Drop the tag rather than hiding the whole id, so the
+    // user still sees exactly which model serves the turn.
+    let model = model.strip_suffix(":free").unwrap_or(model);
     let stripped = model
         .strip_suffix(".gguf")
         .or_else(|| model.strip_suffix(".bin"))
@@ -2051,6 +2057,14 @@ mod tests {
                 "model id {input:?}"
             );
         }
+
+        // A `:free` tier tag is a billing marker, not part of the name. Leaving
+        // it attached rendered Token Harbor's default model as
+        // `Deepseek V4.1 Flash:free`.
+        assert_eq!(
+            header_model_display_name("deepseek-v4.1-flash:free", ""),
+            "Deepseek V4.1 Flash"
+        );
 
         // Slashed ids keep the provider label form.
         assert_eq!(
