@@ -671,6 +671,12 @@ fn acceptable_temp_root(path: &Path) -> bool {
         return false;
     }
 
+    // Bare Windows drive roots (e.g., `c:/`, `d:/`) are never valid temp roots.
+    // They represent the entire filesystem and would disable protection.
+    if comparable.len() == 3 && comparable.ends_with(":/") {
+        return false;
+    }
+
     // A user's *home* directory is protected, but a scratch directory deeper
     // inside it is not: `~/.cache/tmp` is a legitimate TMPDIR, while `~` itself
     // is the directory whose deletion the catastrophic tier exists to prevent.
