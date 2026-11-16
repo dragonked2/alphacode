@@ -40,6 +40,9 @@ impl App {
             | "model status" => {
                 "/provider-test-coverage\nShow alphacode live verification evidence for the current provider/model.\n\n/provider-test-coverage <provider> <model>\nLook up a specific provider/model pair in the live-test coverage ledger.\n\nThe report shows last-tested time, alphacode build, passed/missing checkpoints, readiness gaps, and a caveat that missing evidence is not a provider failure."
             }
+            "engagement" | "security engagement" => {
+                "/engagement [status]\nShow the current local security-engagement checkpoint: scope-rule counts, hypothesis states, ledger budgets, in-flight work, assets without validated experiments, and the highest-ranked in-scope lead. This is a read-only view and does not send requests.\n\nA missing checkpoint or empty candidate list is not evidence that a target is secure or that coverage is complete. Remote engagement state is held by the server; ask the connected agent to run investigation status."
+            }
             "refresh-model-list" => {
                 "/refresh-model-list\nForce-refresh provider model catalogs, update /model, and persist the refreshed cache."
             }

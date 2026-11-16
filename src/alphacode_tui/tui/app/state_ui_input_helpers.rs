@@ -56,6 +56,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "/provider-test-coverage",
         "Show live-test evidence for the current provider/model",
     ),
+    RegisteredCommand::public(
+        "/engagement",
+        "Show scoped security-assessment progress, budgets, blockers, and next lead",
+    ),
     RegisteredCommand::hidden("/model-status", "Alias for /provider-test-coverage"),
     RegisteredCommand::public("/refresh-model-list", "Refresh provider model catalogs"),
     RegisteredCommand::public("/agents", "Configure models for agent roles"),

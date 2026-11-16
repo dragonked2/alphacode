@@ -32,6 +32,7 @@
 //!    the agent into an out-of-scope host.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, RwLock as StdRwLock};
 
@@ -60,8 +61,15 @@ struct SessionScopeState {
 struct SessionPermits {
     /// Number of network calls currently in flight for this session.
     in_flight: usize,
-    /// Instant of the most recently admitted call, for `max_rate_rps` pacing.
-    last_admitted: Option<std::time::Instant>,
+    /// The earliest instant at which the *next* admission may start.
+    ///
+    /// This is a reservation, not a record of the previous admission. Two
+    /// concurrent callers that both read "last admitted at T" would both compute
+    /// the same wait, sleep together, and be admitted together — the declared
+    /// rate was only honoured for strictly serial callers. Reserving the next
+    /// slot while holding the write lock makes the spacing hold under
+    /// concurrency, which is the case `max_rate_rps` exists for.
+    next_admission: Option<std::time::Instant>,
 }
 
 static SESSION_SCOPES: LazyLock<StdRwLock<HashMap<String, SessionScopeState>>> =
@@ -119,6 +127,123 @@ pub(crate) fn is_network_tool(tool: &str) -> bool {
     )
 }
 
+/// Programs that can put bytes on the wire when run through the `bash` tool.
+///
+/// `bash` is not in [`is_network_tool`] because most shell commands are local
+/// (`cargo test`, `git status`, `rg`), and gating those would be false friction
+/// in every scoped session. Instead each command segment's program is matched
+/// here, and only network segments are checked.
+const SHELL_NETWORK_PROGRAMS: &[&str] = &[
+    "curl",
+    "curl.exe",
+    "wget",
+    "wget.exe",
+    "nc",
+    "ncat",
+    "netcat",
+    "socat",
+    "ssh",
+    "scp",
+    "sftp",
+    "ftp",
+    "telnet",
+    "dig",
+    "nslookup",
+    "host",
+    "ping",
+    "tracert",
+    "traceroute",
+    "openssl",
+    "httpx",
+    "httprobe",
+    "nuclei",
+    "nmap",
+    "naabu",
+    "ffuf",
+    "feroxbuster",
+    "gobuster",
+    "nikto",
+    "sqlmap",
+    "dalfox",
+    "katana",
+    "gospider",
+    "hakrawler",
+    "subfinder",
+    "amass",
+    "assetfinder",
+    "dnsx",
+    "gau",
+    "waybackurls",
+    "meg",
+    "kxss",
+    "qsreplace",
+    "cariddi",
+    "corsy",
+    "crlfuzz",
+    "gf",
+];
+
+/// Flags whose following token is a value, not a destination.
+///
+/// Without this table `curl -H 'Accept: */*' https://in-scope.test` would treat
+/// the header value as a candidate target and `curl -o out.html URL` would treat
+/// the local output path as one. Over-collecting values only causes false
+/// denials, so the table stays explicit and the fallback stays conservative.
+const SHELL_VALUE_FLAGS: &[&str] = &[
+    "-H",
+    "--header",
+    "-d",
+    "--data",
+    "--data-raw",
+    "--data-binary",
+    "--data-urlencode",
+    "-X",
+    "--request",
+    "-u",
+    "--user",
+    "-b",
+    "--cookie",
+    "-c",
+    "--cookie-jar",
+    "-o",
+    "--output",
+    "-w",
+    "--write-out",
+    "-A",
+    "--user-agent",
+    "-e",
+    "--referer",
+    "-F",
+    "--form",
+    "-T",
+    "--upload-file",
+    "-x",
+    "--proxy",
+    "-m",
+    "--max-time",
+    "--connect-timeout",
+    "-t",
+    "--threads",
+    "-p",
+    "--ports",
+    "--wordlist",
+    "-r",
+    "--rate-limit",
+    "-rl",
+    "-timeout",
+    "-concurrency",
+    "--concurrency",
+    "--output-dir",
+];
+
+/// Flags naming a file whose lines are destinations (`httpx -l targets.txt`).
+const SHELL_LIST_FLAGS: &[&str] = &["-l", "--list", "-iL", "-list"];
+
+/// Whether a tool runs caller-supplied shell commands.
+pub(crate) fn is_shell_tool(tool: &str) -> bool {
+    matches!(tool, "bash")
+}
+
 /// Install (or replace) the engagement scope for a session. Pass `None` to
 /// remove enforcement entirely for a session (used when a session is not in
 /// bug-bounty mode).
@@ -129,6 +254,11 @@ pub fn set_session_scope(session_id: &str, policy: Option<ScopePolicy>) {
     // A policy change invalidates cached decisions so stale allow/deny results
     // cannot survive an updated config.
     entry.decisions.clear();
+    // In-flight accounting stays (those calls are still running), but the
+    // admission schedule belongs to the *old* rate and must not delay the new
+    // one. Without this, switching from 1 req/s to a higher rate would keep
+    // waiting on a reservation made under the previous policy.
+    entry.permits.next_admission = None;
 }
 
 /// Remove a session's scope state entirely.
@@ -332,6 +462,189 @@ fn target_list_truncated_message(tool: &str) -> String {
     )
 }
 
+/// Marker returned when a shell segment's destination is only known at run
+/// time (for example `curl "$TARGET"` or `curl $(cat url.txt)`).
+///
+/// Refusing these is the fail-closed choice: the gate cannot decide whether the
+/// destination is in scope, and "unknown" must not silently mean "allowed".
+const SHELL_DYNAMIC_TARGET: &str = "<shell:dynamic-target>";
+
+/// Whether a word is a shell expansion whose value is not statically knowable.
+fn is_dynamic_word(word: &str) -> bool {
+    if word.contains("$(") || word.contains('`') || word.contains('$') {
+        return true;
+    }
+    // Windows `cmd.exe` expands `%NAME%`. Require the closing delimiter so a
+    // literal percent in a URL-encoded path (`/a%20b`) is not mistaken for one.
+    match (word.find('%'), word.rfind('%')) {
+        (Some(first), Some(last)) if last > first + 1 => {
+            let name = &word[first + 1..last];
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        }
+        _ => false,
+    }
+}
+
+/// Tools that reach the network through a destination field but are deliberately
+/// *not* classified as scanners.
+///
+/// They are excluded from [`is_network_tool`] because that predicate also drives
+/// request pacing and probe-burst accounting: `open report.pdf` is a local file
+/// operation and must not consume a network permit or be delayed by
+/// `max_rate_rps`. Scope enforcement still applies to the network destination
+/// when one is actually present.
+const DESTINATION_URL_TOOLS: &[&str] = &["browser", "open"];
+
+/// Network URLs a destination-field tool would actually load.
+///
+/// Only absolute `http`/`https`/`ws`/`wss` URLs count. A local path, a `file:`
+/// URL or a `mailto:` target opens nothing on the network and must not be gated.
+fn destination_urls(input: &Value) -> Vec<String> {
+    let mut urls = Vec::new();
+    let Some(object) = input.as_object() else {
+        return urls;
+    };
+    for key in ["url", "target", "uri", "href", "link"] {
+        let Some(value) = object.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        let Ok(parsed) = url::Url::parse(value.trim()) else {
+            continue;
+        };
+        if matches!(parsed.scheme(), "http" | "https" | "ws" | "wss") {
+            urls.push(value.trim().to_string());
+        }
+    }
+    urls
+}
+
+/// Network destinations named by one shell command line.
+///
+/// Only segments whose program is in [`SHELL_NETWORK_PROGRAMS`] contribute, so
+/// ordinary local shell work is never gated. Within such a segment:
+///
+/// * `-l`/`--list` reads the named file with the same bounds as
+///   [`targets_from_file`], resolved against the session working directory
+///   because that is the directory the tool itself runs in;
+/// * tokens consumed by [`SHELL_VALUE_FLAGS`] are data (headers, bodies, output
+///   paths, credentials) and contribute nothing;
+/// * a remaining operand that resolves to an existing local file is a file
+///   operand (`ssh -i key`, `curl --data @body.json`), not a host;
+/// * an unexpanded shell variable or command substitution in an operand is
+///   reported as [`SHELL_DYNAMIC_TARGET`].
+pub(crate) fn shell_network_targets(command: &str, working_dir: Option<&Path>) -> Vec<String> {
+    let mut targets = Vec::new();
+    for segment in crate::alphacode_command_risk::split_segments(command) {
+        let mut words = segment
+            .iter()
+            .filter(|token| !token.is_operator && !token.is_truncating_redirect_target)
+            .map(|token| token.text.as_str())
+            .peekable();
+
+        // Skip leading environment assignments (`FOO=bar curl ...`).
+        let program = loop {
+            let Some(word) = words.next() else {
+                break None;
+            };
+            let is_assignment = word.split_once('=').is_some_and(|(name, _)| {
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            });
+            if is_assignment {
+                continue;
+            }
+            break Some(word);
+        };
+        let Some(program) = program else {
+            continue;
+        };
+        let program = program
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(program)
+            .to_ascii_lowercase();
+        if !SHELL_NETWORK_PROGRAMS.contains(&program.as_str()) {
+            continue;
+        }
+
+        let mut after_separator = false;
+        while let Some(word) = words.next() {
+            if !after_separator {
+                if word == "--" {
+                    after_separator = true;
+                    continue;
+                }
+                if SHELL_LIST_FLAGS.contains(&word) {
+                    if let Some(path) = words.next() {
+                        targets.extend(read_target_list(path, working_dir));
+                    }
+                    continue;
+                }
+                if SHELL_VALUE_FLAGS.contains(&word) {
+                    let _ = words.next();
+                    continue;
+                }
+                if word.starts_with('-') {
+                    continue;
+                }
+            }
+            push_shell_operand(word, working_dir, &mut targets);
+        }
+    }
+    targets.sort();
+    targets.dedup();
+    targets
+}
+
+fn push_shell_operand(operand: &str, working_dir: Option<&Path>, targets: &mut Vec<String>) {
+    let trimmed = operand.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if is_dynamic_word(trimmed) {
+        targets.push(SHELL_DYNAMIC_TARGET.to_string());
+        return;
+    }
+    // `ssh user@host` names the destination in the authority part.
+    let candidate = if trimmed.contains("://") {
+        trimmed
+    } else if let Some((_, host)) = trimmed.rsplit_once('@') {
+        host
+    } else {
+        trimmed
+    };
+    if !looks_like_target(candidate) {
+        return;
+    }
+    // A token that names an existing local file is a file argument (identity
+    // file, request body, wordlist), not a host. Prefer the evidence on disk
+    // over guessing from the spelling: `key.pem` and `api.example.com` are
+    // indistinguishable by shape alone.
+    if !candidate.contains("://") {
+        let local = match working_dir {
+            Some(base) => base.join(candidate),
+            None => std::path::PathBuf::from(candidate),
+        };
+        if local.is_file() {
+            return;
+        }
+    }
+    targets.push(candidate.trim_start_matches("//").to_string());
+}
+
+/// Read a target list named on a shell command line, resolved the way the tool
+/// itself would resolve it (relative to the session working directory).
+fn read_target_list(path: &str, working_dir: Option<&Path>) -> Vec<String> {
+    let candidate = std::path::Path::new(path.trim());
+    let resolved = match working_dir {
+        Some(base) if candidate.is_relative() => base.join(candidate),
+        _ => candidate.to_path_buf(),
+    };
+    targets_from_file(&resolved.to_string_lossy())
+}
+
 fn denied_message(tool: &str, target: &str, reason: &str) -> String {
     format!(
         "Engagement scope block: `{tool}` would contact `{target}` but it is outside the \
@@ -345,6 +658,15 @@ fn unmatched_message(tool: &str, target: &str) -> String {
         "Engagement scope block: `{tool}` would contact `{target}`, which matches no \
          in-scope rule for this session. This engagement is fail-closed, so an unmatched \
          target is refused. Add `{target}` to the engagement scope first."
+    )
+}
+
+fn dynamic_shell_target_message(tool: &str) -> String {
+    format!(
+        "Engagement scope block: `{tool}` would run a network command whose destination is \
+         only known when the shell expands it (a variable or command substitution). The scope \
+         gate cannot verify an unknown destination, so it is refused rather than assumed \
+         in-scope. Write the target literally, or run the request through `webfetch`/`httpflow`."
     )
 }
 
@@ -395,10 +717,30 @@ pub(crate) fn enforce_call(ctx: &ToolContext, tool: &str, input: &Value) -> Resu
     let Some(policy) = session_scope_policy(&ctx.session_id) else {
         return Ok(());
     };
-    // Only network-capable tools are subject to the gate.
-    if !is_network_tool(tool) {
+    // Only network-capable tools and caller-supplied shell commands are
+    // subject to the gate.
+    let shell = is_shell_tool(tool);
+    let destination_tool = DESTINATION_URL_TOOLS.contains(&tool);
+    if !shell && !destination_tool && !is_network_tool(tool) {
         return Ok(());
     }
+    // A shell command's destinations come from the command text, not from
+    // argument names. `bash` is otherwise the cheapest way around this gate:
+    // it can invoke every scanner above, plus `curl`, `ssh` and `nc`.
+    let targets = if shell {
+        let command = input
+            .get("command")
+            .and_then(Value::as_str)
+            .or_else(|| input.as_str())
+            .unwrap_or_default();
+        shell_network_targets(command, ctx.working_dir.as_deref())
+    } else if destination_tool {
+        // `browser`/`open` load one URL. Non-network targets (a local path, a
+        // `file:` or `mailto:` URI) are not network egress and are not gated.
+        destination_urls(input)
+    } else {
+        all_targets_from_input(tool, input)
+    };
     // Every target is evaluated, not just the first. Three behaviours this
     // replaces, each of which let a request leave the engagement:
     //
@@ -411,7 +753,10 @@ pub(crate) fn enforce_call(ctx: &ToolContext, tool: &str, input: &Value) -> Resu
     // * Only the first target was checked, so an in-scope host listed first
     //   laundered every host listed after it — including out-of-scope ones and
     //   the entire contents of a recon list file.
-    for target in all_targets_from_input(tool, input) {
+    for target in targets {
+        if target == SHELL_DYNAMIC_TARGET {
+            return Err(dynamic_shell_target_message(tool));
+        }
         // A scanner driven from a list file it was allowed to open would
         // otherwise reach every host in that file, including any past the scan
         // cap. The cap exists to bound gate cost, not to grant an unchecked
@@ -536,22 +881,35 @@ pub(crate) async fn acquire_network_permit(session_id: &str, tool: &str) -> Netw
         .filter(|rps| *rps > 0)
         .map(|rps| std::time::Duration::from_secs_f64(1.0 / f64::from(rps)));
     if let Some(interval) = min_interval {
-        // How long this session must still wait, read under the lock and then
-        // released so the sleep does not hold it.
+        // Reserve this caller's admission slot while holding the write lock.
+        //
+        // Reading "when was the last call admitted" and sleeping outside the
+        // lock let N concurrent callers read the *same* timestamp, sleep for the
+        // *same* remaining interval, and then all be admitted together — a burst
+        // is exactly what `max_rate_rps` is declared to prevent, and exactly the
+        // situation a swarm creates. Reserving the next slot inside the lock
+        // makes each admission extend the schedule, so concurrent callers are
+        // admitted at `interval` spacing regardless of how many arrive at once.
         let wait = {
-            let scopes = SESSION_SCOPES.read().unwrap_or_else(|p| p.into_inner());
-            scopes
-                .get(session_id)
-                .and_then(|state| state.permits.last_admitted)
-                .map(|last| interval.saturating_sub(last.elapsed()))
-                .filter(|remaining| !remaining.is_zero())
+            let mut scopes = SESSION_SCOPES.write().unwrap_or_else(|p| p.into_inner());
+            match scopes.get_mut(session_id) {
+                Some(state) => {
+                    let now = std::time::Instant::now();
+                    let start = state
+                        .permits
+                        .next_admission
+                        .map(|next| next.max(now))
+                        .unwrap_or(now);
+                    state.permits.next_admission = Some(start + interval);
+                    start.saturating_duration_since(now)
+                }
+                // No state entry: the policy was cleared between the read above
+                // and here. Nothing is being paced, so do not sleep.
+                None => std::time::Duration::ZERO,
+            }
         };
-        if let Some(wait) = wait {
+        if !wait.is_zero() {
             tokio::time::sleep(wait).await;
-        }
-        let mut scopes = SESSION_SCOPES.write().unwrap_or_else(|p| p.into_inner());
-        if let Some(state) = scopes.get_mut(session_id) {
-            state.permits.last_admitted = Some(std::time::Instant::now());
         }
     }
 
@@ -644,6 +1002,22 @@ mod tests {
     /// test is correct. Only the tests that treat it as a total need this; the
     /// relative-delta assertions are already stable.
     static PERMIT_COUNT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Serializes tests that make assertions about how many permits are live.
+    ///
+    /// [`GLOBAL_IN_FLIGHT`] is process-wide, so two admission tests running on
+    /// separate threads observe each other's permits and any absolute or
+    /// delta assertion becomes a coin flip. A `tokio` mutex (unlike the std one
+    /// above) can be held across `.await`, which is what the async admission
+    /// tests need; the synchronous permit tests take it with `blocking_lock`.
+    static ADMISSION_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[test]
+    fn sync_tests_can_serialize_with_async_admission_tests() {
+        // Documents that the async lock is usable from a synchronous test; the
+        // permit tests rely on this to avoid observing a concurrent admission.
+        let _guard = ADMISSION_TEST_LOCK.blocking_lock();
+    }
 
     fn lock_permit_counts_for_tests() -> std::sync::MutexGuard<'static, ()> {
         PERMIT_COUNT_TEST_LOCK
@@ -738,19 +1112,38 @@ mod tests {
         assert!(err.contains("evil.com"));
     }
 
+    /// Non-network tools are unaffected even when their arguments contain a URL.
+    ///
+    /// This previously asserted that `bash` running `curl https://evil.com` was
+    /// allowed, on the reasoning that `bash` "is not a network tool". That was a
+    /// scope bypass rather than a property worth preserving: `bash` reaches every
+    /// scanner and every HTTP client the agent has. The assertion now covers a
+    /// tool that genuinely cannot open a socket plus a shell command that stays
+    /// local, while shell egress is covered by
+    /// `shell_network_segments_are_scope_checked`.
     #[test]
     fn non_network_tool_not_blocked() {
         let id = "local-tool-test";
         set_session_scope(id, Some(policy(&["example.com"], &[], true)));
-        // bash is not a network tool; must not be blocked even though input
-        // happens to contain a URL.
+        for tool in ["read", "write", "edit", "ls", "alphagrep", "todo"] {
+            assert!(
+                enforce_call(
+                    &ctx_for(id),
+                    tool,
+                    &serde_json::json!({"path": "notes/evil.com.txt"}),
+                )
+                .is_ok(),
+                "local tool `{tool}` must not be scope-gated"
+            );
+        }
         assert!(
             enforce_call(
                 &ctx_for(id),
                 "bash",
-                &serde_json::json!({"command": "curl https://evil.com"})
+                &serde_json::json!({"command": "rg -n 'curl https://evil.com' docs/"})
             )
-            .is_ok()
+            .is_ok(),
+            "a local shell command that only mentions a URL must not be gated"
         );
     }
 
@@ -1028,6 +1421,7 @@ mod tests {
     /// Passing a tiny `max_wait` makes the branch reachable without sleeping 30s.
     #[tokio::test]
     async fn the_give_up_branch_admits_a_counted_slot() {
+        let _serial = ADMISSION_TEST_LOCK.lock().await;
         let _restore = InFlightRestore(GLOBAL_IN_FLIGHT.load(Ordering::SeqCst));
         // Hold the test lock only for the synchronous setup; drop before the first await.
         let _counts = lock_permit_counts_for_tests();
@@ -1062,6 +1456,7 @@ mod tests {
     /// (the old always-true guard) and the slot is double-counted.
     #[tokio::test]
     async fn a_slot_is_taken_exactly_once_when_the_wait_succeeds() {
+        let _serial = ADMISSION_TEST_LOCK.lock().await;
         let _restore = InFlightRestore(GLOBAL_IN_FLIGHT.load(Ordering::SeqCst));
         // Hold the test lock only for the synchronous setup; drop before the first await.
         let _counts = lock_permit_counts_for_tests();
@@ -1071,6 +1466,9 @@ mod tests {
         limited.max_concurrent = 1;
         set_session_scope(id, Some(limited));
 
+        // Baseline *before* this test takes its own slot, so the final
+        // expectation is "this test ends holding exactly one permit".
+        let baseline = GLOBAL_IN_FLIGHT.load(Ordering::SeqCst);
         let held = acquire_network_permit(id, "httpx").await;
         let saturated = GLOBAL_IN_FLIGHT.load(Ordering::SeqCst);
         // A generous bound: with the slot released shortly, the loop must
@@ -1085,11 +1483,16 @@ mod tests {
         acquire_global_slot(id, "httpx", saturated, std::time::Duration::from_secs(5)).await;
         release.await.unwrap();
 
-        // Exactly one slot taken for the waiting call (the other was released).
+        // The held permit is released *during* the wait, and the waiting call
+        // then takes its own slot: the net change is zero, and the test ends
+        // holding exactly one permit. Asserting the net delta is therefore
+        // wrong by construction — the invariant is the absolute end state
+        // relative to the baseline, which is why this must be serialized
+        // against other admission tests.
         assert_eq!(
             GLOBAL_IN_FLIGHT.load(Ordering::SeqCst),
-            1,
-            "the waiting call must count exactly one slot"
+            baseline + 1,
+            "the waiting call must end holding exactly one counted slot"
         );
         clear_session_scope(id);
     }
@@ -1202,6 +1605,7 @@ not-in-scope.test
     /// forced down the contended branch.
     #[tokio::test]
     async fn a_permit_admitted_under_saturation_is_still_counted() {
+        let _serial = ADMISSION_TEST_LOCK.lock().await;
         // Hold the test lock only for the synchronous setup; drop before the first await.
         let _counts = lock_permit_counts_for_tests();
         let id = "permit-saturation-test";
@@ -1256,6 +1660,7 @@ not-in-scope.test
     /// admissions under a 1 req/s policy must be at least one interval apart.
     #[tokio::test]
     async fn a_declared_rate_limit_paces_consecutive_admissions() {
+        let _serial = ADMISSION_TEST_LOCK.lock().await;
         // Holds two live permits, so it must not overlap the counter tests.
         // Hold the test lock only for the synchronous setup; drop before the first await.
         let _counts = lock_permit_counts_for_tests();
@@ -1288,5 +1693,198 @@ not-in-scope.test
             _session_id: _session_id.to_string(),
             _released: false,
         }
+    }
+
+    /// `bash` was outside the gate entirely: it is not in `is_network_tool`, so a
+    /// scoped session could leave the engagement with `curl https://evil.test`.
+    /// The gate now reads shell segments, so an out-of-scope destination in a
+    /// network program is refused while ordinary local commands still pass.
+    #[test]
+    fn shell_network_segments_are_scope_checked() {
+        let id = "shell-scope-test";
+        set_session_scope(id, Some(policy(&["in-scope.test"], &[], true)));
+
+        for allowed in [
+            "curl https://in-scope.test/api",
+            "curl -sS -H 'Accept: application/json' https://in-scope.test/x -o out.json",
+            "cargo test --lib",
+            "git status",
+            "rg --files",
+        ] {
+            assert!(
+                enforce_call(
+                    &ctx_for(id),
+                    "bash",
+                    &serde_json::json!({ "command": allowed })
+                )
+                .is_ok(),
+                "expected allowed: {allowed}"
+            );
+        }
+
+        for denied in [
+            "curl https://evil.test/",
+            "curl -s https://evil.test/a && curl https://in-scope.test/b",
+            "wget -q https://evil.test/payload",
+            "nmap -sV evil.test",
+            "ssh root@evil.test",
+            "echo hi; curl https://evil.test",
+        ] {
+            let error = enforce_call(
+                &ctx_for(id),
+                "bash",
+                &serde_json::json!({ "command": denied }),
+            )
+            .expect_err(&format!("expected denial: {denied}"));
+            assert!(
+                error.contains("Engagement scope block"),
+                "expected scope wording for {denied}: {error}"
+            );
+        }
+
+        clear_session_scope(id);
+    }
+
+    /// A destination supplied through shell expansion is not verifiable at gate
+    /// time. Treating "unknown" as allowed would make `curl "$TARGET"` a reliable
+    /// bypass, so it must be refused with actionable wording.
+    #[test]
+    fn shell_dynamic_destination_fails_closed() {
+        let id = "shell-dynamic-test";
+        set_session_scope(id, Some(policy(&["in-scope.test"], &[], true)));
+        for command in [
+            r#"curl "$TARGET""#,
+            "curl ${TARGET}",
+            "curl $(cat target.txt)",
+        ] {
+            let error = enforce_call(
+                &ctx_for(id),
+                "bash",
+                &serde_json::json!({ "command": command }),
+            )
+            .expect_err(command);
+            assert!(
+                error.contains("only known when the shell expands it"),
+                "{command}: {error}"
+            );
+        }
+        clear_session_scope(id);
+    }
+
+    /// Local command segments that merely *mention* a network program in an
+    /// argument must not be denied: `grep curl notes.md` calls nothing.
+    #[test]
+    fn shell_program_must_be_the_segment_program() {
+        let id = "shell-program-test";
+        set_session_scope(id, Some(policy(&["in-scope.test"], &[], true)));
+        for command in [
+            "grep -rn curl docs/",
+            "echo 'curl https://evil.test'",
+            "rg 'nmap -sV' src/",
+        ] {
+            assert!(
+                enforce_call(
+                    &ctx_for(id),
+                    "bash",
+                    &serde_json::json!({ "command": command })
+                )
+                .is_ok(),
+                "expected allowed: {command}"
+            );
+        }
+        clear_session_scope(id);
+    }
+
+    /// Browser navigation and `open` also reach the network, and were absent from
+    /// the network-tool class. They are now gated on their `url`/`target`.
+    #[test]
+    fn browser_and_open_destinations_are_gated() {
+        let id = "browser-scope-test";
+        set_session_scope(id, Some(policy(&["in-scope.test"], &[], true)));
+
+        assert!(
+            enforce_call(
+                &ctx_for(id),
+                "browser",
+                &serde_json::json!({"action": "open", "url": "https://in-scope.test/a"})
+            )
+            .is_ok()
+        );
+        assert!(
+            enforce_call(
+                &ctx_for(id),
+                "browser",
+                &serde_json::json!({"action": "open", "url": "https://evil.test/a"})
+            )
+            .is_err()
+        );
+        assert!(
+            enforce_call(
+                &ctx_for(id),
+                "open",
+                &serde_json::json!({"action": "open", "target": "https://evil.test/"})
+            )
+            .is_err()
+        );
+        // Local targets and non-network schemes open nothing remotely and must
+        // not be refused: `open` is also the operator's file/folder viewer.
+        for local in [
+            serde_json::json!({"action": "open", "target": "./report.pdf"}),
+            serde_json::json!({"action": "reveal", "target": "C:/work/notes"}),
+            serde_json::json!({"action": "open", "target": "file:///tmp/report.html"}),
+            serde_json::json!({"action": "open", "target": "mailto:someone@example.test"}),
+        ] {
+            assert!(
+                enforce_call(&ctx_for(id), "open", &local).is_ok(),
+                "local open target must not be scope-gated: {local}"
+            );
+        }
+        // A browser action that carries no URL (snapshot, list_tabs) is local
+        // browser control and must not be gated either.
+        assert!(
+            enforce_call(
+                &ctx_for(id),
+                "browser",
+                &serde_json::json!({"action": "snapshot"})
+            )
+            .is_ok()
+        );
+        clear_session_scope(id);
+    }
+
+    /// `max_rate_rps` must hold for *concurrent* callers, not only serial ones.
+    ///
+    /// The previous implementation read "when was the last call admitted" and
+    /// slept outside the lock. N concurrent callers read the same timestamp and
+    /// were admitted together, producing the exact burst the policy forbids.
+    #[tokio::test]
+    async fn declared_rate_limit_holds_for_concurrent_admissions() {
+        let _serial = ADMISSION_TEST_LOCK.lock().await;
+        let id = "rate-concurrency-test";
+        // 2 req/s keeps the test short while still being measurable.
+        let mut limited = policy(&["example.com"], &[], true);
+        limited.max_rate_rps = 2;
+        set_session_scope(id, Some(limited));
+
+        let started = std::time::Instant::now();
+        let admissions = (0..3).map(|_| {
+            let id = id.to_string();
+            tokio::spawn(async move { acquire_network_permit(&id, "httpx").await })
+        });
+        for admission in admissions {
+            // Drop each permit as soon as it is granted: this test measures
+            // admission *spacing*, and holding permits for its duration would
+            // perturb every other admission test in the process.
+            drop(admission.await.expect("admission task"));
+        }
+        let elapsed = started.elapsed();
+
+        // Three admissions at 2 req/s must span at least two intervals (~1s).
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "concurrent admissions must be paced, not batched; got {elapsed:?}"
+        );
+
+        clear_session_scope(id);
     }
 }

@@ -133,6 +133,31 @@ fn help_command_miss_names_a_suggestion() {
     );
 }
 
+#[test]
+fn engagement_help_explains_its_read_only_scope_in_the_rendered_tui() {
+    let _lock = crate::alphacode_tui::tui::ui::render_state_test_lock();
+    let mut app = create_test_app();
+    assert!(commands::handle_help_command(&mut app, "/help engagement"));
+
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+    terminal
+        .draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app))
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<Vec<_>>()
+        .join("");
+
+    assert!(
+        rendered.contains("read-only view"),
+        "rendered /engagement help should identify the view as read-only"
+    );
+}
+
 /// Very short topics are ambiguous by nature and must not produce noise.
 #[test]
 fn short_topics_produce_no_suggestions() {

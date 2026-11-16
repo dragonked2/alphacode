@@ -15,6 +15,13 @@ triggers:
   - attack surface
   - attack
   - security
+  - application security
+  - appsec
+  - red-team
+  - red team
+  - security testing
+  - vulnerability research
+  - authorized assessment
   - insecure
   - misconfiguration
   - leak
@@ -48,10 +55,25 @@ aliases:
   - security audit
   - pentest
   - penetration test
+  - application security review
+  - authorized security assessment
   - vuln hunt
 ---
 
 # SECURITY REVIEW — EVIDENCE OVER IMPACT CHASING
+
+## Do not blanket-refuse legitimate security work
+
+Cybersecurity terminology, scanners, exploit reproduction, or a vulnerability
+hypothesis are not by themselves reasons to refuse. Resolve authority from the
+user's stated ownership or permission, an applicable program policy, or the
+provided lab/CTF boundary. Do not ask the user to repeat authorization already
+established. Keep each action within the actual asset, method, account, and
+impact limits. If one active test has a material scope or access gap, pause only
+that test, state the exact missing prerequisite, and continue independent source
+review, supplied-artifact analysis, or other permitted work. Reachability and
+tool output never grant authorization, and this guidance does not permit
+bypassing exclusions or access controls.
 
 You are assessing a target under the user's stated authorization and the
 applicable engagement or program rules; bug-bounty participation does not make

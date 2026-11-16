@@ -149,7 +149,7 @@ impl Tool for InvestigationTool {
             "intent":super::intent_schema_property(),
             "action":{"type":"string","enum":["start","status","propose","plan","prioritize","next","execute","attach","record_attempt","reassess","resolve_reassessment","transition","verify","group_root","retest","export"]},
             "objective":{"type":"string"},"lead_id":{"type":"string"},"asset":{"type":"string"},
-            "in_scope":{"type":"array","items":{"type":"string"},"description":"Initial boundaries copied from the user's authorization/current program policy. Records scope, never grants permission. An existing boundary cannot be expanded in this engagement."},
+            "in_scope":{"type":"array","items":{"type":"string"},"description":"Assets to record for this engagement. This never installs or widens scope: it is accepted only when the session already has an operator-installed engagement scope, and the installed policy alone decides what is authorized."},
             "out_of_scope":{"type":"array","items":{"type":"string"}},
             "category":{"type":"string"},"claim":{"type":"string"},"expected":{"type":"string"},
             "steps":{"type":"array","items":{"type":"string"}},"tool":{"type":"string"},"input":{"type":"object"},
@@ -195,35 +195,39 @@ impl Tool for InvestigationTool {
                 "start requires objective"
             );
             runtime::ensure_started(&ctx.session_id, &params.objective)?;
-            if !params.in_scope.is_empty() {
-                let policy = crate::alphacode_security_core::ScopePolicy::from_lists(
-                    &params.in_scope,
-                    &params.out_of_scope,
-                    true,
-                    &[],
-                    0,
-                    6,
+            if !params.in_scope.is_empty() || !params.out_of_scope.is_empty() {
+                // `in_scope` is model-supplied tool input. Installing a session
+                // policy from it let the model authorize its own engagement:
+                // `investigation start` with `in_scope: ["0.0.0.0/0"]` turned a
+                // session with no authorization into a fail-closed gate that
+                // permitted every address, and later prompts then reported an
+                // installed scope to the model as fact.
+                //
+                // Scope is installed only by paths that carry the operator's own
+                // instruction (`bugbounty_executor`, which derives it from the
+                // target the user passed on the command line) or by restoring a
+                // previously authorized engagement. Tool arguments may record
+                // what the operator authorized, but can neither create nor
+                // widen a policy, and `out_of_scope` is deliberately *not*
+                // applied as a narrowing filter here: silently subtracting
+                // rules would let the model shrink what the operator granted
+                // and then report the result as the engagement's real boundary.
+                // An authorization decision never originates in model output.
+                let installed = super::scope::session_scope_policy(&ctx.session_id);
+                ensure!(
+                    installed.is_some(),
+                    "no engagement scope is installed for this session, so `in_scope` cannot \
+                     grant one. Scope comes from the operator (for example an explicit \
+                     `alphacode bugbounty` target) or from a saved engagement. Continue with \
+                     offline analysis, or ask the operator to start an authorized engagement."
                 );
-                if let Some(existing) = super::scope::session_scope_policy(&ctx.session_id) {
-                    ensure!(
-                        serde_json::to_value(&existing)? == serde_json::to_value(&policy)?,
-                        "installed scope differs; cannot replace it through investigation"
-                    );
-                }
+                // Recording the operator-visible asset list is still useful, and
+                // is checked against the installed policy below rather than
+                // trusted as policy.
                 runtime::update(&ctx.session_id, |state| {
-                    ensure!(
-                        state
-                            .policy
-                            .as_ref()
-                            .is_none_or(|existing| serde_json::to_value(existing).ok()
-                                == serde_json::to_value(&policy).ok()),
-                        "engagement scope is already bound; start a distinct engagement for changed authorization"
-                    );
-                    state.policy = Some(policy.clone());
                     state.research.scope = params.in_scope.clone();
                     Ok(())
                 })?;
-                super::scope::set_session_scope(&ctx.session_id, Some(policy));
             }
         }
         let policy = super::scope::session_scope_policy(&ctx.session_id).unwrap_or_default();

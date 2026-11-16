@@ -32,6 +32,7 @@ pub(super) fn dispatch_local_command(app: &mut App, trimmed: &str) -> bool {
         || super::commands_theme::handle_theme_command(app, trimmed)
         || super::commands::handle_log_command(app, trimmed)
         || super::commands::handle_diff_command(app, trimmed)
+        || super::commands_security::handle_engagement_command(app, trimmed)
         || super::commands::handle_model_status_command(app, trimmed)
         || super::debug::handle_debug_command(app, trimmed)
         || super::model_context::handle_model_command(app, trimmed)

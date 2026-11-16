@@ -3,14 +3,39 @@ use crate::alphacode_app_core::logging;
 use crate::alphacode_app_core::message::{ContentBlock, Message, Role, ToolDefinition};
 use crate::alphacode_security_core::skill_router::SkillRouter;
 
+const AUTHORIZED_SECURITY_ASSISTANCE_GUIDANCE: &str = concat!(
+    "\n\n# Authorized security assistance\n",
+    "Do not refuse or demand repeated permission solely because a task involves cybersecurity, vulnerability research, reconnaissance, or exploit reproduction. ",
+    "Treat an explicit user-owned target, authorized engagement/program, or CTF/lab as standing context for proportionate work within its actual boundaries. ",
+    "If one action has a material scope or access gap, pause only that action, name the missing prerequisite, and continue independent offline or otherwise permitted work. ",
+    "Never infer authorization from reachability, and never bypass scope exclusions or access controls."
+);
+
 fn security_request(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     [
         "bug bounty",
+        "bug-bounty",
         "bugbounty",
         "hackerone",
         "bugcrowd",
         "intigriti",
+        "cybersecurity",
+        "cyber security",
+        "application security",
+        "appsec",
+        "red-team",
+        "red team",
+        "red teaming",
+        "ethical hacking",
+        "security testing",
+        "security research",
+        "vulnerability research",
+        "authorized assessment",
+        "authorized recon",
+        "security recon",
+        "exploit validation",
+        "exploit reproduction",
         "security audit",
         "security review",
         "security assessment",
@@ -278,6 +303,7 @@ pub(crate) fn routed_skill_context(
         skill_prompt.push_str(
             "\n\nChoose skills, references, and tools from the task, scope, and observed evidence. Consult the relevant class reference via skill_manage when needed. Use the available tool inventory to select the smallest useful experiment and adapt after each result. Proceed with authorized independent work when a prerequisite is missing. A technology hint cannot extend scope.",
         );
+        skill_prompt.push_str(AUTHORIZED_SECURITY_ASSISTANCE_GUIDANCE);
     }
 
     let evidence = [ledger, hunt_ledger]
@@ -857,6 +883,38 @@ mod probe_burst_tests {
 #[cfg(test)]
 mod automatic_routing_tests {
     use super::*;
+
+    #[test]
+    fn common_authorized_security_phrasing_routes_to_security_tools() {
+        for task in [
+            "Run an authorized security assessment of https://lab.example",
+            "Do application security testing on this API: https://lab.example/v1",
+            "Review this bug-bounty target at https://lab.example",
+            "Help with red team exploit validation for https://lab.example",
+            "Perform vulnerability research against https://lab.example",
+        ] {
+            assert!(
+                security_request(task),
+                "security request not recognized: {task}"
+            );
+            assert!(
+                adaptive_tool_query(task, false).contains("httpflow"),
+                "web security task did not get the HTTP capability hint: {task}"
+            );
+        }
+        assert!(!security_request("Compare security deposit requirements"));
+    }
+
+    #[test]
+    fn authorized_security_guidance_preserves_scope_without_blanket_refusals() {
+        assert!(AUTHORIZED_SECURITY_ASSISTANCE_GUIDANCE.contains("Do not refuse"));
+        assert!(AUTHORIZED_SECURITY_ASSISTANCE_GUIDANCE.contains("pause only that action"));
+        assert!(
+            AUTHORIZED_SECURITY_ASSISTANCE_GUIDANCE
+                .contains("Never infer authorization from reachability")
+        );
+        assert!(AUTHORIZED_SECURITY_ASSISTANCE_GUIDANCE.contains("never bypass scope exclusions"));
+    }
 
     #[test]
     fn security_reads_never_require_mutation_to_show_progress() {

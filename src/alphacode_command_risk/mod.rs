@@ -53,7 +53,7 @@ pub use gate::{GateOutcome, Justification, gate};
 pub use paths::{ProtectedPaths, is_catastrophic_target};
 #[allow(unused_imports)]
 pub use shell_url_safety::{ShellUrlSafety, quote_curl_query_url, scan_for_shell_url_issues};
-pub use tokenize::{Token, tokenize};
+pub use tokenize::{Token, split_segments, tokenize};
 
 /// How dangerous a command looks, and therefore how much scrutiny it earns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
