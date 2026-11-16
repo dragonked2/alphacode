@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const LOCK_WAIT: Duration = Duration::from_secs(2);
+const LOCK_WAIT: Duration = Duration::from_secs(10);
 const LOCK_POLL: Duration = Duration::from_millis(5);
 
 /// Lock a stable sidecar, not STATE.json: atomic replacement changes the state
