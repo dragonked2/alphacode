@@ -944,14 +944,14 @@ pub(super) fn draw_messages(
                 return;
             }
             let rel_row = abs_row.saturating_sub(top_band_lines as usize);
-            if let Some(line) = visible_lines.get_mut(rel_row) {
-                if usize::from(margins.right_widths[abs_row]) < width {
-                    // The content reaches the edge: cut it back by the indicator
-                    // width plus a one-cell gutter so the glyphs never collide.
-                    let budget = area_width.saturating_sub(width + 1);
-                    truncate_line_for_copy_badge(line, budget);
-                    margins.right_widths[abs_row] = width as u16;
-                }
+            if let Some(line) = visible_lines.get_mut(rel_row)
+                && usize::from(margins.right_widths[abs_row]) < width
+            {
+                // The content reaches the edge: cut it back by the indicator
+                // width plus a one-cell gutter so the glyphs never collide.
+                let budget = area_width.saturating_sub(width + 1);
+                truncate_line_for_copy_badge(line, budget);
+                margins.right_widths[abs_row] = width as u16;
             }
             scroll_indicator_draws.push((
                 Rect {
