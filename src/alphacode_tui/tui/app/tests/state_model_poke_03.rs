@@ -776,7 +776,6 @@ fn test_tui_cerebras_paste_key_lifecycle_has_no_degraded_success_messages() {
                 } else if login.provider == "Cerebras" {
                     panic!("late failed login event after successful auth: {login:?}");
                 }
-                }
             }
             crate::bus::BusEvent::UiActivity(activity) => {
                 if activity.message.contains("Auth Model Catalog Warning") {

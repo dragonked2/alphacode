@@ -930,7 +930,60 @@ pub(super) fn draw_messages(
         }
     }
 
+    // Right-edge overflow affordances (`↑N` / `↓N`). They are painted after the
+    // transcript paragraph, so they must never land on content cells. Plan them
+    // here — reserving a slot in each host row's right margin and trimming the
+    // row with a dim ellipsis only when the content actually reaches the edge —
+    // then draw them flush right below.
+    let mut scroll_indicator_draws: Vec<(Rect, String, Color)> = Vec::new();
+    if !show_native_scrollbar {
+        let mut plan_indicator = |abs_row: usize, text: String, color: Color| {
+            let width = UnicodeWidthStr::width(text.as_str());
+            let area_width = usize::from(content_area.width);
+            if width == 0 || width >= area_width || abs_row >= margins.right_widths.len() {
+                return;
+            }
+            let rel_row = abs_row.saturating_sub(top_band_lines as usize);
+            if let Some(line) = visible_lines.get_mut(rel_row) {
+                if usize::from(margins.right_widths[abs_row]) < width {
+                    // The content reaches the edge: cut it back by the indicator
+                    // width plus a one-cell gutter so the glyphs never collide.
+                    let budget = area_width.saturating_sub(width + 1);
+                    truncate_line_for_copy_badge(line, budget);
+                    margins.right_widths[abs_row] = width as u16;
+                }
+            }
+            scroll_indicator_draws.push((
+                Rect {
+                    x: content_area.right().saturating_sub(width as u16),
+                    y: content_area.y + rel_row as u16,
+                    width: width as u16,
+                    height: 1,
+                },
+                text,
+                color,
+            ));
+        };
+        if scroll > 0 {
+            plan_indicator(0, format!("↑{scroll}"), dim_color());
+        }
+        if app.auto_scroll_paused() && scroll < max_scroll {
+            plan_indicator(
+                visible_height.saturating_sub(1),
+                format!("↓{}", max_scroll - scroll),
+                queued_color(),
+            );
+        }
+    }
+
     frame.render_widget(Paragraph::new(visible_lines), content_area);
+
+    for (rect, text, color) in scroll_indicator_draws {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color)))),
+            rect,
+        );
+    }
 
     let centered = app.centered_mode();
     let diagram_mode = app.diagram_mode();
@@ -1164,23 +1217,6 @@ pub(super) fn draw_messages(
         }
     }
 
-    if !show_native_scrollbar && scroll > 0 {
-        let indicator = format!("↑{}", scroll);
-        let indicator_area = Rect {
-            x: render_area.x + render_area.width.saturating_sub(indicator.len() as u16 + 2),
-            y: render_area.y,
-            width: indicator.len() as u16,
-            height: 1,
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                indicator,
-                Style::default().fg(dim_color()),
-            )])),
-            indicator_area,
-        );
-    }
-
     if pinned_todo_lines > 0 {
         let band_area = Rect {
             x: content_area.x,
@@ -1190,23 +1226,6 @@ pub(super) fn draw_messages(
         };
         clear_area(frame, band_area);
         frame.render_widget(Paragraph::new(pinned_todo_band), band_area);
-    }
-
-    if !show_native_scrollbar && app.auto_scroll_paused() && scroll < max_scroll {
-        let indicator = format!("↓{}", max_scroll - scroll);
-        let indicator_area = Rect {
-            x: render_area.x + render_area.width.saturating_sub(indicator.len() as u16 + 2),
-            y: render_area.y + render_area.height.saturating_sub(1),
-            width: indicator.len() as u16,
-            height: 1,
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                indicator,
-                Style::default().fg(queued_color()),
-            )])),
-            indicator_area,
-        );
     }
 
     if let Some(scrollbar_area) = scrollbar_area {

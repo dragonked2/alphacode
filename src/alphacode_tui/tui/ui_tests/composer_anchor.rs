@@ -318,3 +318,106 @@ fn tiny_terminal_clears_old_hit_targets_and_shows_resize_hint() {
     assert!(layout.input_area.is_none());
     assert_eq!(layout.messages_area, Rect::default());
 }
+
+/// The right-edge overflow affordance (`↑N` / `↓N`) is painted *after* the
+/// transcript paragraph, so a bug there is invisible to a `Line`-level test:
+/// the glyphs simply land on top of whatever content occupies the last cells of
+/// the row. Two defects were fixed together:
+///
+/// 1. the indicator's x/width were computed from `String::len()` (UTF-8
+///    *bytes*) instead of terminal cells, so `↑14` (5 bytes, 3 cells) was
+///    placed two columns too far left and on a 40-wide terminal even clobbered
+///    the guide text mid-word ("Choose a mo↑14");
+/// 2. it overwrote content unconditionally instead of reserving the row's
+///    right margin.
+///
+/// This drives the real layout, scrolls into overflow, and asserts both the
+/// placement and the reservation.
+#[test]
+fn overflow_indicator_uses_cell_width_and_never_overwrites_transcript_text() {
+    let _lock = viewport_snapshot_test_lock();
+    // Content long enough to overflow a short viewport, so `↑N` renders. The
+    // lines are deliberately wide so their right edge sits under the indicator.
+    let messages: Vec<DisplayMessage> = (0..60)
+        .map(|index| {
+            DisplayMessage::assistant(format!("line {index} padding padding padding padding"))
+        })
+        .collect();
+    for width in [40_u16, 60, 80, 120] {
+        let state = TestState {
+            status: ProcessingStatus::Idle,
+            suppress_info_widgets: true,
+            display_messages: messages.clone(),
+            messages_version: 1,
+            scroll_offset: 12,
+            auto_scroll_paused: true,
+            ..Default::default()
+        };
+        let (rows, layout) = draw_frame(&state, width, 20);
+        let messages_area = layout.messages_area;
+        let right = usize::from(messages_area.right());
+        let transcript: Vec<&String> = rows
+            .iter()
+            .skip(usize::from(messages_area.y))
+            .take(usize::from(messages_area.height))
+            .collect();
+        let all = transcript
+            .iter()
+            .map(|row| row.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains('↑'),
+            "a scrolled viewport must show the up-overflow affordance at {width}:\n{all}"
+        );
+
+        // The indicator belongs to the top transcript row and must be flush
+        // right. What matters is the *cell* width of the whole `↑N` span, not
+        // the arrow alone: anchoring the grid on cell width is the fix.
+        let top = transcript[0];
+        let arrow_byte = top
+            .find('↑')
+            .unwrap_or_else(|| panic!("no ↑ on the top transcript row at {width}:\n{top}"));
+        let tail = &top[arrow_byte..];
+        let indicator_end = tail
+            .char_indices()
+            .take_while(|(_, ch)| *ch == '↑' || ch.is_ascii_digit())
+            .map(|(idx, ch)| idx + ch.len_utf8())
+            .last()
+            .unwrap_or(0);
+        // Measure the `↑N` span in terminal cells, not bytes: the arrow alone is
+        // 3 UTF-8 bytes but one column. Mixing the two is the defect this test
+        // exists to guard, so the assertion must not repeat it.
+        let indicator_width = unicode_width::UnicodeWidthStr::width(&tail[..indicator_end]);
+        let arrow_col = unicode_width::UnicodeWidthStr::width(&top[..arrow_byte]);
+        assert_eq!(
+            arrow_col + indicator_width,
+            right,
+            "the ↑N affordance must end flush with the transcript right edge at \
+             {width}:\n{top}"
+        );
+
+        // Reserve check: no transcript row may have an affordance written into
+        // its middle. Every `↑`/`↓` must sit flush right, preceded by a space or
+        // a truncation ellipsis.
+        for row in &transcript {
+            for (byte_idx, glyph) in row.char_indices() {
+                if glyph != '↑' && glyph != '↓' {
+                    continue;
+                }
+                let before = &row[..byte_idx];
+                let col = unicode_width::UnicodeWidthStr::width(before);
+                assert!(
+                    col < right && right - col <= 4,
+                    "the {glyph} affordance appeared mid-row at {width}:\n{row}"
+                );
+                let last = before.chars().last();
+                assert!(
+                    last.is_none_or(|ch| ch == ' ' || ch == '.'),
+                    "content must be separated from the indicator by a space or a \
+                     truncation ellipsis, got {last:?} at {width}:\n{row}"
+                );
+            }
+        }
+    }
+}

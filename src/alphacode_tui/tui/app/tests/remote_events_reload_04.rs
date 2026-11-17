@@ -1322,6 +1322,17 @@ fn test_openai_compatible_login_preserves_profile_for_runtime_activation() {
 
 #[test]
 fn test_tui_login_providers_have_real_tui_handlers() {
+    // `start_login_provider` crosses the process-global bus for providers that
+    // skip the interactive prompt (Alphax Free auto-saves its bundled key and
+    // then publishes a `LoginCompleted`). Without this guard the loop leaks
+    // that event into whatever other test is subscribed to the global bus,
+    // which is exactly how an unrelated `LoginCompleted { provider: "Alphax
+    // Free", success: false }` used to fail the Cerebras paste-key lifecycle
+    // test under `--test-threads=4`. Hold the lock for the whole body, and
+    // settle the scratch home first so nothing takes the env lock while the
+    // bus lock is held (the established order is env-then-bus).
+    ensure_test_alphacode_home_if_unset();
+    let _bus_guard = crate::bus::Bus::test_bus_lock();
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _guard = runtime.enter();
     let unsupported_needles = [

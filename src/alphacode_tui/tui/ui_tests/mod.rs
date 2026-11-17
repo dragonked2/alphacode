@@ -257,6 +257,11 @@ struct TestState {
     help_query: String,
     help_search_editing: bool,
     chat_native_scrollbar: bool,
+    /// Absolute transcript scroll offset the viewport resolves to when
+    /// `auto_scroll_paused` is set, so a test can drive the scrolled state
+    /// (and the `↑N` / `↓N` overflow affordances) through the real layout.
+    scroll_offset: usize,
+    auto_scroll_paused: bool,
     onboarding_preview: bool,
     suggestions: Vec<(String, String)>,
     compacted_hidden_user_prompts: usize,
@@ -338,10 +343,10 @@ impl crate::alphacode_tui::tui::TuiState for TestState {
         &self.pending_soft_interrupts
     }
     fn scroll_offset(&self) -> usize {
-        0
+        self.scroll_offset
     }
     fn auto_scroll_paused(&self) -> bool {
-        false
+        self.auto_scroll_paused
     }
     fn provider_name(&self) -> String {
         self.provider_name
