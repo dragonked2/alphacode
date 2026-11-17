@@ -112,6 +112,13 @@ fn composer_review_scroll_feedback_and_shortcuts_share_the_existing_border() {
     assert!(footer.contains("Enter send"), "{footer}");
     assert!(footer.contains("21-24/24"), "{footer}");
     assert!(footer.contains("Alt+Enter newline"), "{footer}");
+    // Alt/Option+Enter and a trailing `\` then Enter are the same newline
+    // action (as is Shift+Enter under the kitty keyboard protocol). The footer
+    // used to list two of them as separate hints, spending width on a repeat.
+    assert!(
+        !footer.contains("\\+Enter"),
+        "the footer must not repeat the newline hint: {footer}"
+    );
 }
 
 #[test]

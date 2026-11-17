@@ -42,8 +42,12 @@ fn actions(mode: ComposerMode, app: &dyn TuiState) -> Vec<(&'static str, &'stati
         actions.push(("@", "files"));
     }
     actions.push(("Ctrl+R", "history"));
+    // One newline affordance, not three. Shift+Enter (kitty keyboard
+    // protocol), Alt/Option+Enter, and a trailing `\` then Enter all insert
+    // a newline (`newline::enter_inserts_newline`). Listing the last two as
+    // separate "Alt+Enter newline" and "\+Enter newline" rows spent footer
+    // width repeating one action and made the footer look uncurated.
     actions.push(("Ctrl+F", "find"));
-    actions.push(("\\+Enter", "newline"));
     actions
 }
 
