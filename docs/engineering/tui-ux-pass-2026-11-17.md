@@ -25,9 +25,13 @@ Consequences observed on CI runs `44094511225` / `44094510987`:
 
 Fixed by removing the stray brace (commit `79a89d0e`).
 
-Note: the v1.1.10 tag still points at the broken commit `61fbfff4`. The
-release workflow only runs on `v*.*.*` tag pushes, so the tag has to be
-re-pointed at a commit whose CI is green before `publish release` can pass.
+The release workflow only runs on `v*.*.*` tag pushes, and its
+`publish release` job blocks on "Require green CI for this source revision".
+Because the tag pointed at the uncompilable commit, no amount of retrying
+could ever publish it. The lightweight tag was therefore re-pointed from
+`61fbfff4` to `cd05ad78`, a commit whose `ci` run is fully green; the release
+run `44142105576` then completed with `publish release` succeeded.
+No tag message was lost: `v1.1.10` was a lightweight tag.
 
 ## 2. Cross-test leak that made the Cerebras test flaky
 
@@ -84,7 +88,12 @@ The affordance now reserves its own cells before the transcript is painted:
 | `cargo clippy --lib --all-targets -- -D warnings` | pass (CI's exact clippy invocation) |
 | `cargo test --lib overflow_indicator_uses_cell_width_and_never_overwrites_transcript_text` | pass |
 | `cargo test --lib -- --test-threads=4 test_tui_cerebras_paste_key_lifecycle test_tui_login_providers_have_real_tui_handlers` | 2 passed |
-| CI `44128066266` (commit `c9e48156`) | clippy, perf gates, ubuntu/windows builds+tests, installer smoke, evaluation runners: pass; macOS jobs still running at time of writing |
+| CI `44128066266` (commit `c9e48156`) | all 13 jobs pass |
+| CI `44133829088` (commit `cd05ad78`, tagged) | all 13 jobs pass |
+| release `44142105576` (tag `v1.1.10`) | all 9 jobs pass, including `publish release` |
+
+Release `v1.1.10` is published (`draft=false`) with 17 assets: eight platform
+archives, their per-asset `.sha256` files, and the combined `SHA256SUMS`.
 
 ## Limitations
 
