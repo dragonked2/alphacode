@@ -93,6 +93,7 @@ A single `Alt+Enter newline` entry now covers the action, and
 `composer_review_scroll_feedback_and_shortcuts_share_the_existing_border`
 asserts the duplicate hint is absent. Rendered frames at 80/120/200 columns
 show the footer ending at `Ctrl+F find` with the border closed.
+
 ## Verification
 
 | Command | Result |
