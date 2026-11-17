@@ -1,0 +1,95 @@
+# TUI/UX improvement pass — 2026-11-17
+
+Scope: TUI rendering, input, layout, and release CI. Both changes were
+verified on the exact failing paths; nothing here is a redesign.
+
+## 1. Release blocker: 1.1.10 could never publish
+
+`61fbfff4` ("Fix flaky session_watchdog test assertion") edited
+`test_tui_cerebras_paste_key_lifecycle_has_no_degraded_success_messages`
+and left an unbalanced `}` (a duplicate close after `else if ...`). That is a
+parse error, so `cargo test --lib` could not compile on any platform:
+
+```
+error: unexpected closing delimiter: `}`
+  --> src/alphacode_tui/tui/app/tests/state_model_poke_03.rs:949:1
+```
+
+Consequences observed on CI runs `44094511225` / `44094510987`:
+
+- `ci` / `test (ubuntu-24.04)`, `test (macos-15-intel)`, `test
+  (windows-latest)` all failed.
+- `release` / `publish release` failed at "Require green CI for this source
+  revision", so the v1.1.10 tag was left with build artifacts but a **draft**
+  release and a failing run.
+
+Fixed by removing the stray brace (commit `79a89d0e`).
+
+Note: the v1.1.10 tag still points at the broken commit `61fbfff4`. The
+release workflow only runs on `v*.*.*` tag pushes, so the tag has to be
+re-pointed at a commit whose CI is green before `publish release` can pass.
+
+## 2. Cross-test leak that made the Cerebras test flaky
+
+`test_tui_login_providers_have_real_tui_handlers` iterates every TUI login
+provider. Alphax Free skips the interactive prompt (bundled key), so
+`start_login_provider` reaches `start_openai_compatible_post_login_activation`
+and, when `provider.set_model` fails against the test double, publishes
+`LoginCompleted { provider: "Alphax Free", success: false }` on the
+**process-global** bus (`auth.rs`). The test did not hold
+`Bus::test_bus_lock()`, so under `--test-threads=4` that event was delivered
+to any concurrently running subscriber — in practice the Cerebras paste-key
+test, which asserts "no late failed login event after successful auth".
+
+Fixed by holding `Bus::test_bus_lock()` for that test body, taken after
+`ensure_test_alphacode_home_if_unset()` so the established env-then-bus lock
+order is preserved (the env helper uses a bounded try-lock, so neither order
+can block forever).
+
+## 3. `↑N` / `↓N` overflow affordance: byte length used as cell width
+
+`draw_messages` computed the affordance geometry from `String::len()`:
+
+```rust
+let indicator = format!("↑{}", scroll);      // e.g. "↑14"
+x:     render_area.width.saturating_sub(indicator.len() as u16 + 2),
+width: indicator.len() as u16,
+```
+
+`↑14` is 5 UTF-8 bytes but 3 cells, so the glyphs were drawn two columns to
+the left of where they were measured — and they were painted *after* the
+transcript paragraph, so they overwrote content. Offscreen render evidence at
+40 columns:
+
+```
+0| /model               Choose a mo↑14
+```
+
+The affordance now reserves its own cells before the transcript is painted:
+
+- it is planned after the row margins are known but before
+  `frame.render_widget(Paragraph::new(visible_lines), ...)`;
+- if a host row has less free right margin than the affordance is wide, the
+  row is trimmed with a dim ellipsis (`truncate_line_for_copy_badge`) to make
+  exactly the room it needs, so content is never silently covered;
+- geometry is measured with `UnicodeWidthStr::width`, and the rect is flush
+  against `content_area.right()`.
+
+## Verification
+
+| Command | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | pass |
+| `cargo check --lib --tests` | pass |
+| `cargo clippy --lib --all-targets -- -D warnings` | pass (CI's exact clippy invocation) |
+| `cargo test --lib overflow_indicator_uses_cell_width_and_never_overwrites_transcript_text` | pass |
+| `cargo test --lib -- --test-threads=4 test_tui_cerebras_paste_key_lifecycle test_tui_login_providers_have_real_tui_handlers` | 2 passed |
+| CI `44128066266` (commit `c9e48156`) | clippy, perf gates, ubuntu/windows builds+tests, installer smoke, evaluation runners: pass; macOS jobs still running at time of writing |
+
+## Limitations
+
+- The regression test drives the offscreen `TestBackend`; it does not
+  exercise a live terminal, so font shaping and reader-to-flush latency remain
+  unmeasured for this change.
+- Only the non-native-scrollbar affordance path was corrected. The native
+  scrollbar's thumb geometry was already cell-based and is unchanged.
