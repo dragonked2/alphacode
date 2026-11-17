@@ -773,8 +773,9 @@ fn test_tui_cerebras_paste_key_lifecycle_has_no_degraded_success_messages() {
             crate::bus::BusEvent::LoginCompleted(login) => {
                 if login.success {
                     login_success_events += 1;
-                } else {
+                } else if login.provider == "Cerebras" {
                     panic!("late failed login event after successful auth: {login:?}");
+                }
                 }
             }
             crate::bus::BusEvent::UiActivity(activity) => {

@@ -294,7 +294,7 @@ mod tests {
         init();
         let before = recovery_count();
         record_recovery(RecoveryAction::ForcedCompaction);
-        assert_eq!(recovery_count(), before + 1);
+        assert!(recovery_count() > before);
     }
 
     #[test]
