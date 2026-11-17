@@ -363,11 +363,30 @@ impl Tool for InvestigationTool {
                     params.max_risk.unwrap_or(u32::MAX),
                     |lead| !state.plans.contains_key(&lead.id),
                 );
-                Ok(
-                    json!({"lead":lead,"planned_call":lead.and_then(|lead| state.plans.get(&lead.id)),
-                        "planning_lead":planning_lead,"budget_exhausted":state.ledger.exhausted(),
-                        "interpretation":"lead is dispatch-ready under planning limits; planning_lead needs a plan. A null lead does not establish completed coverage. Inspect status for reassessment, blocked, indeterminate or spent work."}),
-                )
+                let gaps: Vec<_> = state
+                    .research
+                    .investigation
+                    .coverage_gaps()
+                    .into_iter()
+                    .take(3)
+                    .map(|a| a.locator.clone())
+                    .collect();
+                let pending_reassessments = state
+                    .research
+                    .investigation
+                    .leads()
+                    .values()
+                    .filter(|l| l.research.reassessment_pending())
+                    .count();
+                Ok(json!({
+                    "lead": lead,
+                    "planned_call": lead.and_then(|lead| state.plans.get(&lead.id)),
+                    "planning_lead": planning_lead,
+                    "budget_exhausted": state.ledger.exhausted(),
+                    "coverage_gap_samples": gaps,
+                    "pending_reassessments": pending_reassessments,
+                    "interpretation": "lead is dispatch-ready; planning_lead needs a plan. A null lead does not mean complete coverage. If no dispatch-ready lead exists, review gaps, blocked/inconclusive leads, and pending reassessments, then plan, resolve, or pivot."
+                }))
             })?,
             "execute" => {
                 let call_suffix = format!(":{}:experiment", params.lead_id);

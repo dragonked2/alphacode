@@ -1576,7 +1576,7 @@ impl Registry {
             .collect()
     }
 
-    /// Estimate token count for a string (chars / 4, matching compaction heuristic)
+    /// Estimate token count for a string (shared heuristic, matching compaction).
     fn estimate_tokens(s: &str) -> usize {
         crate::util::estimate_tokens(s)
     }

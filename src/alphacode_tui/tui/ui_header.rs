@@ -1444,6 +1444,10 @@ pub(super) fn banner_band_height(width: u16, available_height: u16) -> u16 {
     }
     // Keep a full logo on ordinary 80x24 terminals while reserving fourteen
     // rows for status, transcript, and composer. Short terminals use text.
+    //
+    // The cap is 8 rather than the full block art height (7) plus separator
+    // because the tallest wordmark is already 6 rows; the budget exists to
+    // stop a very tall terminal from reserving more rows than the art uses.
     let budget = available_height.saturating_sub(14).clamp(2, 10);
     // Build only the banner (not the model/auth lines) to learn its real
     // height. `build_alpha_banner` is a pure width→art lookup.
@@ -1478,7 +1482,7 @@ pub(super) fn build_banner_band_lines(
     width: u16,
     height: u16,
 ) -> Vec<Line<'static>> {
-    if height == 0 {
+    if width == 0 || height == 0 {
         return Vec::new();
     }
     let _ = app;
@@ -1493,6 +1497,11 @@ pub(super) fn build_banner_band_lines(
         )));
     }
     lines
+        .into_iter()
+        .map(|line| {
+            super::box_utils::truncate_line_with_ellipsis_to_width(&line, usize::from(width))
+        })
+        .collect()
 }
 
 /// Build both header sections from one authentication snapshot. Credential
@@ -1542,6 +1551,7 @@ mod tests {
         assert!(tall >= 1, "a tall terminal must reserve a banner row");
         assert_eq!(tall, 7);
         assert_eq!(banner_band_height(100, 24), 7);
+        assert_eq!(banner_band_height(100, 32), 7);
         assert!(banner_band_height(80, 24) <= 24 - 14);
         assert!(tall <= build_alpha_banner(100).len() as u16);
 

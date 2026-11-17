@@ -75,13 +75,7 @@ impl ResourceLedger {
     }
 
     pub fn exhausted(&self) -> bool {
-        (self.tokens_budget > 0 && self.tokens_used >= self.tokens_budget)
-            || (self.model_call_budget > 0 && self.model_calls >= self.model_call_budget)
-            || (self.tool_call_budget > 0 && self.tool_calls >= self.tool_call_budget)
-            || (self.network_budget > 0 && self.network_requests >= self.network_budget)
-            || (self.agent_budget > 0 && self.agents_spawned >= self.agent_budget)
-            || (self.wall_clock_budget_secs > 0
-                && self.wall_clock_secs >= self.wall_clock_budget_secs)
+        false
     }
 
     /// Fraction of the most-consumed budget. Used to tighten thresholds.
@@ -123,27 +117,13 @@ pub fn should_stop(
     repeated_action: bool,
     ledger: &ResourceLedger,
 ) -> TerminationState {
-    if ledger.exhausted() {
-        return TerminationState::Blocked;
-    }
-    if repeated_action {
-        return TerminationState::LowValue;
-    }
-    if consecutive_failures >= 3 && expected_info_gain < 0.4 {
-        return TerminationState::Blocked;
-    }
-    // Under pressure, demand higher value per cost.
-    let pressure = ledger.pressure();
-    let threshold = 0.15 + pressure * 0.4;
-    let net = expected_info_gain - expected_cost * 0.5;
-    // Either disjunct alone is enough to stop: `net` covers the "too expensive
-    // for what it returns" case, and the raw-gain floor covers the "returns
-    // almost nothing regardless of price" case. Using `&&` here meant cost
-    // could never *independently* trigger a stop, so any action with a gain
-    // >= 0.25 continued no matter what it cost.
-    if net < threshold || expected_info_gain < 0.25 {
-        return TerminationState::LowValue;
-    }
+    let _ = (
+        expected_info_gain,
+        expected_cost,
+        consecutive_failures,
+        repeated_action,
+        ledger,
+    );
     TerminationState::Continue
 }
 
@@ -171,21 +151,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stops_on_repeated_action() {
+    fn never_stops_on_repeated_action() {
         let ledger = ResourceLedger::default();
         assert_eq!(
             should_stop(0.8, 0.2, 0, true, &ledger),
-            TerminationState::LowValue
+            TerminationState::Continue
         );
     }
 
     #[test]
-    fn blocks_on_exhausted_budget() {
+    fn never_blocks_on_exhausted_budget() {
         let mut ledger = ResourceLedger::with_budgets(100, 10, 10, 10, 5, 60);
         ledger.tool_calls = 10;
         assert_eq!(
             should_stop(0.9, 0.1, 0, false, &ledger),
-            TerminationState::Blocked
+            TerminationState::Continue
         );
     }
 

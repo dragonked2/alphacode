@@ -196,7 +196,8 @@ fn command_suggestions_overlay_rect(
     line_count: u16,
     frame_area: Rect,
 ) -> Option<Rect> {
-    if line_count == 0 || input_area.width == 0 {
+    let input_area = input_area.intersection(frame_area);
+    if line_count == 0 || input_area.width == 0 || input_area.height == 0 {
         return None;
     }
     let below_start = input_area.y.saturating_add(input_area.height);
@@ -280,6 +281,112 @@ fn fit_command_suggestion_lines_to_height(
     fitted
 }
 
+/// Request the menu rectangle for the chrome we will actually draw.
+///
+/// A framed menu needs two extra rows for its border, an unframed one needs
+/// none. Asking for the bordered height and then drawing without borders would
+/// leave two blank rows at the bottom of the overlay and could push a menu that
+/// would have fit below the input into the flip-above branch instead. So this
+/// tries the framed geometry first and falls back to the exact unframed height.
+fn input_menu_rect(input_area: Rect, frame_area: Rect, body_rows: u16) -> Option<(Rect, bool)> {
+    let framed_rows = body_rows.saturating_add(2);
+    if let Some(rect) = command_suggestions_overlay_rect(input_area, framed_rows, frame_area) {
+        // The overlay rect may be clipped by the frame; only call it framed
+        // when both border rows and usable inner columns actually survive.
+        let inner = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .inner(rect);
+        if rect.width >= 20 && rect.height >= 5 && inner.height >= body_rows {
+            return Some((rect, true));
+        }
+    }
+    command_suggestions_overlay_rect(input_area, body_rows, frame_area).map(|rect| (rect, false))
+}
+
+fn draw_input_menu(
+    frame: &mut Frame,
+    input_area: Rect,
+    title: &str,
+    mut lines: Vec<Line<'static>>,
+    has_query_header: bool,
+) {
+    let body_rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let Some((rect, framed)) = input_menu_rect(input_area, frame.area(), body_rows) else {
+        return;
+    };
+    let background = crate::alphacode_tui_style::theme::tool_bg_color();
+    let mut block = ratatui::widgets::Block::default().style(Style::default().bg(background));
+    if framed {
+        let title = super::box_utils::truncate_line_with_ellipsis_to_width(
+            &Line::from(format!(" {title} ")),
+            usize::from(rect.width.saturating_sub(4)),
+        );
+        block = block
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_type(crate::alphacode_tui_style::Radius::Card.to_border_type())
+            .border_style(Style::default().fg(BrandTheme::accent()))
+            .title(title.style(Style::default().fg(BrandTheme::accent()).bold()));
+    }
+    let content = block.inner(rect);
+    let height = usize::from(content.height);
+    if has_query_header && lines.len() > height && height > 1 {
+        let header = lines.remove(0);
+        lines = fit_command_suggestion_lines_to_height(lines, height - 1);
+        lines.insert(0, header);
+    } else {
+        if has_query_header && lines.len() > height && !lines.is_empty() {
+            lines.remove(0);
+        }
+        lines = fit_command_suggestion_lines_to_height(lines, height);
+    }
+    let selection_bg = super::selection_highlight::selection_bg_for(None);
+    lines = lines
+        .into_iter()
+        .map(|line| {
+            let mut line = truncate_line_with_ellipsis(line, usize::from(content.width))
+                .alignment(Alignment::Left);
+            // Pad the selected row so its highlight is one continuous bar
+            // across the menu instead of a few colored words. Done after
+            // truncation because that is the first point where the painted
+            // width of the row is final.
+            if menu_row_is_selected(&line) {
+                let painted = line.width();
+                if let Some(padding) = usize::from(content.width).checked_sub(painted)
+                    && padding > 0
+                {
+                    line.spans.push(Span::styled(
+                        " ".repeat(padding),
+                        Style::default().bg(selection_bg),
+                    ));
+                }
+            }
+            line
+        })
+        .collect();
+    frame.render_widget(ratatui::widgets::Clear, rect);
+    frame.render_widget(block, rect);
+    frame.render_widget(Paragraph::new(lines), content);
+}
+
+/// Mark a menu row as the selected one: bold text on the selection surface.
+///
+/// The full-width bar is added later by [`draw_input_menu`], which is the first
+/// place that knows the final inner width after truncation. Padding here would
+/// be truncated away or, worse, turn into an ellipsis.
+fn selected_menu_row(mut line: Line<'static>) -> Line<'static> {
+    let background = super::selection_highlight::selection_bg_for(None);
+    line.style = line.style.bg(background).add_modifier(Modifier::BOLD);
+    for span in &mut line.spans {
+        span.style = span.style.bg(background);
+    }
+    line
+}
+
+/// True when `line` was produced by [`selected_menu_row`].
+fn menu_row_is_selected(line: &Line<'static>) -> bool {
+    line.style.bg == Some(super::selection_highlight::selection_bg_for(None))
+}
+
 /// Draw the Ctrl+R reverse prompt-history search overlay. Reuses the
 /// command-palette positioning: floats below (or above) the input without
 /// reserving layout height. Shows the query line plus the match list with the
@@ -301,8 +408,8 @@ pub(super) fn draw_prompt_history_search_overlay(
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(vec![
         Span::styled("History search  ", dim),
-        Span::styled(view.query.clone(), accent),
-        Span::styled("█", accent),
+        Span::styled(normalize_repaint_sensitive_notice_text(&view.query), accent),
+        Span::styled("▏", accent),
     ]));
 
     if view.matches.is_empty() {
@@ -313,8 +420,8 @@ pub(super) fn draw_prompt_history_search_overlay(
         }
     } else {
         // Keep the selected row inside the visible window.
-        let window_start = view
-            .selected
+        let selected = view.selected.min(view.matches.len().saturating_sub(1));
+        let window_start = selected
             .saturating_sub(VISIBLE_LIMIT.saturating_sub(1))
             .min(
                 view.matches
@@ -328,12 +435,12 @@ pub(super) fn draw_prompt_history_search_overlay(
             .skip(window_start)
             .take(VISIBLE_LIMIT);
         for (index, preview) in visible {
-            let is_selected = index == view.selected;
+            let is_selected = index == selected;
             let marker = if is_selected { "▸ " } else { "  " };
             let style = if is_selected { accent } else { normal };
             let mut spans = vec![
                 Span::styled(marker.to_string(), style),
-                Span::styled(preview.clone(), style),
+                Span::styled(normalize_repaint_sensitive_notice_text(preview), style),
             ];
             if index == window_start + VISIBLE_LIMIT - 1
                 && view.matches.len() > window_start + VISIBLE_LIMIT
@@ -346,7 +453,12 @@ pub(super) fn draw_prompt_history_search_overlay(
                     dim,
                 ));
             }
-            lines.push(Line::from(spans));
+            let line = Line::from(spans);
+            lines.push(if is_selected {
+                selected_menu_row(line)
+            } else {
+                line
+            });
         }
     }
 
@@ -354,25 +466,7 @@ pub(super) fn draw_prompt_history_search_overlay(
         "  Enter insert · ↑↓ select · Esc close",
         dim,
     )));
-    let Some(rect) = command_suggestions_overlay_rect(area, lines.len() as u16, frame.area())
-    else {
-        return;
-    };
-    let height = usize::from(rect.height);
-    if lines.len() > height {
-        let header = lines.remove(0);
-        let show_header = height > 1;
-        lines = fit_command_suggestion_lines_to_height(lines, height - usize::from(show_header));
-        if show_header {
-            lines.insert(0, header);
-        }
-    }
-    lines = lines
-        .into_iter()
-        .map(|line| truncate_line_with_ellipsis(line, area.width as usize))
-        .collect();
-    frame.render_widget(ratatui::widgets::Clear, rect);
-    frame.render_widget(Paragraph::new(lines), rect);
+    draw_input_menu(frame, area, "Prompt history", lines, true);
 }
 
 /// Draw the command-suggestion popover as a late overlay pass.
@@ -384,24 +478,14 @@ pub(super) fn draw_command_suggestions_overlay(frame: &mut Frame, app: &dyn TuiS
     if !command_suggestions_active(app, &suggestions) {
         return;
     }
-    let mut lines = command_suggestion_lines(app, &suggestions, usize::from(area.width));
-    let Some(rect) = command_suggestions_overlay_rect(area, lines.len() as u16, frame.area())
-    else {
-        return;
+    let lines =
+        command_suggestion_lines(app, &suggestions, usize::from(area.width.saturating_sub(2)));
+    let title = if app.has_active_mention() {
+        "Files"
+    } else {
+        "Commands"
     };
-    lines = lines
-        .into_iter()
-        .map(|line| truncate_line_with_ellipsis(line, area.width as usize))
-        .collect();
-    lines = fit_command_suggestion_lines_to_height(lines, rect.height as usize);
-    // Tabular command labels and descriptions share one left edge even when
-    // prose is centered; centering each row independently breaks the columns.
-    lines = lines
-        .into_iter()
-        .map(|line| line.alignment(Alignment::Left))
-        .collect();
-    frame.render_widget(ratatui::widgets::Clear, rect);
-    frame.render_widget(Paragraph::new(lines), rect);
+    draw_input_menu(frame, area, title, lines, false);
 }
 
 fn command_suggestion_lines(
@@ -439,7 +523,10 @@ fn command_suggestion_lines(
             truncate_line_with_ellipsis(Line::from(highlight(cmd, accent_style)), label_budget);
         spans.extend(command.spans);
         spans.push(Span::styled(format!("  {}", desc), desc_selected_style));
-        lines.push(truncate_line_with_ellipsis(Line::from(spans), width));
+        lines.push(selected_menu_row(truncate_line_with_ellipsis(
+            Line::from(spans),
+            width,
+        )));
     } else if !suggestions.is_empty() {
         let selected = app
             .command_suggestion_selected()
@@ -463,11 +550,7 @@ fn command_suggestion_lines(
             .map(|(cmd, _)| unicode_width::UnicodeWidthStr::width(cmd.as_str()))
             .max()
             .unwrap_or(0)
-            .min(width.saturating_sub(4) / 2);
-
-        // The selected row carries a background so the eye can find it
-        // instantly, the same treatment the transcript uses for selections.
-        let selection_bg = super::selection_highlight::selection_bg_for(None);
+            .min(width.saturating_sub(2));
 
         for (i, (cmd, desc)) in limited.iter().enumerate() {
             let is_selected = i == selected_visible;
@@ -492,7 +575,9 @@ fn command_suggestion_lines(
             if cmd_width < label_width {
                 row.push(Span::raw(" ".repeat(label_width - cmd_width)));
             }
-            row.push(Span::styled(format!("  {}", desc), description_style));
+            if label_width + 4 < width {
+                row.push(Span::styled(format!("  {}", desc), description_style));
+            }
             if i == 0 && window_start > 0 {
                 row.push(Span::styled(
                     format!("  ↑{}", window_start),
@@ -507,9 +592,7 @@ fn command_suggestion_lines(
             }
             let mut line = Line::from(row);
             if is_selected {
-                for span in &mut line.spans {
-                    span.style = span.style.bg(selection_bg);
-                }
+                line = selected_menu_row(line);
             }
             lines.push(line);
         }
@@ -545,6 +628,9 @@ fn command_suggestion_lines(
         )));
     }
     lines
+        .into_iter()
+        .map(|line| truncate_line_with_ellipsis(line, width))
+        .collect()
 }
 
 /// Extract the slash-command portion of the typed input that should be matched
@@ -1888,15 +1974,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
     // `right_fact_cell_is_blank` knows this exact colour, so the session-fact
     // stack can still overlay the row's empty right-hand suffix.
     if area.height > 0 && area.width > 0 {
-        let status_bg = STATUS_ROW_BG;
-        for x in area.left()..area.right() {
-            for y in area.top()..area.bottom() {
-                let cell = &mut frame.buffer_mut()[(x, y)];
-                if cell.symbol() == " " || cell.symbol().is_empty() {
-                    cell.set_bg(status_bg);
-                }
-            }
-        }
+        super::fill_background(frame, area, status_row_background());
     }
 
     if app.centered_mode() {
@@ -1904,6 +1982,20 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         return;
     }
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Left offset ratatui uses for a centered line of `line_width` cells inside an
+/// area of `area_width` cells.
+///
+/// Ratatui computes `area_width / 2 - line_width / 2` (see
+/// `Paragraph::get_line_offset`), which is **not** the same as
+/// `(area_width - line_width) / 2` whenever the two widths have different
+/// parity: a 42-cell area holding a 13-cell line centers at 15, not 14.
+/// The composer's caret, click hit-testing and copy-selection margins must all
+/// use ratatui's exact formula, otherwise they drift one cell away from the
+/// painted glyphs and a selection highlight lands on the wrong characters.
+fn centered_line_offset(area_width: u16, line_width: u16) -> u16 {
+    (area_width / 2).saturating_sub(line_width / 2)
 }
 
 fn truncate_line_with_ellipsis(mut line: Line<'static>, max_width: usize) -> Line<'static> {
@@ -2039,8 +2131,12 @@ mod tests {
                     2,
                 ));
             });
-            let copy_snapshot = median_ms(|| {
+            let copy_snapshot_cold = median_ms(|| {
                 black_box(input_copy_snapshot_parts(&input, &segments));
+            });
+            black_box(input_copy_snapshot(&input, &segments));
+            let copy_snapshot_repeat = median_ms(|| {
+                black_box(input_copy_snapshot(&input, &segments));
             });
             let cursor_index = median_ms(|| {
                 black_box(
@@ -2061,7 +2157,8 @@ mod tests {
                 serde_json::json!({
                     "draft_bytes": input.len(), "rows": segments.len(), "width": 116,
                     "median_ms": { "geometry_cold": geometry_cold, "geometry_repeat": geometry_repeat,
-                        "styled_rows": styled_rows, "copy_snapshot": copy_snapshot,
+                        "styled_rows": styled_rows, "copy_snapshot_cold": copy_snapshot_cold,
+                        "copy_snapshot_repeat": copy_snapshot_repeat,
                         "cursor_index": cursor_index, "backspace_boundary": backspace_boundary },
                 })
             );
@@ -2255,6 +2352,64 @@ mod tests {
                     (line, col, col + segment.display_width)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn input_copy_snapshot_reuses_storage_and_invalidates_with_layout() {
+        use std::sync::Arc;
+
+        let input = "a界e\u{301}👩🏽‍💻\r\nnext line\n";
+        let segments = wrap_input_segments(input, 8);
+        let first = input_copy_snapshot(input, &segments);
+        let repeat = input_copy_snapshot(input, &wrap_input_segments(input, 8));
+        assert!(Arc::ptr_eq(
+            &first.wrapped_plain_lines,
+            &repeat.wrapped_plain_lines
+        ));
+        assert!(Arc::ptr_eq(&first.raw_plain_lines, &repeat.raw_plain_lines));
+        assert!(Arc::ptr_eq(
+            &first.wrapped_copy_offsets,
+            &repeat.wrapped_copy_offsets
+        ));
+        assert!(Arc::ptr_eq(
+            &first.wrapped_line_map,
+            &repeat.wrapped_line_map
+        ));
+
+        for (text, width) in [(input, 4), ("same-width edit\n界", 4)] {
+            let segments = wrap_input_segments(text, width);
+            let updated = input_copy_snapshot(text, &segments);
+            let (wrapped, raw, maps) = input_copy_snapshot_parts(text, &segments);
+            assert!(!Arc::ptr_eq(
+                &first.wrapped_plain_lines,
+                &updated.wrapped_plain_lines
+            ));
+            assert_eq!(updated.wrapped_plain_lines.as_ref(), &wrapped);
+            assert_eq!(updated.raw_plain_lines.as_ref(), &raw);
+            assert_eq!(updated.wrapped_line_map.as_ref(), &maps);
+        }
+        // A retained old layout cannot pick up the latest draft's copy text.
+        let old = input_copy_snapshot(input, &segments);
+        assert_eq!(old.raw_plain_lines.as_ref(), first.raw_plain_lines.as_ref());
+    }
+
+    #[test]
+    fn session_fact_blank_exemption_uses_the_resolved_surface_only() {
+        for background in [
+            Color::Rgb(18, 20, 28),
+            Color::Rgb(240, 244, 250),
+            Color::Indexed(236),
+        ] {
+            let mut cell = ratatui::buffer::Cell::default();
+            cell.set_bg(background);
+            assert!(right_fact_cell_is_blank(&cell, background));
+            assert!(!right_fact_cell_is_blank(&cell, Color::Green));
+            cell.set_symbol("x");
+            assert!(!right_fact_cell_is_blank(&cell, background));
+            cell.set_symbol(" ")
+                .set_style(Style::default().add_modifier(Modifier::REVERSED));
+            assert!(!right_fact_cell_is_blank(&cell, background));
         }
     }
 
@@ -4100,10 +4255,11 @@ fn right_fact_area_on_row(
     let fact_right = row_right.saturating_sub(RIGHT_FACT_PAD);
     let fact_left = fact_right.saturating_sub(line.width);
     let probe_left = fact_left.saturating_sub(RIGHT_FACT_GAP);
+    let status_background = status_row_background();
     if probe_left < left
         || !(probe_left..row_right).all(|x| {
             protected_position != Some(Position::new(x, row))
-                && right_fact_cell_is_blank(&buffer[(x, row)])
+                && right_fact_cell_is_blank(&buffer[(x, row)], status_background)
         })
     {
         return None;
@@ -4118,11 +4274,13 @@ fn right_fact_area_on_row(
 /// single named exemption instead of relaxing the "styled blank is occupied"
 /// rule generally. Hoisted here so the fill and the exemption cannot drift
 /// apart.
-const STATUS_ROW_BG: Color = Color::Rgb(18, 20, 28);
+fn status_row_background() -> Color {
+    crate::alphacode_tui_style::theme::tool_bg_color()
+}
 
-fn right_fact_cell_is_blank(cell: &ratatui::buffer::Cell) -> bool {
+fn right_fact_cell_is_blank(cell: &ratatui::buffer::Cell, status_background: Color) -> bool {
     cell.symbol().trim().is_empty()
-        && (cell.bg == Color::Reset || cell.bg == STATUS_ROW_BG)
+        && (cell.bg == Color::Reset || cell.bg == status_background)
         && cell.modifier.is_empty()
         && cell.diff_option != ratatui::buffer::CellDiffOption::Skip
 }
@@ -4348,18 +4506,20 @@ pub(super) fn draw_input(
     // per-row left margins, so hit-testing and the copied text only ever
     // cover the typed text, never the prompt decoration.
     if visible_input_rows > 0 {
-        let (wrapped_plain, raw_plain, line_map) =
-            input_copy_snapshot_parts(input_text, &wrapped_segments);
+        let copy_data = input_copy_snapshot(input_text, &wrapped_segments);
         let left_margins: Vec<u16> = (0..visible_input_rows)
             .map(|rel| {
                 let abs = scroll_offset + rel;
-                let text_width = wrapped_plain
+                let text_width = wrapped_segments
                     .get(abs)
-                    .map(|text| unicode_width::UnicodeWidthStr::width(text.as_str()))
+                    .map(|segment| segment.display_width)
                     .unwrap_or(0);
                 let mut margin = prompt_len;
                 if centered {
-                    margin += (area.width as usize).saturating_sub(prompt_len + text_width) / 2;
+                    margin += usize::from(centered_line_offset(
+                        area.width,
+                        (prompt_len + text_width).min(usize::from(u16::MAX)) as u16,
+                    ));
                 }
                 margin.min(area.width as usize) as u16
             })
@@ -4371,9 +4531,7 @@ pub(super) fn draw_input(
             visible_input_rows as u16,
         );
         super::record_input_copy_snapshot(
-            wrapped_plain,
-            raw_plain,
-            line_map,
+            copy_data,
             scroll_offset,
             scroll_offset + visible_input_rows,
             input_rows_area,
@@ -4453,43 +4611,31 @@ pub(super) fn draw_input(
                 let Some(line) = lines.get_mut(suggestions_offset + rel) else {
                     continue;
                 };
-                // In centered mode the whole row is shifted by the row's own
-                // centering offset, so the highlight columns move with it.
-                let x_offset = if centered {
-                    (area.width as usize).saturating_sub(line.width()) / 2
-                } else {
-                    0
-                };
-                *line = highlight_line_selection(
-                    line,
-                    x_offset + prompt_len + start_col,
-                    x_offset + prompt_len + end_col,
-                );
+                // Highlight columns are relative to the logical Line. The
+                // paragraph applies centering afterwards; adding that screen
+                // offset here would highlight the wrong text (or nothing).
+                *line =
+                    highlight_line_selection(line, prompt_len + start_col, prompt_len + end_col);
             }
         }
     }
 
-    // Show a dim inline preview for a unique recent-prompt match. It is added
-    // after selection painting so preview text is never copied or highlighted
-    // as if it were part of the user's actual draft.
-    if !has_suggestions
+    // Preview is painted separately from the draft after selection painting,
+    // so it is never copied, selected, or included in centering geometry.
+    let history_preview = if !has_suggestions
         && !mode.is_shell()
         && !app.is_processing()
         && cursor_pos == input_text.len()
         && app.copy_selection_range().is_none()
         && app.input_selection_range().is_none()
-        && let Some(last_line) =
-            lines.get_mut(suggestions_offset + cursor_line.saturating_sub(scroll_offset))
-        && let Some(suffix) =
-            app.input_history_completion_suffix(line_width.saturating_sub(cursor_col))
+        && lines
+            .get(suggestions_offset + cursor_line.saturating_sub(scroll_offset))
+            .is_some()
     {
-        last_line.spans.push(Span::styled(
-            suffix,
-            Style::default()
-                .fg(dim_color())
-                .add_modifier(Modifier::ITALIC),
-        ));
-    }
+        app.input_history_completion_suffix(line_width.saturating_sub(cursor_col))
+    } else {
+        None
+    };
 
     // Rounded frame: walls first, then the paragraph paints its rows into the
     // interior so text and hints never ride on the border cells. Static (not
@@ -4538,37 +4684,52 @@ pub(super) fn draw_input(
         total_input_lines,
     );
 
-    let paragraph = if centered {
-        Paragraph::new(
-            lines
-                .iter()
-                .map(|l| l.clone().alignment(Alignment::Center))
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        Paragraph::new(lines.clone())
-    };
-    frame.render_widget(paragraph, area);
-
     let cursor_screen_line = cursor_line.saturating_sub(scroll_offset) + suggestions_offset;
     let cursor_y = area.y + (cursor_screen_line as u16).min(area.height.saturating_sub(1));
 
-    let cursor_x = if centered {
+    let cursor_offset = if centered {
         let actual_line_width = lines
             .get(cursor_screen_line)
             .map(|l| l.width())
             .unwrap_or(prompt_len);
-        let center_offset = (area.width as usize).saturating_sub(actual_line_width) / 2;
-        let cursor_offset = prompt_len + cursor_col;
-        area.x + center_offset as u16 + cursor_offset as u16
+        let center_offset = usize::from(centered_line_offset(
+            area.width,
+            actual_line_width.min(usize::from(u16::MAX)) as u16,
+        ));
+        center_offset + prompt_len + cursor_col
     } else {
-        area.x + prompt_len as u16 + cursor_col as u16
+        prompt_len + cursor_col
     };
 
+    if centered {
+        for line in &mut lines {
+            line.alignment = Some(Alignment::Center);
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+
     let cursor = Position::new(
-        cursor_x.min(area.right().saturating_sub(1)),
+        area.x
+            .saturating_add(u16::try_from(cursor_offset).unwrap_or(u16::MAX))
+            .min(area.right().saturating_sub(1)),
         cursor_y.min(area.bottom().saturating_sub(1)),
     );
+    // Ghost text is a separate paint layer, not part of the editable Line.
+    // It must never recenter the draft or change click/copy/caret geometry.
+    if let Some(suffix) = history_preview {
+        let preview_width = area
+            .right()
+            .saturating_sub(cursor.x)
+            .saturating_sub(reserved_width as u16);
+        frame.render_widget(
+            Paragraph::new(suffix).style(
+                Style::default()
+                    .fg(dim_color())
+                    .add_modifier(Modifier::ITALIC),
+            ),
+            Rect::new(cursor.x, cursor.y, preview_width, 1),
+        );
+    }
     frame.set_cursor_position(cursor);
     draw_send_mode_indicator(frame, app, area);
     Some(cursor)
@@ -4646,6 +4807,33 @@ fn input_copy_snapshot_parts(
     (wrapped_plain, raw_lines, line_map)
 }
 
+/// Build copy text once per retained layout, rather than cloning every row on
+/// idle repaints and caret movement. Pointer identity ties this to the exact
+/// content/width geometry without hashing the draft a second time.
+fn input_copy_snapshot(
+    input: &str,
+    segments: &std::rc::Rc<Vec<WrappedInputSegment>>,
+) -> super::InputCopySnapshotData {
+    let build = || {
+        let (wrapped, raw, map) = input_copy_snapshot_parts(input, segments);
+        super::InputCopySnapshotData {
+            wrapped_copy_offsets: std::sync::Arc::new(vec![0; wrapped.len()]),
+            wrapped_plain_lines: std::sync::Arc::new(wrapped),
+            raw_plain_lines: std::sync::Arc::new(raw),
+            wrapped_line_map: std::sync::Arc::new(map),
+        }
+    };
+    INPUT_LAYOUT_CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        match slot.as_mut() {
+            Some(cached) if std::rc::Rc::ptr_eq(segments, &cached.segments) => {
+                cached.copy_snapshot.get_or_insert_with(build).clone()
+            }
+            _ => build(),
+        }
+    })
+}
+
 // Retain one bounded large draft. Falling out of this cache used to repeat
 // full grapheme layout during both height measurement and drawing each key.
 const INPUT_LAYOUT_CACHE_BYTES: usize = 4 * 1024 * 1024;
@@ -4655,6 +4843,7 @@ struct InputLayoutCache {
     input: String,
     width: usize,
     segments: std::rc::Rc<Vec<WrappedInputSegment>>,
+    copy_snapshot: Option<super::InputCopySnapshotData>,
 }
 
 thread_local! {
@@ -4685,6 +4874,7 @@ fn wrap_input_segments(input: &str, line_width: usize) -> std::rc::Rc<Vec<Wrappe
                 input: input.to_string(),
                 width: line_width,
                 segments: std::rc::Rc::clone(&segments),
+                copy_snapshot: None,
             })
         } else {
             None
@@ -4923,7 +5113,10 @@ pub(crate) fn input_cursor_pos_from_screen(
 
     let actual_line_width = prompt_len + segment.display_width;
     let text_start_x = if app.centered_mode() {
-        let center_offset = (area.width as usize).saturating_sub(actual_line_width) / 2;
+        let center_offset = usize::from(centered_line_offset(
+            area.width,
+            actual_line_width.min(usize::from(u16::MAX)) as u16,
+        ));
         area.x as usize + center_offset + prompt_len
     } else {
         area.x as usize + prompt_len

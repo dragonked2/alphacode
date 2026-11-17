@@ -1340,39 +1340,52 @@ where
                 }
             }
         }
+        // `new_tab=true` is a preference, not a reason to dead-end the whole
+        // browser tool. Once this session owns its bounded number of tabs,
+        // recycle the least-recently-used compatible live tab. Reusing is safe:
+        // only tabs allocated/claimed by this session are in `owned`, and every
+        // subsequent action remains explicitly pinned to the selected tab id.
+        if target.is_none() {
+            let limit = managed_open_limit();
+            let at_capacity = open_states()
+                .as_ref()
+                .and_then(|states| states.get(session))
+                .is_some_and(|state| state.owned.len() >= limit);
+            if at_capacity {
+                let inventory = bridge("listTabs", json!({})).await?;
+                let tabs = inventory["tabs"]
+                    .as_array()
+                    .context("Firefox returned no tab inventory")?;
+                let live_ids: std::collections::HashSet<_> = tabs
+                    .iter()
+                    .map(|tab| tab_id_from_value(tab).context("Firefox tab has no ID"))
+                    .collect::<Result<_>>()?;
+                if let Some(state) = open_states()
+                    .as_mut()
+                    .and_then(|states| states.get_mut(session))
+                {
+                    state.owned.retain(|tab| live_ids.contains(&tab.id));
+                    if state.owned.len() >= limit {
+                        target = state.owned.iter().find_map(|owned| {
+                            tabs.iter().find(|tab| owned.matches(tab, &params)).cloned()
+                        });
+                        anyhow::ensure!(
+                            target.is_some(),
+                            "This session owns {limit} browser tabs, but none match the requested window or container. Pass an owned tab_id, close one, or omit the window/container constraint."
+                        );
+                        reused = true;
+                    }
+                }
+                if let Some(id) = session_tab_pin(session)
+                    && !live_ids.contains(&id)
+                {
+                    forget_session_tab(session, id);
+                }
+            }
+        }
         let tab = match target {
             Some(tab) => tab,
             None => {
-                let limit = managed_open_limit();
-                let at_capacity = open_states()
-                    .as_ref()
-                    .and_then(|states| states.get(session))
-                    .is_some_and(|state| state.owned.len() >= limit);
-                if at_capacity {
-                    let inventory = bridge("listTabs", json!({})).await?;
-                    let tabs = inventory["tabs"]
-                        .as_array()
-                        .context("Firefox returned no tab inventory")?;
-                    let live_ids: std::collections::HashSet<_> = tabs
-                        .iter()
-                        .map(|tab| tab_id_from_value(tab).context("Firefox tab has no ID"))
-                        .collect::<Result<_>>()?;
-                    if let Some(state) = open_states()
-                        .as_mut()
-                        .and_then(|states| states.get_mut(session))
-                    {
-                        state.owned.retain(|tab| live_ids.contains(&tab.id));
-                        anyhow::ensure!(
-                            state.owned.len() < limit,
-                            "This session has reached its {limit}-tab limit. Close an owned tab or reuse a tab by passing its tab_id."
-                        );
-                    }
-                    if let Some(id) = session_tab_pin(session)
-                        && !live_ids.contains(&id)
-                    {
-                        forget_session_tab(session, id);
-                    }
-                }
                 let marker = format!("about:blank#alphacode-{}", uuid::Uuid::new_v4());
                 if let Some(state) = open_states()
                     .as_mut()
@@ -1755,6 +1768,13 @@ fn enrich_browser_error(action: &str, err: anyhow::Error) -> anyhow::Error {
                 "{msg}\n\nHint: JS syntax error — usually a stray `)` / `}}` or an unfinished arrow function. End eval scripts with `return <value>` and check bracket balance. Prefer small scripts: snapshot first, then one focused eval."
             );
         }
+        // Preserve the bridge's full diagnostic and always provide a concrete
+        // recovery route for errors whose browser/extension wording we do not
+        // recognize yet. The TUI status row is intentionally compact, but the
+        // tool result now remains useful instead of ending at "Firefox script…".
+        return anyhow::anyhow!(
+            "{msg}\n\nHint: Firefox rejected the script. Run a snapshot to confirm the selected tab and page state, then retry one small expression ending in `return <value>`. If the script uses page-defined variables or functions, set `page_world: true`; otherwise leave it false. Eval is never auto-retried because the first attempt may already have changed the page."
+        );
     }
     if (action == "select" || action == "fill_form") && lower.contains("no element") {
         return anyhow::anyhow!(
@@ -1796,7 +1816,10 @@ fn enrich_browser_error(action: &str, err: anyhow::Error) -> anyhow::Error {
 }
 
 fn bridge_is_evaluate(msg: &str) -> bool {
-    msg.contains("Evaluate error")
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("evaluate error")
+        || lower.contains("action 'evaluate' failed")
+        || lower.contains("firefox script")
 }
 
 /// Convert the public eval forms (`expr`, `return expr`, and top-level
@@ -3537,7 +3560,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_open_recovers_capacity_after_manual_closure() {
+    async fn explicit_open_recycles_at_capacity_and_recovers_after_manual_closure() {
         let session = "fake-bridge-tab-capacity";
         let limit = managed_open_limit() as i64;
         open_states().get_or_insert_with(HashMap::new).insert(
@@ -3567,19 +3590,19 @@ mod tests {
                         Ok(json!({"tabs":tabs}))
                     }
                     "newSession" if closed_tab => Ok(json!({"tabId":limit + 1})),
-                    "navigate" if closed_tab => {
-                        assert_eq!(params["tabId"], limit + 1);
-                        Ok(json!({"tabId":limit + 1}))
+                    "navigate" => {
+                        let expected = if closed_tab { limit + 1 } else { 1 };
+                        assert_eq!(params["tabId"], expected);
+                        Ok(json!({"tabId":expected}))
                     }
                     _ => panic!("Unexpected bridge action {action}"),
                 })
             })
             .await;
-            if closed_tab {
-                assert_eq!(tab_id_from_value(&result.unwrap().0), Some(limit + 1));
-            } else {
-                assert!(result.unwrap_err().to_string().contains("tab limit"));
-            }
+            let (result, reused) = result.unwrap();
+            let expected = if closed_tab { limit + 1 } else { 1 };
+            assert_eq!(tab_id_from_value(&result), Some(expected));
+            assert_eq!(reused, !closed_tab);
         }
         open_states().as_mut().unwrap().remove(session);
         forget_session_tab(session, limit + 1);

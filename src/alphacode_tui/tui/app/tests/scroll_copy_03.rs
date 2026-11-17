@@ -1808,10 +1808,15 @@ fn command_palette_open_does_not_move_existing_rows() {
             );
         }
     }
+    // The palette can render bare (legacy) or inside a bordered menu frame,
+    // so strip leading frame/selection glyphs before matching a command token.
+    // Matching on the raw start would silently stop seeing the palette the
+    // moment it gained a border.
     let palette_rows = after_rows
         .iter()
         .filter(|row| {
-            let t = row.trim_start();
+            let t = row
+                .trim_start_matches(|c: char| c.is_whitespace() || "│▸|".contains(c));
             t.starts_with('/') && t.contains("  ")
         })
         .count();

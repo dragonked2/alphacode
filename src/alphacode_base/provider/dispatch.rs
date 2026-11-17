@@ -50,7 +50,7 @@ impl MultiProvider {
                 chars += system_static.len() + system_dynamic.len();
             }
         }
-        let tokens = chars / 4;
+        let tokens = crate::util::estimate_tokens_chars(chars);
         (chars, tokens)
     }
 

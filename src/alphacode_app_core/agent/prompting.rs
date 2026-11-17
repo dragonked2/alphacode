@@ -157,14 +157,13 @@ fn probe_burst_reminder(tool_calls: &[(String, String)]) -> Option<String> {
     }
     let reminder = format!(
         "\n\n# Probe Grind Detected\n\n\
-        {} consecutive probing tool calls with no hypothesis ledger update \
-        since the last checkpoint. If this session is security \
-        research, this is the unattributed probe grind that turns hours into \
-        nothing:\n\n\
-        1. Name the hypothesis each probe targets (an id like `H3: If IDOR exists on /api/orders/<foreign-id>, a foreign id returns 200`). Drop probes with no open hypothesis.\n\
-        2. Record the discriminating observation each probe produced; equivalent results require a control and reachability check; pause inconclusive paths rather than declaring them refuted.\n\
-        3. If the live hypotheses are all dead, stop: log the kill decision and move to the next highest-value attack surface. Repointing the same payloads is not progress.\n\n\
-        If this is not security research, batch the repeated calls into one scripted command with bounded output and open a todo list to track the work.",
+        {} consecutive probing tool calls with no hypothesis update or new discriminating evidence.\n\n\
+        For security or investigation work:\n\
+        1. State the active hypothesis and the exact signal each probe is testing. Drop probes without a hypothesis.\n\
+        2. Record what each probe proved, disproved, or left inconclusive. If results are equivalent, change a dimension (identity, object, method, state, input path, or oracle) or add a control.\n\
+        3. Update the attack path: which preconditions are confirmed, which edges are unverified, and what exploit verification is still needed.\n\
+        4. If the current path is exhausted, persist the evidence, mark the hypothesis status, and pivot to the next highest-value lead.\n\n\
+        For non-security work: batch repeated reads/checks into one bounded command or script and track progress with clear next steps.",
         run,
     );
     Some(reminder)
@@ -795,7 +794,12 @@ impl Agent {
 
 fn security_observation_checkpoint(count: usize) -> String {
     format!(
-        "\n\n# Research observation checkpoint\n{count} consecutive read-only calls. This alone does not establish a loop: source analysis and read-only security proofs may be legitimate. State the uncertainty being reduced, the new evidence learned and the next discriminating observation. If unchanged probes no longer add information, record the cause and reassess or continue a different authorized frontier. Preserve applicable coverage and existing scope/budgets. No mutation, credential extraction or deeper exploitation is required merely to break a read-only streak.\n"
+        "\n\n# Investigation Checkpoint\n{count} consecutive read-only actions. This does not establish a loop: source analysis and read-only security proofs are legitimate. Preserve applicable scope/budgets and pause only to make progress explicit.\n\n\
+- State the current hypothesis, the uncertainty it targets, and the next discriminating test.\n\
+- Summarize the new evidence and update attack-path confidence (confirmed, possible, blocked).\n\
+- If results are unchanged, add a control, change one dimension, or verify reachability/prerequisites before repeating.\n\
+- Persist useful findings, blocked reasons, and reopen conditions so work can resume later.\n\
+- Continue other authorized leads when one path is inconclusive. No mutation, credential extraction or deeper exploitation is required just to break a read-only streak.\n"
     )
 }
 

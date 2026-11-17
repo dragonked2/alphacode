@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WrappedLineMap {
     pub raw_line: usize,
     pub start_col: usize,

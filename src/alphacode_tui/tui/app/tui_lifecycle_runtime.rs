@@ -387,7 +387,7 @@ impl App {
 
             // Build stats message
             let total_turns = user_turns + assistant_turns;
-            let estimated_tokens = total_chars / 4; // Rough estimate: ~4 chars per token
+            let estimated_tokens = crate::util::estimate_tokens_chars(total_chars); // Rough estimate using shared heuristic
             let stats = if total_turns > 0 {
                 format!(
                     " ({} turns, ~{}k tokens)",

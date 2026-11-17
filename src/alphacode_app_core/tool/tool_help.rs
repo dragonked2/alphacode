@@ -136,8 +136,8 @@ impl Tool for ToolHelpTool {
     fn description(&self) -> &str {
         "Discover tools in this session. Use action=search with a task query to match names, \
          descriptions, and capability families without loading schemas. Then pass tools with exact \
-         names to enable only what is useful. Use action=inspect with one exact tool name to read \
-         its live parameter schema immediately. With no arguments, list hidden tools. Registration \
+         names to enable only what is useful. Use action=inspect with exact tool names (or one exact \
+         name in query) to read live parameter schemas immediately. With no arguments, list hidden tools. Registration \
          does not guarantee an installed binary, authenticated account, or running backend."
     }
 
@@ -153,7 +153,7 @@ impl Tool for ToolHelpTool {
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Exact tool names to enable, e.g. [\"sqlmap\",\"nuclei\"]."
+                    "description": "Exact tool names to enable or inspect, e.g. [\"sqlmap\",\"nuclei\"]."
                 },
                 "query": {
                     "type": "string",
@@ -189,16 +189,63 @@ impl Tool for ToolHelpTool {
             .collect();
         let all: Vec<String> = catalog.iter().map(|(name, _)| name.clone()).collect();
         if action == "inspect" {
-            let names = params.tools.as_deref().unwrap_or_default();
-            anyhow::ensure!(
-                names.len() == 1,
-                "inspect requires exactly one tool name in tools"
-            );
-            let name = super::Registry::resolve_tool_name(&names[0]).to_string();
-            anyhow::ensure!(
-                all.contains(&name),
-                "tool is unavailable in this session; search the live inventory"
-            );
+            let mut names = params.tools.unwrap_or_default();
+            // Models commonly put the one exact name in `query`, mirroring
+            // search. Accept that unambiguous spelling instead of turning a
+            // recoverable discovery request into a failed tool row.
+            if names.is_empty()
+                && let Some(query) = params.query.as_deref().map(str::trim)
+                && !query.is_empty()
+            {
+                let resolved = super::Registry::resolve_tool_name(query).to_string();
+                if all.contains(&resolved) {
+                    names.push(resolved);
+                } else {
+                    let matches: Vec<_> = catalog
+                        .iter()
+                        .filter(|(name, description)| {
+                            super::capabilities::matches_query(name, description, query)
+                        })
+                        .cloned()
+                        .collect();
+                    if matches.len() == 1 {
+                        names.push(matches[0].0.clone());
+                    } else {
+                        return Ok(ToolOutput::new(format_catalog(
+                            &matches,
+                            "Inspect query is not an exact tool; matching tools",
+                        )));
+                    }
+                }
+            }
+            names = names
+                .into_iter()
+                .map(|name| super::Registry::resolve_tool_name(&name).to_string())
+                .collect();
+            names.sort();
+            names.dedup();
+            if names.is_empty() {
+                return Ok(ToolOutput::new(format_catalog(
+                    &catalog,
+                    "Choose one or more exact tool names to inspect",
+                )));
+            }
+            let unavailable: Vec<_> = names
+                .iter()
+                .filter(|name| !all.contains(name))
+                .cloned()
+                .collect();
+            if !unavailable.is_empty() {
+                // Unavailable covers both "never registered here" and "hidden
+                // by this session's tool policy". A success payload would let a
+                // policy denial read as a normal catalog answer, so this stays
+                // an error: the caller must not treat a refused tool as
+                // inspectable.
+                anyhow::bail!(
+                    "tool unavailable in this session: {} (never registered or blocked by session policy). Use action=search to inspect the live inventory.",
+                    unavailable.join(", ")
+                );
+            }
             let live = self
                 .live
                 .as_ref()
@@ -207,13 +254,21 @@ impl Tool for ToolHelpTool {
                     anyhow::anyhow!("live registry unavailable; enable the tool to load its schema")
                 })?;
             let tools = live.read().await;
-            let tool = tools
-                .get(&name)
-                .ok_or_else(|| anyhow::anyhow!("tool is no longer registered"))?;
-            return Ok(ToolOutput::new(serde_json::to_string(&json!({
-                "name":name,"description":tool.description(),"parameters":tool.parameters_schema(),
-                "interpretation":"Live input contract only; prerequisites and authorization still apply."
-            }))?));
+            let inspected: Vec<_> = names
+                .iter()
+                .filter_map(|name| {
+                    tools.get(name).map(|tool| json!({
+                        "name":name,"description":tool.description(),"parameters":tool.parameters_schema(),
+                        "interpretation":"Live input contract only; prerequisites and authorization still apply."
+                    }))
+                })
+                .collect();
+            let output = if inspected.len() == 1 {
+                inspected.into_iter().next().unwrap_or(Value::Null)
+            } else {
+                json!({"tools": inspected})
+            };
+            return Ok(ToolOutput::new(serde_json::to_string(&output)?));
         }
         {
             let mut sessions = SESSION_PROMOTED

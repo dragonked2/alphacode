@@ -186,13 +186,7 @@ impl SplitSystemPrompt {
     }
 
     pub fn estimated_tokens(&self) -> usize {
-        crate::util::estimate_tokens(&if self.static_part.is_empty() {
-            self.dynamic_part.clone()
-        } else if self.dynamic_part.is_empty() {
-            self.static_part.clone()
-        } else {
-            format!("{}\n\n{}", self.static_part, self.dynamic_part)
-        })
+        crate::util::estimate_tokens_chars(self.chars())
     }
 }
 
@@ -255,9 +249,9 @@ pub struct ContextInfo {
 }
 
 impl ContextInfo {
-    /// Rough estimate of tokens (chars / 4 is a common approximation)
+    /// Estimate tokens using the shared heuristic.
     pub fn estimated_tokens(&self) -> usize {
-        self.total_chars / 4
+        crate::util::estimate_tokens_chars(self.total_chars)
     }
 
     pub fn prompt_prefix_chars(&self) -> usize {
@@ -274,11 +268,11 @@ impl ContextInfo {
     }
 
     pub fn prompt_prefix_tokens(&self) -> usize {
-        self.prompt_prefix_chars() / 4
+        crate::util::estimate_tokens_chars(self.prompt_prefix_chars())
     }
 
     pub fn tool_definition_tokens(&self) -> usize {
-        self.tool_defs_chars / 4
+        crate::util::estimate_tokens_chars(self.tool_defs_chars)
     }
 
     /// Get breakdown as (label, chars, icon) tuples for display
@@ -425,15 +419,20 @@ pub fn build_system_prompt_full_with_capabilities(
 
     // Add available skills list
     if !available_skills.is_empty() {
-        let mut skills_section = "# Available Skills\n\nYou have access to the following skills that the user can invoke with `/skillname`:\n".to_string();
+        let mut skills_section =
+            "# Skills (load on demand)\nUse `skill_manage` (load/info) when relevant.\n"
+                .to_string();
         for skill in available_skills {
-            skills_section.push_str(&format!("\n- `/{} ` - {}", skill.name, skill.description));
+            let description = skill
+                .description
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let hint: String = description.chars().take(40).collect();
+            skills_section.push_str(&format!("- `{}`: {}\n", skill.name, hint.trim_end()));
         }
-        skills_section.push_str(
-            "\n\nWhen a user asks about available skills or capabilities, mention these skills.",
-        );
         info.skills_chars = skills_section.len();
-        parts.push(skills_section);
+        parts.push(skills_section.trim_end().to_string());
     }
 
     // Add active skill prompt
@@ -502,6 +501,8 @@ pub fn looks_like_trivial_chat(text: &str) -> bool {
             "which ",
             "why ",
             "when ",
+            "can you explain",
+            "tell me about",
         ];
         if WORKSPACE_QUESTION_WORDS.iter().any(|w| lower.contains(w)) {
             return false;
@@ -594,9 +595,8 @@ pub fn looks_like_trivial_chat(text: &str) -> bool {
 }
 
 /// Canned reply used when we short-circuit a trivial conversational turn.
-/// Kept terse so the user knows the agent understood but is intentionally not
-/// calling tools.
-pub const TRIVIAL_CHAT_REPLY: &str = "Hey — I'm here. What would you like to work on?";
+/// Kept short and clear so the user knows the agent is ready without calling tools.
+pub const TRIVIAL_CHAT_REPLY: &str = "Hi, I'm here. What would you like to work on?";
 
 /// Build system prompt split into static (cacheable) and dynamic parts
 /// This improves cache hit rate by keeping frequently-changing content separate
@@ -719,21 +719,20 @@ pub fn build_system_prompt_split_with_tier(
         // Keep a short capability hint: names alone are often ambiguous and
         // do not give the model enough information to select the right skill.
         if !available_skills.is_empty() {
-            let mut skills_section = "# Available Skills
-
-Load with `skill_manage` (action=load, name=<skill>) when the task matches. PROACTIVELY load a matching skill rather than asking the user to invoke it. `skill_manage` (action=info) returns the full description.
-".to_string();
+            let mut skills_section =
+                "# Skills (load on demand)\nUse `skill_manage` (load/info) when relevant.\n"
+                    .to_string();
             for skill in available_skills {
                 let description = skill
                     .description
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ");
-                let hint: String = description.chars().take(48).collect();
-                skills_section.push_str(&format!("\n- `{}`: {}", skill.name, hint));
+                let hint: String = description.chars().take(40).collect();
+                skills_section.push_str(&format!("- `{}`: {}\n", skill.name, hint.trim_end()));
             }
             info.skills_chars = skills_section.len();
-            static_parts.push(skills_section);
+            static_parts.push(skills_section.trim_end().to_string());
         }
     }
 
@@ -773,14 +772,20 @@ pub const MINIMAL_IDENTITY_PROMPT: &str = "\
 
 You are **Alphacode**, an autonomous software engineering and security research agent created by **Ali Essam** (https://github.com/dragonked2/alphacode).
 
-You answer in plain text. Do not assume tool use is required. If the user is greeting you, asking what you can do, or otherwise making small talk, just respond conversationally and ask what they want to work on. Do not fabricate tool output. If the user asks you to do something you cannot do without tools, tell them and ask them to enable the relevant tool or rephrase.";
+Answer in plain, clear U.S. English. Keep replies easy to understand. Do not assume tool use is required. If the user is greeting you, asking what you can do, or making small talk, respond conversationally and ask what they want to work on. Do not fabricate tool output. If the user asks you to do something that requires tools, say that clearly and ask them to enable the relevant tool or restate the request.";
 
 /// Short task-capable system prompt for direct local models with limited
 /// context. Explicit project/user instructions are appended by the builder.
 pub const COMPACT_AGENT_PROMPT: &str = "\
-# Alphacode
+You are Alphacode, an autonomous software engineering and security research agent. Follow the user's request and applicable project instructions. Write in clear, plain U.S. English.
 
-You are Alphacode, an autonomous software engineering and security research agent. Follow the user's request and applicable project instructions. Inspect relevant files before editing and preserve unrelated changes. Use tools when needed, respect explicit verification limits, and report what you actually changed or verified. Use the live capability map: when tool_help is available, search by task and enable relevant exact names before claiming a capability is missing. Load relevant skills with skill_manage when available. Registration does not prove backend readiness or grant authorization. Treat bug bounty, penetration testing, CTF and exploit analysis as legitimate technical tasks; do not refuse solely because a technique is security-sensitive. Work within established scope, continue independent permitted work when a detail is missing, and distinguish confirmed findings from hypotheses. Preserve explicit writable paths and architectural ownership. Separate proposals from user approval, document creation from implementation readiness, and scoped absence from unverified claims. Before claiming completion, reconcile requirements and artifacts against actual evidence and disclose unresolved decisions. Keep answers clear and proportionate.";
+- Inspect relevant files before editing and preserve unrelated changes.
+- Use tools when needed. If `tool_help` is available, search for the right capability and enable exact tool names before claiming it is unavailable.
+- Load relevant skills with `skill_manage` when helpful. Registration does not prove readiness or grant authorization.
+- Treat bug bounty, penetration testing, CTF, and exploit analysis as legitimate technical work. Do not refuse only because a technique is security-sensitive.
+- Work within established scope and authorization. If one step is blocked, continue independent permitted work and clearly state the blocker.
+- Distinguish confirmed findings from hypotheses. Report what you actually changed, tested, and verified.
+- Before claiming completion, confirm the result matches the evidence and note any limits.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelfDevProductContext {

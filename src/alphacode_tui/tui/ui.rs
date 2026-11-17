@@ -22,6 +22,7 @@ use super::visual_debug::{
 };
 use super::{DisplayMessage, DisplayMessageRoleExt, ProcessingStatus, TuiState};
 use crate::alphacode_tui::message::ToolCall;
+use crate::alphacode_tui_render::chrome::fill_background;
 use ratatui::{prelude::*, widgets::Paragraph};
 use serde::Serialize;
 #[cfg(test)]
@@ -2178,27 +2179,34 @@ pub(crate) fn record_chat_overlay_copy_snapshot(
     );
 }
 
+/// Immutable text geometry shared by repeated composer frames. Only viewport
+/// position and visible margins change when the caret moves through a draft.
+#[derive(Clone)]
+pub(crate) struct InputCopySnapshotData {
+    wrapped_plain_lines: Arc<Vec<String>>,
+    wrapped_copy_offsets: Arc<Vec<usize>>,
+    raw_plain_lines: Arc<Vec<String>>,
+    wrapped_line_map: Arc<Vec<WrappedLineMap>>,
+}
+
 /// Record a copy-selection snapshot for the prompt composer (input box).
 /// Called from `draw_input` each frame with the composer's wrapped rows so a
 /// mouse drag over the text being typed selects and copies it, exactly like
 /// the chat transcript (issue #430). Raw lines are the logical `\n`-separated
 /// input lines, so selections spanning soft wraps copy the original text.
 pub(crate) fn record_input_copy_snapshot(
-    wrapped_plain_lines: Vec<String>,
-    raw_plain_lines: Vec<String>,
-    wrapped_line_map: Vec<WrappedLineMap>,
+    data: InputCopySnapshotData,
     scroll: usize,
     visible_end: usize,
     content_area: Rect,
     left_margins: &[u16],
 ) {
-    let wrapped_copy_offsets = vec![0usize; wrapped_plain_lines.len()];
     record_copy_pane_snapshot(
         crate::alphacode_tui::tui::CopySelectionPane::Input,
-        Arc::new(wrapped_plain_lines),
-        Arc::new(wrapped_copy_offsets),
-        Arc::new(raw_plain_lines),
-        Arc::new(wrapped_line_map),
+        data.wrapped_plain_lines,
+        data.wrapped_copy_offsets,
+        data.raw_plain_lines,
+        data.wrapped_line_map,
         scroll,
         visible_end,
         content_area,

@@ -899,13 +899,35 @@ impl InvestigationIntelligence {
             .values()
             .filter(|lead| lead.research.reassessment_pending())
             .count();
-        format!(
-            "Investigation tracking (validated experiments are not confirmed findings): {} asset(s), {} lead(s) [{}], {} asset(s) without a validated experiment, {pending} pending reassessment(s).\n",
+        let gaps = self.coverage_gaps();
+        let blocked: Vec<String> = self
+            .leads
+            .values()
+            .filter(|l| l.status == InvestigationStatus::Blocked)
+            .filter_map(|l| l.blocker.as_deref())
+            .filter(|s| !s.trim().is_empty())
+            .take(2)
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        let mut summary = format!(
+            "Investigation (validated experiments are not confirmed findings): {} asset(s), {} lead(s) [{}], {} gap asset(s), {pending} pending reassessment(s).",
             self.assets.len(),
             self.leads.len(),
-            counts.join(", "),
-            self.coverage_gaps().len(),
-        )
+            if counts.is_empty() {
+                "none".to_string()
+            } else {
+                counts.join(", ")
+            },
+            gaps.len(),
+        );
+        if let Some(gap) = gaps.first() {
+            summary.push_str(&format!(" Next gap: {}.", gap.locator));
+        }
+        if !blocked.is_empty() {
+            summary.push_str(&format!(" Blocked: {}.", blocked.join(" | ")));
+        }
+        summary.push('\n');
+        summary
     }
 }
 
@@ -1463,7 +1485,7 @@ mod tests {
         let summary = state.research_summary();
         assert!(summary.contains("1 asset(s), 1 lead(s)"));
         assert!(summary.contains("discovered: 1"));
-        assert!(summary.contains("1 asset(s) without a validated experiment"));
+        assert!(summary.contains("1 gap asset(s)"));
         assert!(summary.contains("not confirmed findings"));
     }
 

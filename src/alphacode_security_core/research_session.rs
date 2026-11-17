@@ -552,7 +552,7 @@ impl ResearchSession {
                 .join(", ")
         ));
         out.push_str(&format!(
-            "Findings: {} total, {} confirmed; {} hypotheses rejected\n",
+            "Findings: {} total, {} confirmed; {} rejected hypotheses\n",
             self.findings.len(),
             self.confirmed_findings().len(),
             self.rejected_hypotheses.len()
@@ -562,23 +562,22 @@ impl ResearchSession {
                 .coverage
                 .validated_count_at(&repo.repository, &repo.revision);
             out.push_str(&format!(
-                "  {}@{}: {} validated components covered\n",
+                "  {}@{}: {} validated components\n",
                 repo.repository, repo.revision, validated
             ));
         }
         if !self.next_actions.is_empty() {
-            out.push_str("Next actions:\n");
-            for action in self.next_actions.iter().take(10) {
-                out.push_str(&format!("  - {action}\n"));
+            out.push_str("Next:\n");
+            for action in self.next_actions.iter().take(8) {
+                out.push_str(&format!("- {}\n", action));
             }
         }
         if !self.tool_failures.is_empty() {
-            out.push_str(&format!(
-                "Tool failures on record: {} (see checkpoint for detail)\n",
-                self.tool_failures.len()
-            ));
+            out.push_str(&format!("Tool failures: {}\n", self.tool_failures.len()));
         }
-        out.push_str(&format!("Time by phase: {}\n", self.timing.render()));
+        if !self.timing.seconds.is_empty() {
+            out.push_str(&format!("Time: {}\n", self.timing.render()));
+        }
         out.push_str(&self.investigation.research_summary());
         out.push_str(&format!(
             "Last checkpoint: {}\n",
@@ -1055,7 +1054,8 @@ mod tests {
         session.next_actions.push("validate lock leak".into());
         let summary = session.resume_summary();
         assert!(summary.contains("repo-a@aaa"), "{summary}");
-        assert!(summary.contains("Next actions"), "{summary}");
+        assert!(summary.contains("Next:"), "{summary}");
+        assert!(summary.contains("validate lock leak"), "{summary}");
         assert!(summary.len() < 2000, "summary must stay small for context");
     }
 

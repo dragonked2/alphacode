@@ -312,18 +312,10 @@ impl Default for Palette {
     }
 }
 
-/// Index of `role` within [`ALL_ROLES`].
-///
-/// A missing role would be a programming error (a variant added without listing
-/// it), but this sits on the render path, so it must not panic a live session
-/// over a palette lookup. Falling back to index 0 renders one role with another
-/// role's color, which is cosmetic; `every_role_is_indexable` catches the
-/// mistake in CI instead.
-fn index_of(role: Role) -> usize {
-    ALL_ROLES
-        .iter()
-        .position(|candidate| *candidate == role)
-        .unwrap_or(0)
+/// Constant-time index of `role` within [`ALL_ROLES`]. The enum and table are in
+/// declaration order; `every_role_is_indexable` pins that invariant in CI.
+const fn index_of(role: Role) -> usize {
+    role as usize
 }
 
 impl Palette {

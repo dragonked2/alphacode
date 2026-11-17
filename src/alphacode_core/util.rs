@@ -56,6 +56,11 @@ pub fn estimate_tokens(s: &str) -> usize {
     s.len() / APPROX_CHARS_PER_TOKEN
 }
 
+/// Estimate token count from a known character count.
+pub fn estimate_tokens_chars(chars: usize) -> usize {
+    chars / APPROX_CHARS_PER_TOKEN
+}
+
 /// Format a number with ASCII thousands separators.
 pub fn format_number(n: usize) -> String {
     let digits = n.to_string();

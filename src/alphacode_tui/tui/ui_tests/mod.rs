@@ -225,6 +225,12 @@ fn chat_scrollbar_geometry_publish_roundtrip() {
 struct TestState {
     input: String,
     cursor_pos: usize,
+    input_selection: Option<(usize, usize)>,
+    copy_selection: Option<crate::alphacode_tui::tui::CopySelectionRange>,
+    history_completion: Option<String>,
+    history_search: Option<crate::alphacode_tui::tui::PromptHistorySearchView>,
+    command_options: Vec<(String, &'static str)>,
+    selected_command: usize,
     provider_name: Option<String>,
     provider_model: Option<String>,
     working_dir: Option<String>,
@@ -310,6 +316,15 @@ impl crate::alphacode_tui::tui::TuiState for TestState {
     fn cursor_pos(&self) -> usize {
         self.cursor_pos
     }
+    fn input_selection_range(&self) -> Option<(usize, usize)> {
+        self.input_selection
+    }
+    fn input_history_completion_suffix(&self, _max_width: usize) -> Option<String> {
+        self.history_completion.clone()
+    }
+    fn prompt_history_search(&self) -> Option<crate::alphacode_tui::tui::PromptHistorySearchView> {
+        self.history_search.clone()
+    }
     fn is_processing(&self) -> bool {
         !matches!(self.status, ProcessingStatus::Idle)
     }
@@ -372,7 +387,10 @@ impl crate::alphacode_tui::tui::TuiState for TestState {
         self.status.clone()
     }
     fn command_suggestions(&self) -> Vec<(String, &'static str)> {
-        Vec::new()
+        self.command_options.clone()
+    }
+    fn command_suggestion_selected(&self) -> usize {
+        self.selected_command
     }
     fn active_skill(&self) -> Option<String> {
         self.active_skill.clone()
@@ -613,7 +631,7 @@ impl crate::alphacode_tui::tui::TuiState for TestState {
         false
     }
     fn copy_selection_range(&self) -> Option<crate::alphacode_tui::tui::CopySelectionRange> {
-        None
+        self.copy_selection
     }
     fn copy_selection_status(&self) -> Option<crate::alphacode_tui::tui::CopySelectionStatus> {
         None
@@ -653,6 +671,8 @@ mod diagrams;
 mod help_overlay;
 #[path = "inline_picker.rs"]
 mod inline_picker;
+#[path = "modern_interaction.rs"]
+mod modern_interaction;
 #[path = "onboarding.rs"]
 mod onboarding;
 #[path = "palette_adaptation_guard.rs"]

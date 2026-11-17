@@ -207,13 +207,49 @@ pub fn observe(
 
 impl EngagementRuntime {
     pub fn summary(&self) -> Value {
-        json!({"session_id":self.research.session_id,"objective":self.research.objective,
-            "assets":self.research.investigation.assets().len(),"leads":self.research.investigation.leads(),
-            "tool_calls":self.ledger.tool_calls,"tool_call_budget":self.ledger.tool_call_budget,
-            "indeterminate_calls":self.calls.iter().filter(|(_,r)| !r.finished).map(|(id,_)| id).collect::<Vec<_>>(),
-            "observed_exchanges":self.exchanges.len(),"proof_checked_experiments":self.proofs.keys().collect::<Vec<_>>(),
-            "root_cause_groups":self.dedup.groups(),"retests":self.retests,
-            "interpretation":"Proof checks establish recorded differentials; independent policy, boundary and impact review remains required. Counts do not imply complete coverage."})
+        let investigation = &self.research.investigation;
+        let mut lead_states = std::collections::BTreeMap::new();
+        for lead in investigation.leads().values() {
+            *lead_states
+                .entry(format!("{:?}", lead.status).to_lowercase())
+                .or_insert(0usize) += 1;
+        }
+        let gap_samples: Vec<_> = investigation
+            .coverage_gaps()
+            .into_iter()
+            .take(5)
+            .map(|a| a.locator.clone())
+            .collect();
+        let pending_reassessments = investigation
+            .leads()
+            .values()
+            .filter(|l| l.research.reassessment_pending())
+            .count();
+        json!({
+            "session_id": self.research.session_id,
+            "objective": self.research.objective,
+            "assets": investigation.assets().len(),
+            "leads": investigation.leads().len(),
+            "lead_states": lead_states,
+            "coverage_gaps": gap_samples.len(),
+            "coverage_gap_samples": gap_samples,
+            "pending_reassessments": pending_reassessments,
+            "chains": investigation.chain_transitions().len(),
+            "tool_calls": self.ledger.tool_calls,
+            "tool_call_budget": self.ledger.tool_call_budget,
+            "indeterminate_calls": self
+                .calls
+                .iter()
+                .filter(|(_, r)| !r.finished)
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            "observed_exchanges": self.exchanges.len(),
+            "proof_checked_experiments": self.proofs.keys().collect::<Vec<_>>(),
+            "root_cause_groups": self.dedup.groups(),
+            "retests": self.retests,
+            "research_summary": investigation.research_summary(),
+            "interpretation": "Proof checks record controlled differentials, not confirmed impact or complete coverage. Use gaps, blocked reasons, and reassessments to adapt next steps."
+        })
     }
 
     pub fn record_root(&mut self, candidate: DedupCandidate) -> Result<()> {
