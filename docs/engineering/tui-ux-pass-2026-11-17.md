@@ -79,6 +79,20 @@ The affordance now reserves its own cells before the transcript is painted:
 - geometry is measured with `UnicodeWidthStr::width`, and the rect is flush
   against `content_area.right()`.
 
+## 4. Composer footer repeated the newline hint
+
+`actions()` in `ui_composer_chrome.rs` listed both `Alt+Enter newline` and
+`\+Enter newline`. Shift+Enter (kitty keyboard protocol), Alt/Option+Enter,
+and a trailing backslash then Enter all reach
+`newline::enter_inserts_newline`, so this spent footer width on one action
+twice. On a 120-column terminal the row read
+`... Ctrl+F find · \+Enter newline────╯`, with the repetition pushing the
+rounded corner off the line.
+
+A single `Alt+Enter newline` entry now covers the action, and
+`composer_review_scroll_feedback_and_shortcuts_share_the_existing_border`
+asserts the duplicate hint is absent. Rendered frames at 80/120/200 columns
+show the footer ending at `Ctrl+F find` with the border closed.
 ## Verification
 
 | Command | Result |
