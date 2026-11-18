@@ -23,42 +23,50 @@ alphacode bugbounty orchestrate TARGET [OPTIONS]
 
 ## Workflow
 
-The orchestrator runs 5 phases automatically:
+This command runs a bounded, mostly static task graph; it is not an adaptive
+autonomous pentest, and it does not mean every listed tool will run. First verify
+the installed engagement scope, exclusions, method/rate limits, and target
+allowlist. The operator's target argument is not permission to probe every
+discovered hostname. Keep out-of-scope or unverified discoveries quarantined;
+never pass them into active stages until the installed policy explicitly allows
+them.
 
-### Phase 1: Reconnaissance
-- Subdomain enumeration (subfinder, amass, assetfinder)
-- DNS enumeration (dnsx)
-- HTTP probing (httpx)
+The default graph may schedule passive asset discovery, DNS/HTTP observations,
+URL collection/crawling, and configured scanners. The exact tasks, dependencies,
+tool availability, input hydration, and partial-coverage audit are authoritative
+in the run's state and `coverage/` artifacts, not in this example. Scanner stages
+are discovery signals only. There is no generic “exploitation” phase that should
+automatically escalate a candidate: choose the smallest authorized discriminating
+experiment for a specific hypothesis, use owned fixtures and controls, and stop
+once the permitted impact is demonstrated. Avoid state-changing or high-volume
+tests unless the engagement explicitly permits them and the experiment requires
+them.
 
-### Phase 2: Attack Surface Mapping
-- Web crawling (katana)
-- URL discovery (gau, waybackurls)
-- Content discovery (feroxbuster)
-- URL parsing (unfurl)
+After each stage, continue without asking the user for another “go” when there is
+clear, already-authorized, bounded work. A missing tool, account, credential,
+policy detail, or fixture blocks only tests that require it: diagnose once, record
+the exact gap, then continue independent passive, source, artifact, or permitted
+read-only work. Ask one specific question only when that missing prerequisite
+blocks all useful remaining work or changes authorization, impact, cost, or
+irreversible state. Never claim a blocked stage is a negative result.
 
-### Phase 3: Vulnerability Discovery
-- Template scanning (nuclei)
-- Web server scanning (nikto)
-- XSS scanning (dalfox)
-- CORS scanning (corsy)
-- CRLF scanning (crlfuzz)
+Resume only after reconciling the saved target, scope-policy version, identity,
+tool state, artifacts, and interrupted calls. Do not treat a stale task result as
+current if the deployment, policy, account, object state, or relevant configuration
+changed. Check for side effects before retrying an interrupted mutation.
 
-### Phase 4: Exploitation
-- SQL injection (sqlmap)
-- Directory brute force (gobuster)
-
-### Phase 5: Reporting
-- Observed inventory and unverified scanner candidates
-- Task outcomes, deferred work and execution coverage
-- Raw evidence locations and investigation state
-
+At every phase boundary, reconcile pending, partial, failed, blocked, and untested
+coverage. Continue with the highest-value next experiment, not necessarily the
+next numbered phase. The graph's “complete” state means only that its scheduled
+tasks are resolved; it does not establish exhaustive coverage or a clean target.
 The static graph does not autonomously verify every candidate or synthesize a
-complete vulnerability report. Continue with controlled investigations, relevant
-class workflows and independent reproduction before assigning findings/severity.
+submission-ready report. Continue independent applicable coverage after a finding
+is proven, and keep discovery, validation, severity, and program eligibility
+separate.
 
 ## Tool Chaining
 
-The orchestrator chains tools intelligently:
+Some configured task dependencies resemble these example tool routes:
 
 ```
 subfinder → httpx → katana → nuclei
@@ -88,6 +96,7 @@ Workflow mechanics:
 - Failed tasks remain explicit; choose an alternative only after reviewing the
   failure, scope, budget and any possible prior side effects
 - Progress is tracked and reported
+- Task ordering and scanner output do not prove scope, exploitability, or impact.
 
 ## Output
 
@@ -106,5 +115,7 @@ write. Tool-internal capture limits and hydration seed caps still apply. Existin
 historical tasks without an audit have unknown call coverage. These artifacts
 can contain sensitive engagement data and need the same handling as raw evidence.
 
-Read `investigation-control` to map the discovered inventory to manual tests and
-remaining clues. The static scanner task graph cannot replace that coverage map.
+Load `investigation-control` when resuming or reconciling discovered inventory
+against manual tests and remaining clues. The static scanner task graph cannot
+replace that coverage map; reuse already-loaded guidance instead of reloading it
+every phase.

@@ -662,6 +662,9 @@ impl ScraplingTool {
 
         // Check if scrapling is installed
         let mut check = tokio::process::Command::new(&python);
+        // The shared server runs console-less, so an unflagged console-subsystem
+        // child makes Windows allocate a fresh visible console window. Hide it.
+        crate::alphacode_base::platform::hide_helper_console(check.as_std_mut());
         check.args(["-c", "import scrapling; print(scrapling.__version__)"]);
         let check = super::recon_common::run_command_bounded(
             check,
@@ -702,6 +705,7 @@ except Exception as e:
         tokio::fs::write(&script_path, &script).await?;
 
         let mut command = tokio::process::Command::new(&python);
+        crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
         command
             .arg(script_path.to_str().unwrap_or(""))
             .arg(&params.url)
@@ -794,6 +798,7 @@ except Exception as e:
 
         let params_json = serde_json::to_string(&input)?;
         let mut command = tokio::process::Command::new(&bin);
+        crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
         command.arg("navigate").arg(&params_json);
         #[cfg(not(windows))]
         if std::env::var("BROWSER_SESSION").is_err()

@@ -21,6 +21,7 @@ mod corsy;
 mod crlfuzz;
 mod cron;
 mod ctf_progress_guard;
+pub(crate) use ctf_progress_guard::solve_state_summary;
 mod ctf_tools;
 mod ctf_web_recon;
 mod dalfox;

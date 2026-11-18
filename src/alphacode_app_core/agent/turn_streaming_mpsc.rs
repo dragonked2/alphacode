@@ -138,7 +138,7 @@ impl Agent {
             crate::prompt::PromptTier,
         )> = None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
-        let ctf_goal_active = self.ctf_goal_active();
+        let open_mission = self.open_mission();
         let mut ctf_continuations = std::collections::HashSet::new();
         let mut iteration_count: u32 = 0;
         let mut last_save_time = Instant::now();
@@ -1577,11 +1577,11 @@ impl Agent {
                     &mut incomplete_continuations,
                 )? {
                     NoToolCallOutcome::Break => {
-                        if ctf_goal_active
+                        if let Some(mission) = open_mission
                             && saw_message_end
                             && !text_content.trim().is_empty()
                             && !Self::is_guardrail_stop_reason(stop_reason.as_deref())
-                            && self.continue_ctf_goal(&mut ctf_continuations)?
+                            && self.continue_open_mission(mission, &mut ctf_continuations)?
                         {
                             continue;
                         }
@@ -2599,6 +2599,80 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// Regression for the reported behaviour: a bug-bounty request whose model
+    /// reply only restates the scope and asks setup questions used to end the
+    /// turn - no tests, no recon, nothing executed. The security mission gate
+    /// must re-prompt once so the model is told to keep executing permitted
+    /// work instead of waiting on the operator.
+    #[tokio::test]
+    async fn security_mission_with_open_todos_is_continued_instead_of_stalling_on_questions() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
+        let _restore_home = RestoreAlphacodeHome(previous_home);
+
+        let provider = Arc::new(GreetingProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(
+            provider.clone(),
+            crate::alphacode_app_core::tool::Registry::empty(),
+        );
+        // A named bug bounty program selects the security skill, which is what
+        // marks this session as an active security mission.
+        agent.active_skill = Some("bugbounty".to_string());
+        crate::todo::save_todos(
+            &agent.session.id,
+            &[crate::alphacode_task_types::TodoItem {
+                id: "recon".into(),
+                content: "Map the in-scope surface and record the behaviour baseline".into(),
+                status: "pending".into(),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent
+            .run_once_streaming_mpsc(
+                "start bugbounty hunting on this program",
+                Vec::new(),
+                None,
+                event_tx,
+            )
+            .await
+            .unwrap();
+
+        // One call for the stalling reply, one continuation driven by the
+        // security reminder. The unchanged todo list then bounds the loop, so
+        // it must not keep going.
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            2,
+            "an authorized security mission with actionable todos must not end on a setup question"
+        );
+        let continuation = agent
+            .session
+            .messages
+            .iter()
+            .filter_map(|message| {
+                message.content.iter().find_map(|block| match block {
+                    crate::alphacode_app_core::message::ContentBlock::Text { text, .. }
+                        if text.contains("authorized security engagement") =>
+                    {
+                        Some(text.clone())
+                    }
+                    _ => None,
+                })
+            })
+            .count();
+        assert!(
+            continuation >= 1,
+            "the continuation must carry the security mission reminder"
+        );
     }
 
     /// A provider that answers every turn with a greeting-shaped reply: a

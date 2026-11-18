@@ -117,7 +117,7 @@ impl Agent {
             crate::prompt::PromptTier,
         )> = None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
-        let ctf_goal_active = self.ctf_goal_active();
+        let open_mission = self.open_mission();
         let mut ctf_continuations = std::collections::HashSet::new();
         let mut iteration_count: u32 = 0;
         let mut last_save_time = Instant::now();
@@ -1209,10 +1209,10 @@ impl Agent {
                     logging::warn("Refusal stop: rotated to an alternate free route for this turn");
                     continue;
                 }
-                if ctf_goal_active
+                if let Some(mission) = open_mission
                     && !visible_text_is_empty
                     && !Self::is_guardrail_stop_reason(stop_reason.as_deref())
-                    && self.continue_ctf_goal(&mut ctf_continuations)?
+                    && self.continue_open_mission(mission, &mut ctf_continuations)?
                 {
                     continue;
                 }

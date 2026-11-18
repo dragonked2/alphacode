@@ -53,7 +53,7 @@ XKB_DEV := /usr/lib/x86_64-linux-gnu/libxkbcommon.so
 
 export RUSTFLAGS := -L $(LINKLIBS_DIR) $(RUSTFLAGS)
 
-.PHONY: fmt-check check test-orcarouter test-orcarouter-live test linklibs
+.PHONY: fmt-check check check-strict clippy-strict test test-fast test-one test-orcarouter test-orcarouter-live linklibs
 
 linklibs:
 	@mkdir -p $(LINKLIBS_DIR)
@@ -68,6 +68,27 @@ fmt-check:
 check: linklibs
 	$(CARGO) check --workspace --tests
 
+# CI-equivalent strict gate, built into its own target directory.
+#
+# `RUSTFLAGS` participates in Cargo's fingerprint. CI builds with
+# `RUSTFLAGS="-D warnings"`, so running that here against the normal target
+# directory invalidates and recompiles the whole dependency graph plus the
+# first-party crate, and then invalidates it *again* on the way back to the
+# default flags. On this tree that is minutes in each direction, which is how
+# the strict gate ends up deferred until CI rejects the branch.
+#
+# A separate CARGO_TARGET_DIR keeps strict and fast-dev artifacts warm
+# independently. Costs disk, saves a full rebuild per strict check.
+STRICT_TARGET_DIR ?= $(CARGO_TARGET_DIR)-strict
+
+check-strict: linklibs
+	RUSTFLAGS="-D warnings" CARGO_TARGET_DIR=$(STRICT_TARGET_DIR) \
+		$(CARGO) check --workspace --tests
+
+clippy-strict: linklibs
+	RUSTFLAGS="-D warnings" CARGO_TARGET_DIR=$(STRICT_TARGET_DIR) \
+		$(CARGO) clippy --locked --lib --all-targets -- -D warnings
+
 # The OrcaRouter provider/auth/catalog regression suite.
 test-orcarouter: linklibs
 	$(CARGO) test --lib orcarouter
@@ -79,3 +100,27 @@ test-orcarouter-live: linklibs
 
 test: linklibs
 	$(CARGO) test --lib
+
+# Focused iteration: `make test-one FILTER=reload_helper_access_tests`.
+#
+# The suite is one large test binary, so it must be built and linked before any
+# test can run. A name filter reuses that binary, making every call after the
+# first cheap; running the entire suite to check one function pays the link cost
+# for nothing.
+FILTER ?=
+test-one: linklibs
+	@test -n "$(FILTER)" || { echo "usage: make test-one FILTER=<name substring>"; exit 2; }
+	$(CARGO) test --lib $(FILTER)
+
+# Prefer nextest when installed: it gives each test its own process, which
+# removes the cross-test interference (env vars, global mutexes, shared temp
+# dirs) that makes individual failures unreproducible, and it reports the
+# slowest tests so real hot spots surface instead of being guessed at.
+test-fast: linklibs
+	@if $(CARGO) nextest --version >/dev/null 2>&1; then \
+		$(CARGO) nextest run --lib --no-fail-fast; \
+	else \
+		echo "nextest not installed; using the default harness"; \
+		echo "install for isolated, faster runs: cargo install cargo-nextest --locked"; \
+		$(CARGO) test --lib; \
+	fi

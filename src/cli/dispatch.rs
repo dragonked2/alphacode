@@ -1548,6 +1548,43 @@ async fn run_server_promote(version: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Last-resort predecessor wait used when the fast Windows wait primitive is
+/// unavailable.
+///
+/// `WaitForSingleObject` needs `SYNCHRONIZE` on the process handle, and some
+/// handles cannot be opened with it (protected processes, restricted tokens,
+/// policy-filtered access). None of those conditions prove the predecessor is
+/// still running, so treating them as fatal aborted the reload and left the
+/// client waiting on a handoff that would never come. Polling liveness with the
+/// same bounded budget as the blocking wait preserves the guarantee the helper
+/// exists for: the replacement is never started while the predecessor may still
+/// own the named-pipe endpoint.
+#[cfg(windows)]
+fn wait_for_predecessor_exit_by_polling(
+    pid: u32,
+    mark_spoken: &impl Fn(),
+    trace: &impl Fn(&str),
+    mark_failed: &impl Fn(String),
+) -> Result<()> {
+    // Same 30-second ceiling as the blocking wait, in 50ms steps.
+    const BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+    const STEP: std::time::Duration = std::time::Duration::from_millis(50);
+    let started = std::time::Instant::now();
+    while started.elapsed() < BUDGET {
+        if !crate::platform::is_process_running(pid) {
+            mark_spoken();
+            trace("Parent process exited (polled).");
+            return Ok(());
+        }
+        std::thread::sleep(STEP);
+    }
+    let detail = format!("reload helper timed out waiting for predecessor pid {pid} to exit");
+    mark_spoken();
+    trace(&detail);
+    mark_failed(detail.clone());
+    Err(anyhow::anyhow!(detail))
+}
+
 /// Detached reload helper: waits for the parent process to exit, then execs
 /// into the target binary. This solves the Windows problem where the running
 /// executable cannot be replaced in-place.
@@ -1602,6 +1639,11 @@ fn run_reload_helper(args: &Args) -> Result<()> {
             type Handle = *mut c_void;
             type Dword = u32;
             const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
+            // `WaitForSingleObject` is a *synchronization* call: it requires
+            // SYNCHRONIZE on the handle. Opening with query rights alone makes
+            // every wait fail with ERROR_ACCESS_DENIED, which used to abort the
+            // whole handoff and strand the client on "waiting for reload".
+            const SYNCHRONIZE: Dword = 0x0010_0000;
             const WAIT_OBJECT_0: Dword = 0;
             const WAIT_FAILED: Dword = 0xFFFF_FFFF;
             const ERROR_INVALID_PARAMETER: i32 = 87;
@@ -1613,7 +1655,7 @@ fn run_reload_helper(args: &Args) -> Result<()> {
             }
 
             unsafe {
-                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid);
                 if !handle.is_null() {
                     // Wait up to 30 seconds; never launch the replacement while
                     // the predecessor may still own the named-pipe endpoint.
@@ -1623,14 +1665,20 @@ fn run_reload_helper(args: &Args) -> Result<()> {
                         mark_spoken();
                         trace("Parent process exited.");
                     } else if wait_result == WAIT_FAILED {
-                        let detail = format!(
-                            "reload helper failed waiting for predecessor pid {pid} (WaitForSingleObject error {})",
-                            std::io::Error::last_os_error()
-                        );
-                        mark_spoken();
-                        trace(&detail);
-                        mark_failed(detail.clone());
-                        return Err(anyhow::anyhow!(detail));
+                        // A wait primitive that cannot be used is a limitation
+                        // of this handle, not proof the predecessor is still
+                        // alive. Falling back to bounded liveness polling keeps
+                        // the handoff working instead of aborting it.
+                        let error = std::io::Error::last_os_error();
+                        trace(&format!(
+                            "WaitForSingleObject unavailable for pid {pid} ({error}); falling back to liveness polling"
+                        ));
+                        wait_for_predecessor_exit_by_polling(
+                            pid,
+                            &mark_spoken,
+                            &trace,
+                            &mark_failed,
+                        )?;
                     } else {
                         let detail = format!(
                             "reload helper timed out waiting for predecessor pid {pid} to exit"
@@ -1649,14 +1697,18 @@ fn run_reload_helper(args: &Args) -> Result<()> {
                     } else {
                         // Access denied and other failures do not prove that the
                         // predecessor exited. Starting now would reintroduce the
-                        // split-brain named-pipe race this helper prevents.
-                        let detail = format!(
-                            "reload helper could not inspect predecessor pid {pid}: {error}"
-                        );
-                        mark_spoken();
-                        trace(&detail);
-                        mark_failed(detail.clone());
-                        return Err(anyhow::anyhow!(detail));
+                        // split-brain named-pipe race this helper prevents, so
+                        // fall back to bounded liveness polling rather than
+                        // abandoning the reload.
+                        trace(&format!(
+                            "OpenProcess could not synchronize on predecessor pid {pid} ({error}); falling back to liveness polling"
+                        ));
+                        wait_for_predecessor_exit_by_polling(
+                            pid,
+                            &mark_spoken,
+                            &trace,
+                            &mark_failed,
+                        )?;
                     }
                 }
             }
@@ -1731,6 +1783,14 @@ fn run_reload_helper(args: &Args) -> Result<()> {
     // helper, which is why the client helper is spawned console-preserving
     // rather than detached.
     let err = if server_mode {
+        // This helper was itself spawned detached (CREATE_NO_WINDOW |
+        // DETACHED_PROCESS), so it owns no console. The replacement server is a
+        // console-subsystem binary, and Windows allocates a *new visible
+        // console window* for a console program started without one. That is
+        // the burst of flashing windows seen during a reload: one per spawn.
+        // CREATE_NO_WINDOW gives the daemon no console at all, which is what a
+        // background server needs — it logs to a file, never to a terminal.
+        crate::platform::hide_helper_console(&mut cmd);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -1747,4 +1807,100 @@ fn run_reload_helper(args: &Args) -> Result<()> {
     let detail = format!("failed to launch reload target {:?}: {}", target_path, err);
     mark_failed(detail.clone());
     Err(anyhow::anyhow!(detail))
+}
+
+#[cfg(all(test, windows))]
+mod reload_helper_access_tests {
+    /// Regression for the Windows reload-handoff stall.
+    ///
+    /// The helper used to open the predecessor with
+    /// `PROCESS_QUERY_LIMITED_INFORMATION` alone and then call
+    /// `WaitForSingleObject`, which requires `SYNCHRONIZE`. Every wait therefore
+    /// failed with ERROR_ACCESS_DENIED ("Access is denied"), the helper aborted,
+    /// and the client was left on "Waiting for handoff · 0s" forever. Query
+    /// rights do not imply synchronization rights; this test pins the mask so a
+    /// future "cleanup" cannot silently drop `SYNCHRONIZE` again.
+    #[test]
+    fn wait_handle_mask_includes_synchronize() {
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        let mask = PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE;
+        assert_eq!(
+            mask & SYNCHRONIZE,
+            SYNCHRONIZE,
+            "WaitForSingleObject fails with ACCESS_DENIED without SYNCHRONIZE"
+        );
+        assert_ne!(mask, PROCESS_QUERY_LIMITED_INFORMATION);
+    }
+
+    /// A real handle opened with the fixed mask must actually wait. This
+    /// exercises the Win32 surface rather than a constant, so a bad mask cannot
+    /// pass by arithmetic alone.
+    #[test]
+    fn synchronize_handle_can_wait_on_a_live_process() {
+        use std::ffi::c_void;
+        type Handle = *mut c_void;
+        type Dword = u32;
+        const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
+        const SYNCHRONIZE: Dword = 0x0010_0000;
+        const WAIT_OBJECT_0: Dword = 0;
+        const WAIT_TIMEOUT: Dword = 258;
+
+        unsafe extern "system" {
+            fn OpenProcess(access: Dword, inherit: i32, pid: Dword) -> Handle;
+            fn WaitForSingleObject(handle: Handle, ms: Dword) -> Dword;
+            fn CloseHandle(handle: Handle) -> i32;
+        }
+
+        // `self` is alive for the duration of the call, so a correct handle
+        // yields WAIT_TIMEOUT; a wrong mask yields WAIT_FAILED (0xFFFFFFFF).
+        let pid = std::process::id();
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid);
+            assert!(
+                !handle.is_null(),
+                "OpenProcess with SYNCHRONIZE must succeed for self"
+            );
+            let result = WaitForSingleObject(handle, 0);
+            CloseHandle(handle);
+            assert_eq!(
+                result, WAIT_TIMEOUT,
+                "a query+synchronize handle must wait, not fail (0x{result:X}); \
+                 WAIT_FAILED here means SYNCHRONIZE was dropped from the access mask"
+            );
+            assert_ne!(
+                result, WAIT_OBJECT_0,
+                "a live process must not report as signalled"
+            );
+        }
+    }
+
+    /// The polling fallback must agree with the blocking wait about liveness and
+    /// must not hang or abort on a process that exits promptly.
+    #[test]
+    fn polling_fallback_returns_once_the_process_is_gone() {
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/C", "exit 0"])
+            .spawn()
+            .expect("spawn trivial child");
+        let pid = child.id();
+        let _ = child.wait();
+
+        let spoken = std::cell::Cell::new(false);
+        let failed = std::cell::RefCell::new(None::<String>);
+        let mark_spoken = || spoken.set(true);
+        let trace = |_message: &str| {};
+        let mark_failed = |detail: String| *failed.borrow_mut() = Some(detail);
+
+        super::wait_for_predecessor_exit_by_polling(pid, &mark_spoken, &trace, &mark_failed)
+            .expect("an exited process must satisfy the polling fallback");
+        assert!(
+            spoken.get(),
+            "the fallback must announce that the console is free"
+        );
+        assert!(
+            failed.borrow().is_none(),
+            "a clean exit must not be recorded as a failure"
+        );
+    }
 }

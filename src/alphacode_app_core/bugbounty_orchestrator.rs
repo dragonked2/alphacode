@@ -1596,6 +1596,13 @@ impl BugBountyOrchestrator {
                 success,
                 failed
             );
+            if failed > 0 {
+                anyhow::bail!(
+                    "phase {:?} has {} failed, blocked, or exhausted task(s); inspect task and coverage state before continuing",
+                    phase,
+                    failed
+                );
+            }
             self.advance_phase().await?;
         }
 
@@ -1858,6 +1865,49 @@ mod tests {
         assert!(
             results.is_empty(),
             "nothing was pending, so nothing should be reported: {results:?}"
+        );
+    }
+
+    /// A failed phase used to be logged and silently treated as successful,
+    /// allowing the driver to advance into dependent testing/reporting phases.
+    #[tokio::test]
+    async fn workflow_stops_on_failed_or_blocked_phase_tasks() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        {
+            let mut tasks = orchestrator.tasks.write().await;
+            tasks.insert(
+                "first".into(),
+                task("first", BountyPhase::Reconnaissance, &[]),
+            );
+            tasks.insert(
+                "later".into(),
+                task("later", BountyPhase::AttackSurfaceMapping, &[]),
+            );
+        }
+        let later_ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = std::sync::Arc::clone(&later_ran);
+        let result = orchestrator
+            .run_parallel_workflow(move |task: &BountyTask| {
+                let observed = std::sync::Arc::clone(&observed);
+                let id = task.id.clone();
+                async move {
+                    if id == "first" {
+                        Err(anyhow::anyhow!("transient network error not retryable"))
+                    } else {
+                        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok("unexpected later phase".to_string())
+                    }
+                }
+            })
+            .await;
+
+        let error = result.expect_err("failed phase must not report a successful workflow");
+        assert!(error.to_string().contains("failed, blocked"), "{error}");
+        assert!(!later_ran.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            orchestrator.get_current_phase().await,
+            BountyPhase::Reconnaissance,
+            "phase must not advance while coverage is unresolved"
         );
     }
 

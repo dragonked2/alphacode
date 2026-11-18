@@ -14,6 +14,31 @@ cargo test --lib
 cargo clippy --lib -- -D warnings
 ```
 
+### Do not rebuild the world to check warnings
+
+`RUSTFLAGS` is part of Cargo's fingerprint. If you run
+`RUSTFLAGS="-D warnings" cargo clippy …` in the normal target directory, Cargo
+recompiles the entire dependency graph and this crate, and the next ordinary
+`cargo check` recompiles it *again* on the way back. On this tree that is
+minutes in each direction, and it is the single most common way to turn a
+fifteen-second check into a ten-minute one.
+
+Run the strict gates in their own target directory instead:
+
+```text
+make check-strict      # cargo check --workspace --tests with -D warnings
+make clippy-strict     # CI's exact clippy invocation
+make test-one FILTER=the_test_name    # filtered run, no relink per check
+make test-fast         # cargo nextest when installed, else the plain harness
+```
+
+These keep strict and dev artifacts warm independently, so both stay fast.
+
+The lib test binary is ~150 MB and links on every source change. Iterating by
+name (`make test-one FILTER=…`) reuses it; running the whole suite to check one
+function pays the full link cost for nothing. Reserve the full suite for the
+final gate.
+
 On Windows, build outside OneDrive. Keep `CARGO_TARGET_DIR` at `C:\Users\or0to\AppData\Local\Temp\alphacode-target`. Load the VS 2022 MSVC environment in the same PowerShell process before building:
 
 ```powershell

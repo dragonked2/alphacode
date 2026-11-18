@@ -101,7 +101,8 @@ vulnerability here" is a successful outcome.
 
 ### Transfer researcher logic, not historical payloads
 
-Load `researcher-reasoning` at the start of a hunt and when a lead stalls. Learn
+Load `researcher-reasoning` when a hunt begins with a non-obvious lead or when a
+lead stalls; do not reload unchanged guidance each turn. Learn
 the invariant, challenged assumption, causal mechanism, prerequisites and strongest
 counterexample. Apply that logic to the observed structure of this product with
 `hunt_reasoning` when available, then build a controlled `investigation` experiment.
@@ -193,7 +194,9 @@ gap. Do not install or execute every tool merely because it is listed.
 
 Load `hunting-intelligence` at the start of a broad assessment, when many
 surfaces compete, after generic automation is quiet, or whenever the next best
-test is unclear. It is the discovery layer: reconstruct the product and trust
+test is unclear. For a narrow, already-modeled question, use the relevant class
+reference directly instead of paying the cost of loading the broad discovery
+playbook. It is the discovery layer: reconstruct the product and trust
 graph, mine security invariants, rank exploit-graph frontiers, maintain a
 diversified hypothesis portfolio, and make each result improve the next test.
 
@@ -215,13 +218,15 @@ require compatible prerequisites and evidence for every claimed chain edge.
 ## PROFESSIONAL HUNT LOOP
 
 Read `reasoning-cases` when moving from an interesting observation to a causal
-test. It works through ownership versus public previews, failed repetitions,
+test, not as a mandatory full preamble for a routine, already-resolved test. It
+works through ownership versus public previews, failed repetitions,
 revocation and delayed jobs, interpreter evidence, server-side callbacks,
 business-state races, chain compatibility and source-to-deployment differences.
 Use `bug-bounty-methodology` for the compact class-specific proof-oracle matrix.
 
-Load `real-world-validation` before selecting active tests or promoting a
-candidate. It defines the experiment record, modern surface priorities,
+Load `real-world-validation` when choosing non-trivial active tests or when
+promoting a candidate; reuse the current session's already-loaded guidance. It
+defines the experiment record, modern surface priorities,
 control-specific bypass reasoning, false-positive checks and stop criteria.
 Specialized examples are hypotheses, not known-working exploits. Confirm
 technology, version, configuration, scope and observed impact before using them.

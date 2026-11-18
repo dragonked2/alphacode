@@ -547,7 +547,23 @@ fn watch_git_state(repo_root: &Path) {
 
     println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
 
-    println!("cargo:rerun-if-changed={}", git_dir.join("index").display());
+    // Deliberately NOT watching `index`.
+    //
+    // The stamp embeds `HEAD`, the ref, and a dirty flag derived from
+    // `git status`. `.git/index` is a *stat cache*: ordinary read-only commands
+    // (`git status`, `git diff`, editor git integrations) rewrite it whenever
+    // they refresh file metadata, without changing any commit, ref, or tracked
+    // content. Watching it meant that merely looking at the repository caused
+    // build-script rerun and a partial recompile of every crate that depends on
+    // the stamp — a recurring cost that made "I only ran git status" feel like
+    // a rebuild.
+    //
+    // Correctness is preserved because the value derived from the index is the
+    // dirty flag, and a dirty flag can only change when tracked *content*
+    // changes — which is already covered by watching the worktree inputs that
+    // matter here (`HEAD`, the checked-out ref) and by Cargo's own source
+    // change detection. `git describe`/`rev-parse` results are unaffected by
+    // the index.
 
     if let Ok(head) = fs::read_to_string(git_dir.join("HEAD"))
         && let Some(reference) = head.trim().strip_prefix("ref: ")

@@ -31,6 +31,8 @@ struct FfufInput {
     headers: Option<Vec<String>>,
     #[serde(default)]
     no_color: bool,
+    #[serde(default)]
+    max_entries: Option<usize>,
 }
 
 #[async_trait]
@@ -46,7 +48,7 @@ impl Tool for FfufTool {
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["url", "wordlist"],
+            "required": ["url", "wordlist", "max_entries", "rate_limit"],
             "properties": {
                 "intent": super::intent_schema_property(),
                 "url": {
@@ -56,6 +58,10 @@ impl Tool for FfufTool {
                 "wordlist": {
                     "type": "string",
                     "description": "Required. Path to a wordlist file, one entry per line. ffuf ships no wordlist of its own, so this must point at a real file."
+                },
+                "max_entries": {
+                    "type": "integer", "minimum": 1, "maximum": 100000,
+                    "description": "Required explicit search-space bound. State this count (and wordlist source/alphabet/length where applicable) before enumeration."
                 },
                 "extensions": {
                     "type": "string",
@@ -71,7 +77,7 @@ impl Tool for FfufTool {
                 },
                 "rate_limit": {
                     "type": "integer",
-                    "description": "Requests per second limit. 0 = no limit. Default: 0."
+                    "description": "Requests per second cap; unlimited (0) is rejected. Required."
                 },
                 "method": {
                     "type": "string",
@@ -151,6 +157,7 @@ impl Tool for FfufTool {
             "thread_count".to_string(),
             json!(params.threads.unwrap_or(DEFAULT_THREADS)),
         );
+        metadata.insert("max_entries".to_string(), json!(params.max_entries));
 
         Ok(ToolOutput::new(result)
             .with_title(format!("ffuf: {total} results"))
@@ -165,6 +172,22 @@ impl FfufTool {
 }
 
 fn build_args(params: &FfufInput) -> Result<Vec<String>> {
+    let max_entries = params.max_entries.ok_or_else(|| anyhow::anyhow!(
+        "ffuf requires `max_entries` as an explicit search-space bound; estimate the wordlist size first (example: {{\"max_entries\":5000}})"
+    ))?;
+    if max_entries == 0 || max_entries > 100_000 {
+        anyhow::bail!(
+            "max_entries must be between 1 and 100000; split larger jobs into bounded runs"
+        );
+    }
+    let rate_limit = params.rate_limit.ok_or_else(|| anyhow::anyhow!(
+        "ffuf requires a bounded `rate_limit` in requests/second (example: {{\"rate_limit\":5}})"
+    ))?;
+    if rate_limit == 0 || rate_limit > 100 {
+        anyhow::bail!(
+            "rate_limit must be between 1 and 100 requests/second; unlimited enumeration is disabled"
+        );
+    }
     let url = super::recon_common::validate_target(&params.url)?;
     if !url.contains("FUZZ") {
         return Err(anyhow::anyhow!(
@@ -183,10 +206,15 @@ fn build_args(params: &FfufInput) -> Result<Vec<String>> {
     // pointing at a file that was never there.
     match params.wordlist.as_deref() {
         Some(wordlist) => {
+            let checked = super::recon_common::validate_file_arg(wordlist, "wordlist")?;
+            let count = std::fs::read_to_string(&checked)?.lines().count();
+            if count > max_entries {
+                anyhow::bail!(
+                    "wordlist has {count} entries, exceeding declared max_entries={max_entries}; use a smaller bounded wordlist"
+                );
+            }
             args.push("-w".to_string());
-            args.push(super::recon_common::validate_file_arg(
-                wordlist, "wordlist",
-            )?);
+            args.push(checked);
         }
         None => {
             return Err(anyhow::anyhow!(
@@ -210,12 +238,10 @@ fn build_args(params: &FfufInput) -> Result<Vec<String>> {
     args.push("-timeout".to_string());
     args.push(timeout.to_string());
 
-    if let Some(rate) = params.rate_limit
-        && rate > 0
-    {
-        args.push("-rate".to_string());
-        args.push(rate.to_string());
-    }
+    args.push("-rate".to_string());
+    args.push(rate_limit.to_string());
+    args.push("-maxtime-job".to_string());
+    args.push("120".to_string());
 
     if let Some(ref method) = params.method {
         args.push("-X".to_string());
@@ -263,30 +289,47 @@ mod tests {
 
     #[test]
     fn test_build_args_basic() {
+        // `build_args` reads the wordlist to enforce the declared entry bound,
+        // so the fixture must be a real file rather than a bare name.
+        let dir = tempfile::tempdir().unwrap();
+        let wordlist = dir.path().join("common.txt");
+        std::fs::write(&wordlist, "admin\nlogin\napi\n").unwrap();
         let input = FfufInput {
             url: "https://example.com/FUZZ".to_string(),
-            wordlist: Some("common.txt".to_string()),
+            wordlist: Some(wordlist.to_string_lossy().into_owned()),
             extensions: None,
             threads: None,
             timeout: None,
-            rate_limit: None,
+            // A bounded rate is mandatory: unlimited enumeration is refused.
+            rate_limit: Some(5),
             method: None,
             data: None,
             headers: None,
             no_color: false,
+            max_entries: Some(5000),
         };
         let args = build_args(&input).expect("build_args");
         assert!(args.contains(&"-u".to_string()));
         assert!(args.contains(&"https://example.com/FUZZ".to_string()));
         assert!(args.contains(&"-w".to_string()));
-        assert!(args.contains(&"common.txt".to_string()));
+        assert!(args.contains(&wordlist.to_string_lossy().into_owned()));
+        // The advertised bound must actually reach the tool invocation.
+        let rate_idx = args.iter().position(|a| a == "-rate").expect("-rate flag");
+        assert_eq!(args[rate_idx + 1], "5");
     }
 
     #[test]
     fn no_color_uses_supported_ffuf_flags_and_structured_results() {
-        let input: FfufInput = serde_json::from_value(
-            json!({"url":"http://example.com/FUZZ", "wordlist":"words.txt", "no_color":true}),
-        )
+        let dir = tempfile::tempdir().unwrap();
+        let wordlist = dir.path().join("words.txt");
+        std::fs::write(&wordlist, "one\ntwo\n").unwrap();
+        let input: FfufInput = serde_json::from_value(json!({
+            "url": "http://example.com/FUZZ",
+            "wordlist": wordlist.to_string_lossy(),
+            "no_color": true,
+            "max_entries": 100,
+            "rate_limit": 5
+        }))
         .unwrap();
         let args = build_args(&input).unwrap();
         assert!(!args.iter().any(|arg| arg == "-nc"));
@@ -319,6 +362,7 @@ mod tests {
             data: None,
             headers: None,
             no_color: false,
+            max_entries: None,
         };
         let err = build_args(&input).expect_err("must require a wordlist");
         assert!(
@@ -341,6 +385,7 @@ mod tests {
             data: None,
             headers: None,
             no_color: false,
+            max_entries: Some(100),
         };
         assert!(build_args(&input).is_err());
     }

@@ -4,6 +4,39 @@ use std::path::Path;
 
 const MAX_LEDGER_BYTES: usize = 12 * 1024;
 
+/// Which kind of open mission a session is running. Only the reminder wording
+/// differs; the progress-bound bookkeeping is shared so a challenge and a
+/// security engagement cannot drift into looping on their own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum MissionKind {
+    Challenge,
+    Security,
+}
+
+impl MissionKind {
+    fn reminder(self) -> &'static str {
+        match self {
+            Self::Challenge => {
+                "<system-reminder>Authorized challenge work is still open. Check the recorded \
+                 evidence and continue with the next actionable todo. Verify the objective before \
+                 reporting completion. If a concrete blocker prevents every next step, record it \
+                 and preserve the evidence and the action needed to resume.</system-reminder>"
+            }
+            Self::Security => {
+                "<system-reminder>This authorized security engagement still has actionable work. \
+                 Keep executing now instead of stopping to ask setup questions. A missing username, \
+                 banner header, cookie, or second account blocks only the specific tests that need \
+                 it - do the independent permitted work first (passive reconnaissance, source or \
+                 bundle review, API and documentation analysis, evidence capture) and record what \
+                 each step established. Ask the user only for a prerequisite that genuinely blocks \
+                 every remaining step, phrase it as one specific request, and continue everything \
+                 else while you wait. Do not repeat the scope summary back to the user, and do not \
+                 wait for permission for steps already authorized by the engagement.</system-reminder>"
+            }
+        }
+    }
+}
+
 pub(super) fn is_ctf_request(text: &str) -> bool {
     text.split(|ch: char| !ch.is_alphanumeric())
         .any(|word| word.eq_ignore_ascii_case("ctf"))
@@ -20,8 +53,59 @@ impl super::Agent {
                 .is_some_and(is_ctf_request)
     }
 
-    pub(super) fn continue_ctf_goal(
+    /// True when this session is running an authorized security engagement: an
+    /// installed engagement scope, a security skill, or a persisted hunt
+    /// ledger. Deliberately not satisfied by ordinary conversation, so a fresh
+    /// "hi" turn is never force-continued into a second model call.
+    pub(super) fn security_goal_active(&self) -> bool {
+        if self.active_skill.as_deref().is_some_and(|skill| {
+            matches!(
+                skill,
+                "bugbounty" | "vuln-hunter" | "nodejs-security" | "security-audit"
+            )
+        }) {
+            return true;
+        }
+        if crate::tool::scope::session_scope_policy(&self.session.id)
+            .is_some_and(|policy| !policy.in_scope.is_empty())
+        {
+            return true;
+        }
+        self.research_ledger_path("hunt.md")
+            .is_some_and(|path| path.is_file())
+    }
+
+    /// Which open mission, if any, this session is running. Challenge wins over
+    /// security because the CTF reminder is the more specific instruction.
+    pub(super) fn open_mission(&self) -> Option<MissionKind> {
+        if self.ctf_goal_active() {
+            Some(MissionKind::Challenge)
+        } else if self.security_goal_active() {
+            Some(MissionKind::Security)
+        } else {
+            None
+        }
+    }
+
+    fn research_ledger_path(&self, filename: &str) -> Option<std::path::PathBuf> {
+        let working_dir = self.session.working_dir.as_deref()?;
+        Some(
+            Path::new(working_dir)
+                .join(crate::tool::research_ledger_relative_dir(&self.session.id))
+                .join(filename),
+        )
+    }
+
+    /// Re-prompt an open mission that ended its turn without a tool call while
+    /// actionable work remained.
+    ///
+    /// Bounded by the caller's progress set: the same todo list plus the same
+    /// on-disk ledger metadata only ever produces one continuation, so a model
+    /// that keeps replying without changing anything stops after one nudge
+    /// instead of looping.
+    pub(super) fn continue_open_mission(
         &mut self,
+        kind: MissionKind,
         attempted: &mut std::collections::HashSet<u64>,
     ) -> anyhow::Result<bool> {
         use std::hash::{Hash, Hasher};
@@ -45,11 +129,12 @@ impl super::Agent {
             (&todo.id, &todo.content, &todo.status, &todo.blocked_by).hash(&mut progress);
         }
         if let Some(working_dir) = &self.session.working_dir {
-            let path = Path::new(working_dir)
-                .join(crate::tool::research_ledger_relative_dir(&self.session.id))
-                .join("challenge.md");
-            if let Ok(metadata) = std::fs::metadata(path) {
-                (metadata.len(), metadata.modified().ok()).hash(&mut progress);
+            let ledger_dir = Path::new(working_dir)
+                .join(crate::tool::research_ledger_relative_dir(&self.session.id));
+            for filename in ["challenge.md", "hunt.md"] {
+                if let Ok(metadata) = std::fs::metadata(ledger_dir.join(filename)) {
+                    (metadata.len(), metadata.modified().ok()).hash(&mut progress);
+                }
             }
         }
         if !attempted.insert(progress.finish()) {
@@ -59,12 +144,36 @@ impl super::Agent {
         self.add_message(
             super::Role::User,
             vec![super::ContentBlock::Text {
-                text: "<system-reminder>Authorized challenge work is still open. Check the recorded evidence and continue with the next actionable todo. Verify the objective before reporting completion. If a concrete blocker prevents every next step, record it and preserve the evidence and the action needed to resume.</system-reminder>".to_string(),
+                text: self.mission_reminder(kind),
                 cache_control: None,
             }],
         );
         self.session.save()?;
         Ok(true)
+    }
+
+    /// Reminder text for the open mission, annotated with the on-disk solve
+    /// state for challenges.
+    ///
+    /// The solve state is appended only when a record exists, so a challenge
+    /// with no ledger keeps the exact wording it always had. When a record does
+    /// exist it prevents the common overclaim: a regex-matched "flag{...}" is a
+    /// candidate, and a continuation prompt that omits that distinction invites
+    /// the model to report the challenge as solved.
+    fn mission_reminder(&self, kind: MissionKind) -> String {
+        let mut text = kind.reminder().to_string();
+        if kind == MissionKind::Challenge
+            && let Some(directory) = self.session.working_dir.as_deref()
+        {
+            let summary = crate::tool::solve_state_summary(&self.session.id, Path::new(directory));
+            // `solve_state_summary` reports "none recorded" for the common case;
+            // only add a line when something was actually recorded.
+            if !summary.contains("none recorded") {
+                let insert_at = text.rfind("</system-reminder>").unwrap_or(text.len());
+                text.insert_str(insert_at, &format!(" {summary}"));
+            }
+        }
+        text
     }
 }
 
@@ -172,6 +281,33 @@ mod tests {
         assert!(is_ctf_request("Solve this web CTF"));
         assert!(is_ctf_request("capture the flag challenge"));
         assert!(!is_ctf_request("Inspect ctfd_client.rs"));
+    }
+
+    /// The security reminder is the fix for "asks setup questions, never acts".
+    /// It must tell the model to keep executing permitted work and to treat a
+    /// missing prerequisite as blocking only the tests that need it.
+    #[test]
+    fn security_reminder_forbids_stalling_on_setup_questions() {
+        let reminder = MissionKind::Security.reminder();
+        assert!(reminder.contains("Keep executing now"));
+        assert!(reminder.contains("instead of stopping to ask setup questions"));
+        assert!(reminder.contains("blocks only the specific tests that need"));
+        assert!(reminder.contains("do the independent permitted work first"));
+        assert!(reminder.contains("Ask the user only for a prerequisite"));
+        assert!(reminder.contains("Do not repeat the scope summary"));
+    }
+
+    /// The challenge reminder is user-visible behaviour that predates this
+    /// change; generalizing the gate must not silently rewrite it.
+    #[test]
+    fn challenge_reminder_keeps_its_original_wording() {
+        assert_eq!(
+            MissionKind::Challenge.reminder(),
+            "<system-reminder>Authorized challenge work is still open. Check the recorded \
+             evidence and continue with the next actionable todo. Verify the objective before \
+             reporting completion. If a concrete blocker prevents every next step, record it \
+             and preserve the evidence and the action needed to resume.</system-reminder>"
+        );
     }
 
     #[test]

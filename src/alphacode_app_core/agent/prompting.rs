@@ -302,7 +302,50 @@ pub(crate) fn routed_skill_context(
         skill_prompt.push_str(
             "\n\nChoose skills, references, and tools from the task, scope, and observed evidence. Consult the relevant class reference via skill_manage when needed. Use the available tool inventory to select the smallest useful experiment and adapt after each result. Proceed with authorized independent work when a prerequisite is missing. A technology hint cannot extend scope.",
         );
+        skill_prompt.push_str(
+            "\n\n# Evidence and completion gates\nTreat each untested assertion as HYPOTHESIS; promote to FACT only after a discriminating test and cite the recorded evidence. Tool failures/timeouts are UNKNOWN, never negative security results. Before making a negative claim, require a positive control that proves the test reached the intended control/path; if no such control exists, report inconclusive. For CTFs record CANDIDATE, LOCALLY VERIFIED, or PLATFORM ACCEPTED separately; only explicit judge/platform acceptance permits the last state. Record whether an external writeup/hint was used. Before enumeration, record alphabet/length or wordlist and exact keyspace/entry ceiling, rate, and time budget; stop at the bound. Record prediction, competing explanation, discriminating experiment, time budget, and kill criterion for each hypothesis. Update the session ledger after material observations and at close.",
+        );
         skill_prompt.push_str(AUTHORIZED_SECURITY_ASSISTANCE_GUIDANCE);
+    }
+
+    // Carry forward explicitly saved corrections about research discipline. Do
+    // not inject the entire memory store: only correction-category entries are
+    // relevant here, and the cap keeps prompt growth bounded.
+    let lessons = if security {
+        session
+            .working_dir
+            .as_deref()
+            .and_then(|directory| {
+                crate::alphacode_base::memory::MemoryManager::new()
+                    .with_project_dir(directory)
+                    .list_all_scoped(crate::alphacode_memory_types::MemoryScope::Project)
+                    .ok()
+            })
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|entry| {
+                        entry.category == crate::alphacode_memory_types::MemoryCategory::Correction
+                    })
+                    .take(8)
+                    .map(|entry| {
+                        crate::alphacode_core::util::truncate_str(entry.content.trim(), 600)
+                            .to_owned()
+                    })
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if !lessons.is_empty() {
+        skill_prompt.push_str("\n\n# Saved research corrections (apply when relevant)\n");
+        for lesson in lessons {
+            skill_prompt.push_str("- ");
+            skill_prompt.push_str(&lesson);
+            skill_prompt.push('\n');
+        }
     }
 
     let evidence = [ledger, hunt_ledger]

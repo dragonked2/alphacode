@@ -24,11 +24,13 @@ budgets, prohibited actions, evidence location and requested terminal outcome.
 Treat a request for a critical finding or a ranking as an objective to investigate
 thoroughly, never as a quota to satisfy by changing evidence or severity.
 
-Load the `bugbounty` parent. Read `hunting-intelligence` for the product/trust model,
-`investigation-control` for durable coverage and `reasoning-cases` for worked
-hypothesis-to-proof decisions. Use `skill_manage` with `action=read`,
-`name=bugbounty`, and the reference key; do not assume nested references are
-separate installed skills. Load class references only when applicable.
+Load the `bugbounty` parent. Load only the references needed for the next decision:
+`hunting-intelligence` when mapping a broad/unclear product, `investigation-control`
+for a resumed or coverage-heavy assessment, and `reasoning-cases` when a lead needs
+causal discrimination. Use `skill_manage` with `action=read`, `name=bugbounty`,
+and the reference key; do not assume nested references are separate installed
+skills. Load class references only when the observed surface justifies them; do
+not repeatedly load the same guidance or front-load the entire library.
 
 ## Build a useful model before selecting tests
 
@@ -109,6 +111,20 @@ Do not use arbitrary five-minute or one-hour rules to abandon an unresolved
 program. Reassess when new evidence changes expected information value. Avoid
 retrying equivalent payloads with unchanged prerequisites. Reopen a rejected
 hypothesis only with a specific new observation, policy change or mechanism.
+### Keep the mission moving
+Treat the user's objective and already-established scope as authorization for
+ordinary bounded, non-destructive supporting work. Do not ask for another
+permission confirmation, a second “go”, or a repeated scope summary. When a
+prerequisite is unavailable, mark only dependent experiments BLOCKED and execute
+independent authorized work immediately. Ask the user only for a specific
+missing fact that materially changes the next permitted action, or when it blocks
+every useful remaining step. Do not wait on that answer to do independent work.
+For tool failures, diagnose the tool once or switch to a suitable alternative;
+never convert a missing binary, timeout, inaccessible account or policy fetch
+failure into a target-negative result. Before resuming stale notes, validate the
+target revision, official policy, identity, fixture state, and evidence age; reuse
+only what still matches and record invalidated evidence rather than silently
+carrying it forward.
 
 For chains, compare demonstrated capability with the next edge's prerequisites:
 actor, tenant, origin, scope, lifetime, configuration and reachable operation must

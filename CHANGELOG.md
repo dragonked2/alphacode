@@ -4,6 +4,320 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [1.1.11] - 2026-11-18
+
+### Fixed
+
+- The Windows reload handoff could never complete. The detached reload helper
+  opened its predecessor with `PROCESS_QUERY_LIMITED_INFORMATION` (0x1000) and
+  then called `WaitForSingleObject`, which requires `SYNCHRONIZE`
+  (0x00100000). The mask lacked that bit, so the wait failed deterministically
+  with `WAIT_FAILED` / `ERROR_ACCESS_DENIED` ("Access is denied"), the helper
+  aborted instead of launching a replacement, and the client sat on
+  "Waiting for handoff · 0s" with the resume hint until it was killed. The
+  handle is now opened with `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE`,
+  which was confirmed against a live process: a correct mask returns
+  `WAIT_TIMEOUT` while the target runs and `WAIT_OBJECT_0` after it exits.
+  Verified by three new Windows tests, including one that exercises the real
+  Win32 handle rather than comparing constants.
+- A wait primitive that cannot be used is no longer treated as proof that the
+  predecessor is still alive. Both the `WaitForSingleObject` failure path and
+  the `OpenProcess` failure path now fall back to bounded liveness polling
+  (same 30-second ceiling, 50 ms steps). A protected or policy-filtered process
+  that can be queried but not synchronized on therefore no longer aborts the
+  reload, while the original guarantee is preserved: the replacement is never
+  started while the predecessor may still own the named-pipe endpoint.
+- Console windows no longer flash repeatedly during reload and update. The
+  reload helper is spawned detached (`CREATE_NO_WINDOW | DETACHED_PROCESS`), so
+  it owns no console; the replacement server is a console-subsystem binary, and
+  Windows allocates a *new visible console window* for a console program started
+  without one. Every spawn therefore flashed a window. Measured directly: a
+  console-less parent launching an unflagged CUI child reported a non-null
+  `GetConsoleWindow()`, while the same spawn with `CREATE_NO_WINDOW` reported
+  `null`. The replacement server, and three unguarded console-subsystem spawns
+  in the Scrapling tool, now use `CREATE_NO_WINDOW` like the rest of the daemon
+  already did.
+- A CTF "solved" claim can no longer be manufactured from a matched string. The
+  solve-state machinery (`Candidate` → `LocallyVerified` → `PlatformAccepted`)
+  was added but never wired in, which both left the guarantee unenforced and
+  would have failed CI under `-D warnings`. It is now persisted per session to
+  `solve.json` (write-then-rename, so a crash cannot leave a half-parsed claim
+  that reads back as a different one) and used by `ctf_auto_solver`: a regex hit
+  records `CANDIDATE` and the output states plainly that the challenge must not
+  be reported as solved. A later candidate-only pass cannot demote an already
+  verified record, and `PLATFORM_ACCEPTED` still requires an explicit platform
+  confirmation.
+- `ffuf` refused every call until its tests were corrected: `rate_limit` is now
+  mandatory and `max_entries` is checked against the real wordlist on disk, but
+  two tests still passed `rate_limit: None` and a bare filename. They now build
+  a real wordlist fixture, pass a bounded rate, and assert that the advertised
+  bound actually reaches the `-rate` argument.
+
+### Changed
+
+- A named bug bounty program no longer stalls on setup questions. The
+  continuation gate that re-prompts an unfinished mission was keyed to CTF work
+  only (`ctf_goal_active`), so a session started with "start bugbounty hunting
+  on this program" could reply with a scope summary plus "which asset / what is
+  your username / do you have a second account", end its turn, and execute
+  nothing. `MissionKind` now distinguishes challenge from security work:
+  `open_mission()` treats an installed engagement scope, a security skill
+  (`bugbounty`, `vuln-hunter`, `nodejs-security`, `security-audit`), or a
+  persisted `hunt.md` ledger as an active security mission, and the server
+  reminder tells the model to keep executing permitted independent work
+  (passive recon, source/bundle review, API analysis) instead of waiting on the
+  operator, to ask only for a prerequisite that blocks *every* remaining step,
+  and to stop restating the scope. The continuation stays bounded by the same
+  todo-plus-ledger progress hash as before, so an unchanged state produces at
+  most one nudge rather than a loop.
+- The bounty orchestrator no longer advances past a phase that had failures or
+  blocked tasks. A phase used to log `failed > 0` and then advance anyway, so
+  dependent testing and reporting phases ran on a coverage gap they never
+  acknowledged. A failed phase now stops the workflow with an actionable error
+  and leaves the phase pointer in place.
+- Security missions carry saved research corrections and an explicit evidence
+  gate into the prompt. Untested assertions stay `HYPOTHESIS` until a
+  discriminating test promotes them, tool failures and timeouts are recorded as
+  `UNKNOWN` rather than as negative security results, and a negative claim
+  requires a positive control.
+- Broad security playbooks are no longer loaded as an unconditional per-turn
+  preamble. `researcher-reasoning`, `reasoning-cases`, `real-world-validation`
+  and `investigation-control` are loaded when a lead is non-obvious, stalls, or
+  needs promoting, so a narrow already-modeled question does not pay for the
+  full discovery playbook on every turn.
+
+### Performance
+
+- Per-frame UI cost was measured rather than assumed. A full-screen clear over
+  bounds-checked `Buffer` indexing costs ~1.6 µs/frame at 120x40 and ~4.8 µs at
+  240x70 (about 0.01% of a core at animation FPS), so it was left unchanged
+  instead of being optimized into a plausible-looking but meaningless rewrite.
+- The build script no longer reruns for a read-only `git status`. It declared
+  `cargo:rerun-if-changed` on `.git/index`, which is a stat cache that ordinary
+  `git status`, `git diff` and editor git integrations rewrite by refreshing
+  file metadata — with no commit, ref or tracked content changing. Merely
+  looking at the repository therefore reran the build script and recompiled
+  every importer of the version stamp. Measured before: a warm no-op
+  `cargo check --lib` cost 13 s after a `git status`; after: 0 s. Correctness is
+  unaffected because the only value derived from the index is the dirty flag,
+  which feeds the cosmetic `-dev ... dirty` suffix; the release version and the
+  update-comparison semver (`ALPHACODE_UPDATE_SEMVER`) come from
+  `build_version`, so update decisions cannot change.
+- New `make` targets stop the two ways this repository's own verification
+  invalidated its dev cache. `make check-strict` and `make clippy-strict` run
+  CI's `RUSTFLAGS="-D warnings"` gates in a separate `STRICT_TARGET_DIR`, so
+  strict artifacts and fast dev artifacts stay warm independently; previously
+  each strict run recompiled the whole graph and then invalidated it again on
+  the way back (`RUSTFLAGS` participates in Cargo's fingerprint), which is why
+  strict checking got deferred until CI rejected the branch. `make test-one
+  FILTER=<name>` runs a name-filtered test against the already-linked binary
+  instead of relinking the 149 MB test binary per check, and `make test-fast`
+  prefers `cargo nextest` when installed.
+
+## [1.1.10] - 2026-11-17
+
+### Security
+
+- `bash` was outside engagement scope enforcement. `is_network_tool()`
+  enumerated roughly thirty scanner names and `bash` was not one of them, so
+  `enforce_call` returned `Ok(())` before reading any input: a scoped session
+  could reach any host by running `curl`, `nmap`, or `ssh` from a shell, which
+  defeated the centralization rationale that the thirty-first tool is the one
+  that forgets. `scope::shell_network_targets` now tokenizes the command with
+  the existing `alphacode_command_risk::split_segments`, identifies segments
+  whose program is a network client, and extracts destination operands.
+  Value-taking flags (`-H`, `-o`, `-d`, `--wordlist`, ...) are consumed as data
+  so headers and output paths are not mistaken for hosts, `-l`/`--list`
+  destination files are read with the existing bounds and truncation sentinel,
+  and tokens naming an existing local file are treated as file operands
+  (`ssh -i key`, `curl --data @body`).
+- A destination that only exists after shell expansion (`curl "$T"`,
+  `curl $(cat u.txt)`, `%TARGET%` under cmd.exe) is now refused rather than
+  assumed in scope, because "unknown" must not silently mean "allowed".
+- `browser` and `open` reached the network ungated: both load a caller-supplied
+  URL and neither was in `is_network_tool`. They are now gated on their
+  destination field but are deliberately *not* reclassified as scanner tools,
+  because that predicate also drives request pacing and probe-burst accounting,
+  and `open report.pdf` must not consume a network permit. Only absolute
+  `http`/`https`/`ws`/`wss` destinations are checked, so local paths, `file:`
+  and `mailto:` targets are unaffected.
+- `max_rate_rps` did not hold under concurrency. Admission read the instant of
+  the last admitted call under a read lock, released the lock, then slept, so N
+  concurrent callers read the same timestamp, computed the same wait, and were
+  admitted together — producing exactly the burst the policy exists to prevent
+  in exactly the situation (swarm/parallel subagents) where it matters.
+  Admission now reserves its slot (`next_admission`) while holding the write
+  lock, and reservations are cleared when a policy is replaced so a new rate is
+  not delayed by a schedule made under the old one.
+- Saturated concurrency permits were never counted. The wait loop's guard read
+  `waited >= Duration::ZERO`, true on the first failed compare-exchange, so the
+  intended bounded wait never ran, and the saturated branch returned
+  `NetworkPermit::none()`, a permit that releases nothing. The ceiling reported
+  as enforced while being exceeded. The branch now takes the extra slot through
+  the same atomic as the fast path and returns a real, counted permit.
+- The agent could authorize its own engagement. `investigation` with
+  `action: "start"` accepted `in_scope` from model-supplied tool arguments and
+  installed it as an enforcing session `ScopePolicy`, so a model could submit
+  `in_scope: ["0.0.0.0/0"]` and convert a session with no authorization into a
+  fail-closed gate that permitted every address — and later prompts then
+  reported that scope back to the model as established fact. `in_scope` is now
+  accepted only when an operator-installed scope already exists and only
+  records the operator-visible asset list; it cannot create, widen, or replace
+  a policy. `out_of_scope` is deliberately not applied as a narrowing filter,
+  because silently subtracting rules would let the model shrink what the
+  operator granted and then report the result as the engagement's real
+  boundary.
+- Bare Windows drive roots (`C:/`, `D:/`) are rejected as accepted temp roots on
+  every platform. Such a path names an entire filesystem, so accepting it
+  disabled the destructive-target protection the temp-root exemption exists to
+  bound.
+
+### Fixed
+
+- The 1.1.10 tag could not publish at first. `61fbfff4` left an unbalanced `}`
+  in `test_tui_cerebras_paste_key_lifecycle_has_no_degraded_success_messages`,
+  a parse error that stopped `cargo test --lib` from compiling on every
+  platform, so the release job's "Require green CI for this source revision"
+  gate blocked publication. Fixed by `79a89d0e`; the lightweight `v1.1.10` tag
+  was re-pointed at `9c1cef74` once that revision's CI was green.
+- The `↑N` / `↓N` scroll affordances measured their geometry from
+  `String::len()` — UTF-8 bytes, not terminal cells. `↑14` is five bytes but
+  three columns, so the glyphs were drawn two columns left of where they were
+  measured and, because they were painted after the transcript paragraph, they
+  overwrote content (at 40 columns they landed inside the quick-start guide
+  text). They are now planned before the transcript is painted: each host row
+  reserves the affordance width in its right margin, a row is trimmed with a
+  dim ellipsis only when content actually reaches the edge, and the rect is
+  measured with `UnicodeWidthStr::width` and drawn flush right.
+- The composer footer listed two hints for one action (`Alt+Enter newline` and
+  `\+Enter newline`) even though Shift+Enter, Alt/Option+Enter and a trailing
+  backslash then Enter all reach `newline::enter_inserts_newline`. On a
+  120-column terminal the repetition pushed the rounded corner off the row; a
+  single entry now covers the action.
+- The browser tool dead-ended at its managed tab limit. `new_tab=true` is a
+  preference, not a reason to fail the whole tool, so once a session owned its
+  bounded number of tabs it now recycles the least-recently-used compatible
+  live tab instead of returning "this session has reached its N-tab limit".
+  Only tabs allocated or claimed by the session are eligible, and every
+  subsequent action stays explicitly pinned to the selected tab id. The error
+  now survives only when no owned tab matches the requested window or
+  container.
+- `tool_help` `action=inspect` required exactly one name in `tools` and ignored
+  `query`, so the common spelling that mirrors `search` — putting the one exact
+  tool name in `query` — became a failed tool row. Inspect now accepts `query`
+  when `tools` is empty, resolves an unambiguous catalog match, accepts several
+  tool names at once, and keeps unavailable tools as an error (a success
+  payload would let a session-policy denial read as a normal catalog answer).
+- Browser eval failures outside the recognized wording lost the bridge's
+  diagnostic and offered no recovery route. Unrecognized eval errors now keep
+  the full message and add a concrete next step (re-snapshot, retry one small
+  expression ending in `return <value>`, and set `page_world: true` only when
+  the script needs page-defined variables). Eval error detection is also
+  case-insensitive and covers `action 'evaluate' failed` and `Firefox script`
+  phrasings.
+- Restored engagement checkpoints could fail to deserialize. `AttackChain`
+  gained many optional fields over time without `#[serde(default)]`, so a chain
+  persisted by an older build failed to load instead of defaulting the new
+  fields.
+- `should_stop` reported a stop reason from parameters it then stopped
+  consulting, and `ResourceLedger::exhausted()` reported exhaustion that no
+  longer gated dispatch. Both now state their actual behaviour: the ledger
+  still counts calls for reporting, and adaptive stopping no longer terminates a
+  run on a repeated action, repeated failure, or a spent budget. Continuation
+  nudges remain bounded by their own progress checks, and per-experiment
+  `attempt_budget` ceilings are unchanged.
+- The banner band could reserve rows it could not fill, and a zero-width frame
+  still built banner lines. `build_banner_band_lines` now returns nothing at
+  width zero and truncates each line to the band width.
+- `resume_summary` spent context on decoration. It no longer duplicates the
+  findings totals that the investigation summary already carries, states timing
+  only when phases were recorded, and keeps next actions as a compact list.
+- Flaky tests that produced false red CI: `session_watchdog` asserted an exact
+  recovery delta against a process-global counter; the memory-manager state
+  lock wait was raised from 2s to 10s so concurrent updates finish on slower
+  Windows runners; `test_tui_login_providers_have_real_tui_handlers` now holds
+  `Bus::test_bus_lock()` (after settling the scratch home, preserving the
+  env-then-bus order) so Alphax Free's bundled-key `LoginCompleted` cannot leak
+  into a concurrently running subscriber; and the structured-research
+  reassessment test now installs a session scope so `in_scope` has an
+  authorized policy to record against.
+- The centered composer caret, click hit-testing, and copy-selection margins
+  used `(area_width - line_width) / 2` while ratatui centers with
+  `area_width / 2 - line_width / 2`. The two disagree whenever the widths have
+  different parity, which drifts the caret one cell off the painted glyph and
+  puts a selection highlight on the wrong characters. Both paths now share
+  `centered_line_offset`.
+- The status-row background was a hard-coded RGB constant while the row is
+  filled from the theme, so a light or indexed theme left the fill and the
+  right-fact exemption disagreeing about which cells were blank.
+- `palette::index_of` scanned the role table on the render path. It is now a
+  constant-time cast, with the enum/table ordering pinned by the existing
+  `every_role_is_indexable` test.
+
+### Changed
+
+- Prompt token estimates share one heuristic. `estimate_tokens_chars` replaces
+  the scattered `/ 4` divisions in prompt accounting, the split-system-prompt
+  estimate, tool-definition accounting, provider dispatch, and the TUI stats
+  line, so compaction, display, and dispatch agree on the same number.
+- The composer's copy snapshot is built once per layout instead of per frame.
+  Wrapped plain lines, copy offsets, raw lines and the wrapped-line map are
+  cached behind `Arc` and invalidated with the layout, so moving the caret
+  through a large draft no longer re-allocates the full copy geometry.
+- The shell tokenizer's `split_segments` is exported from
+  `alphacode_command_risk` so scope enforcement and command risk share one
+  segmenter instead of maintaining parallel approximations.
+- The system prompt's skills section is now `# Skills (load on demand)` with
+  `skill_manage` guidance, replacing a section that presented skills as
+  user-only `/skillname` commands.
+- The bundled bug-bounty skill recognizes more security phrasing
+  (`application security`, `appsec`, `red team`, `security testing`,
+  `vulnerability research`, `authorized assessment`) and states that
+  cybersecurity terminology, scanners, and exploit reproduction are not
+  themselves grounds for refusal.
+
+### Added
+
+- `/engagement [status]` shows the read-only local security-engagement
+  checkpoint: scope-rule and exclusion counts, hypothesis states by status,
+  ledger budgets, in-flight and unfinished work, assets without a validated
+  investigation, and the highest-ranked in-scope lead. It states plainly that a
+  missing checkpoint or empty candidate list is not a coverage verdict, and
+  remote sessions are told to ask the connected agent for `investigation status`
+  instead of presenting a local file read as remote truth.
+- `investigation next` reports `coverage_gap_samples` and
+  `pending_reassessments`, and `EngagementRuntime::summary` adds `lead_states`,
+  gap samples, pending reassessments, chain transitions and the research
+  summary, so a `null` lead can be read as "nothing dispatch-ready right now"
+  rather than "the target is clean".
+- The bundled bug-bounty skill and the routed skill prompt carry an authorized
+  security assistance section: do not refuse or re-request permission for
+  security work already authorized, pause only the specific action with a real
+  scope or access gap, continue permitted independent work, and never infer
+  authorization from reachability or bypass exclusions.
+- Regression coverage for shell scope enforcement (including dynamic
+  destinations and non-network segments), browser/open gating, concurrent rate
+  admission, the counted saturation permit, model-supplied scope rejection,
+  browser tab recycling, multi-tool inspect, the callable-default invariant,
+  cell-width overflow affordances, the composer footer dedupe, centered-line
+  parity, copy-snapshot reuse, and the engagement dashboard.
+
+### Documentation
+
+- `docs/engineering/authorization-pacing-hardening-2026-11-16.md` records the
+  scope-enforcement tranche, its verification table, and its honest limits:
+  shell coverage is program-name based (a script that performs HTTP is not
+  detected), config-driven destinations are not statically resolvable, and full
+  `cargo test --lib` was not run in that tranche.
+- `docs/engineering/tui-ux-pass-2026-11-17.md` records the release-blocker
+  timeline, the cross-test bus leak, the affordance geometry bug, the footer
+  dedupe, and the release verification for tag `v1.1.10`.
+- `scripts/cargo-msvc.cmd` loads the MSVC environment and sets
+  `CARGO_TARGET_DIR` in-process so Windows builds and tests are rerunnable
+  without a wrapper shell.
+
 ## [1.1.9] - 2026-11-15
 
 ### Fixed
@@ -350,10 +664,6 @@ adheres to [Semantic Versioning](https://semver.org/).
   `Enter` (`handle_enter`) and submit (`submit_input`), where it matters before
   command/skill routing, so the per-keystroke call is removed. Typing is now
   allocation-free and avoids repeated filesystem stat calls.
-
-### Added
-
-## [Unreleased]
 
 ## [1.0.95] - 2026-11-05
 

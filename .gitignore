@@ -64,3 +64,4 @@ google*.html
 
 # Container Cargo cache (release workflow)
 .alpine-cargo/
+target-strict

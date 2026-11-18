@@ -1766,7 +1766,7 @@ impl Tool for CtfAutoSolverTool {
         })
     }
 
-    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: CtfAutoSolverInput = serde_json::from_value(input.clone())
             .map_err(|e| anyhow::anyhow!("Invalid ctf_auto_solver input: {}", e))?;
 
@@ -1939,6 +1939,29 @@ impl Tool for CtfAutoSolverTool {
                  automatically — confirm the flag with the platform manually)\n",
                 token.len()
             ));
+        }
+
+        // Record what was actually established. A pattern match is a candidate,
+        // never a solve: the platform is the only authority on acceptance.
+        if let (Some(directory), Some(line)) = (ctx.working_dir.as_deref(), flags_found.first()) {
+            let flag = line
+                .split_once(": ")
+                .map(|(_, f)| f)
+                .unwrap_or(line.as_str());
+            let evidence = format!("regex match for candidate flag {flag}");
+            let state = super::ctf_progress_guard::record_candidate(
+                &ctx.session_id,
+                directory,
+                &evidence,
+                false,
+            );
+            result.push_str(&format!(
+                "{}\n",
+                super::ctf_progress_guard::solve_state_summary(&ctx.session_id, directory)
+            ));
+            if let Err(error) = state {
+                result.push_str(&format!("(solve state not recorded: {error})\n"));
+            }
         }
 
         let mut metadata = HashMap::new();
