@@ -1013,6 +1013,26 @@ fn normalize_action(action: &str) -> &str {
         // trying to make never happened.
         "find" | "search" | "locate" | "find_element" | "query" | "elements" | "list_elements"
         | "list_interactables" => "interactables",
+        // Synchronous load-wait spellings. `open` already waits for the page to
+        // load, so a model that asks for an explicit load wait is expressing the
+        // same intent: accept it rather than failing the turn with
+        // "Unsupported browser action: 'wait_for_load'". Silently doing nothing
+        // would be worse than a no-op open, because the next `snapshot` would
+        // race a page the model believed it had waited for.
+        "wait_for_load"
+        | "waitforload"
+        | "wait_for_navigation"
+        | "waitfornavigation"
+        | "wait_for_page_load"
+        | "wait_until_loaded"
+        | "wait_for_ready"
+        | "wait_for_dom"
+        | "wait_for_network_idle"
+        | "wait_for_networkidle"
+        | "wait_for_selector"
+        | "waitforselector"
+        | "wait_for_timeout"
+        | "sleep" => "wait",
         other => other,
     }
 }
@@ -1954,8 +1974,40 @@ fn bridge_action_for(action: &str, input: &BrowserInput) -> Result<Cow<'static, 
 /// `waitForStable`. Sending `domStable`/`networkIdle` to `waitFor` (as this
 /// used to) matched nothing in the extension and silently degraded to the
 /// readyState check.
+///
+/// An unqualified `wait` (no selector/text/contains/position and no explicit
+/// delay) means "wait for the page to settle", so it resolves to `dom-stable`
+/// rather than failing. The params builder below uses this same helper, because
+/// the bridge action and its parameters are read separately and a mismatch
+/// silently degrades back to the readyState check.
+fn effective_wait_position(input: &BrowserInput) -> Option<&str> {
+    if let Some(position) = input.position.as_deref() {
+        return Some(position);
+    }
+    match input.action.as_str() {
+        "wait_for_network_idle" | "wait_for_networkidle" => Some("network-idle"),
+        "wait_for_load"
+        | "waitforload"
+        | "wait_for_navigation"
+        | "waitfornavigation"
+        | "wait_for_page_load"
+        | "wait_until_loaded"
+        | "wait_for_ready"
+        | "wait_for_dom" => Some("dom-stable"),
+        _ => {
+            let has_target =
+                input.selector.is_some() || input.text.is_some() || input.contains.is_some();
+            if !has_target && input.timeout_ms.is_none() {
+                Some("dom-stable")
+            } else {
+                None
+            }
+        }
+    }
+}
+
 fn wait_bridge_action(input: &BrowserInput) -> &'static str {
-    match input.position.as_deref() {
+    match effective_wait_position(input) {
         Some("dom-stable") | Some("network-idle") => "waitForStable",
         _ => "waitFor",
     }
@@ -2239,15 +2291,31 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
             }
         }
         "wait" => {
-            if input.selector.is_none()
-                && input.text.is_none()
-                && input.contains.is_none()
-                && input.position.is_none()
+            if matches!(
+                input.action.as_str(),
+                "wait_for_selector" | "waitforselector"
+            ) && input.selector.is_none()
+            {
+                anyhow::bail!("wait_for_selector requires a selector");
+            }
+            if matches!(input.action.as_str(), "wait_for_timeout" | "sleep")
                 && input.timeout_ms.is_none()
             {
-                anyhow::bail!(
-                    "wait requires one of: selector, text, contains, timeout_ms (fixed delay), or position='dom-stable'/'network-idle'"
-                );
+                anyhow::bail!("wait_for_timeout requires timeout_ms");
+            }
+            // A `wait` with no target used to be a hard error, which cost a whole
+            // turn: the model asked to wait for a load, was told the arguments
+            // were wrong, and had to guess a spelling. Waiting for the document
+            // to settle is the only sensible reading of an unqualified "wait",
+            // and it is strictly safer than failing — the caller's intent
+            // (proceed once the page is usable) is satisfied instead of denied.
+            // An explicit target still takes precedence.
+            // Default the mode through the same helper the bridge action uses,
+            // so the two can never disagree.
+            if input.position.is_none()
+                && let Some(position) = effective_wait_position(input)
+            {
+                params.insert("position".into(), json!(position));
             }
             // Reject an unknown position up front: the bridge action is chosen
             // from `position` (see `wait_bridge_action`), so a typo would
@@ -4462,6 +4530,14 @@ awaitAll(items)
 
     #[test]
     fn other_playwright_style_aliases_normalize() {
+        // Regression: a session failed with
+        // "Unsupported browser action: 'wait_for_load'. Did you mean 'wai...".
+        // A load wait is a legitimate intent and must resolve, not fail.
+        assert_eq!(normalize_action("wait_for_load"), "wait");
+        assert_eq!(normalize_action("wait_for_navigation"), "wait");
+        assert_eq!(normalize_action("wait_for_selector"), "wait");
+        assert_eq!(normalize_action("wait_for_network_idle"), "wait");
+        assert!(KNOWN_ACTIONS.contains(&normalize_action("wait_for_load")));
         assert_eq!(normalize_action("evaluate"), "eval");
         assert_eq!(normalize_action("js"), "eval");
         assert_eq!(normalize_action("goto"), "open");
@@ -4478,6 +4554,83 @@ awaitAll(items)
                 "canonical action {canonical} must not be rewritten"
             );
         }
+    }
+
+    /// Regression for "wait requires one of: selector, text, contains,
+    /// timeout_ms". An unqualified `wait` must mean "wait for the page to
+    /// settle", which is the caller's actual intent, instead of burning a turn
+    /// on an argument error.
+    #[test]
+    fn unqualified_wait_defaults_to_dom_stable_instead_of_failing() {
+        let input = browser_input(json!({"action": "wait"}));
+        let (bridge_action, params, _) =
+            bridge_request(normalize_action("wait"), &input).expect("bare wait must not fail");
+        assert_eq!(bridge_action, "waitForStable");
+        assert_eq!(params["position"], "dom-stable");
+    }
+
+    /// An explicit target still wins over the default.
+    #[test]
+    fn wait_with_a_target_keeps_the_target() {
+        let input = browser_input(json!({"action": "wait", "selector": "#done"}));
+        let (bridge_action, _params, _) =
+            bridge_request(normalize_action("wait"), &input).expect("targeted wait");
+        assert_eq!(bridge_action, "waitFor");
+    }
+
+    /// A bare timeout is a plain delay and must not be turned into a
+    /// stability wait, which would ignore the requested duration.
+    #[test]
+    fn wait_with_only_a_timeout_stays_a_plain_delay() {
+        let input = browser_input(json!({"action": "wait", "timeout_ms": 500}));
+        let (_bridge_action, params, _) =
+            bridge_request(normalize_action("wait"), &input).expect("timed wait");
+        assert!(
+            params.get("position").is_none(),
+            "an explicit delay must not gain a stability mode"
+        );
+    }
+
+    #[test]
+    fn network_idle_alias_preserves_network_idle_mode_and_timeout() {
+        let input = browser_input(json!({
+            "action": "wait_for_network_idle",
+            "timeout_ms": 1500
+        }));
+        let (bridge_action, params, _) = bridge_request("wait", &input).expect("network idle");
+        assert_eq!(bridge_action, "waitForStable");
+        assert_eq!(params["position"], "network-idle");
+        assert_eq!(params["timeoutMs"], 1500);
+    }
+
+    #[test]
+    fn selector_wait_alias_requires_and_uses_its_selector() {
+        let missing = browser_input(json!({"action": "wait_for_selector"}));
+        assert!(
+            bridge_request("wait", &missing)
+                .unwrap_err()
+                .to_string()
+                .contains("requires a selector")
+        );
+
+        let input = browser_input(json!({
+            "action": "wait_for_selector",
+            "selector": "#ready"
+        }));
+        let (bridge_action, params, _) = bridge_request("wait", &input).expect("selector wait");
+        assert_eq!(bridge_action, "waitFor");
+        assert_eq!(params["selector"], "#ready");
+    }
+
+    #[test]
+    fn timeout_wait_alias_requires_a_duration() {
+        let input = browser_input(json!({"action": "wait_for_timeout"}));
+        assert!(
+            bridge_request("wait", &input)
+                .unwrap_err()
+                .to_string()
+                .contains("requires timeout_ms")
+        );
     }
 
     #[test]

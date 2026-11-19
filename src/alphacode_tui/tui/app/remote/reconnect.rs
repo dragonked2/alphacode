@@ -72,6 +72,38 @@ fn connect_error_is_terminal(error: &anyhow::Error) -> bool {
         || message.contains("returned history for unexpected session")
 }
 
+/// Whether a first connect attempt should be reported as fatal.
+///
+/// The first attempt is normally fatal so a user who never started a server
+/// gets an immediate, actionable message instead of watching an endless
+/// "reconnecting" spinner. That reasoning collapses during a reload handoff:
+/// the predecessor may already have dropped its listener while the replacement
+/// is still binding, so attempt 0 legitimately fails with `PeerClosed` or a
+/// bootstrap truncation. Treating that as fatal turned a normal handoff into
+/// "Failed to connect to server. Is `alphacode serve` running? ... server
+/// disconnected during protocol bootstrap: PeerClosed" printed over the
+/// "reload in progress" status — the reported crash after an auto-update.
+///
+/// So the first-attempt failure is fatal only when no reload is underway. When
+/// one is, the failure falls through to the bounded retry path, which already
+/// knows how to wait for the handoff and to start a replacement server.
+fn first_attempt_failure_is_fatal(
+    reconnect_attempts: u32,
+    server_spawning: bool,
+    reload_in_progress: bool,
+) -> bool {
+    reconnect_attempts == 0 && !server_spawning && !reload_in_progress
+}
+
+/// Whether any reload signal indicates a handoff may still complete.
+///
+/// Two independent sources are consulted because either can outlive the other:
+/// the in-memory run state, and the on-disk marker that a freshly started
+/// client observes when it attaches to a server that is mid-reload.
+fn reload_handoff_signalled(reload_in_progress: bool, recent_reload_state: bool) -> bool {
+    reload_in_progress || recent_reload_state
+}
+
 pub(super) fn format_disconnect_reason(reason: &RemoteDisconnectReason) -> String {
     match reason {
         RemoteDisconnectReason::PeerClosed => "server closed the connection".to_string(),
@@ -505,7 +537,21 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 return Ok(ConnectOutcome::Quit);
             }
-            if state.reconnect_attempts == 0 && !app.server_spawning {
+            // A reload handoff must be allowed to outlive the first failed
+            // attempt. The marker is checked here (not only further below) so
+            // this guard cannot kill a handoff before the retry path, which is
+            // what produced "Failed to connect ... PeerClosed" over the
+            // "reload in progress" status after an auto-update.
+            let reload_in_progress = reload_handoff_signalled(
+                reload_handoff_active(state),
+                crate::alphacode_app_core::server::recent_reload_state(RELOAD_MARKER_MAX_AGE)
+                    .is_some(),
+            );
+            if first_attempt_failure_is_fatal(
+                state.reconnect_attempts,
+                app.server_spawning,
+                reload_in_progress,
+            ) {
                 return Err(anyhow::anyhow!(
                     "Failed to connect to server. Is `alphacode serve` running? Error: {}",
                     e
@@ -1064,7 +1110,52 @@ pub(in crate::alphacode_tui::tui::app) fn finalize_reload_reconnect(
 
 #[cfg(test)]
 mod tests {
-    use super::connect_error_is_terminal;
+    use super::{
+        connect_error_is_terminal, first_attempt_failure_is_fatal, reload_handoff_signalled,
+    };
+
+    /// Regression for the reported auto-update crash.
+    ///
+    /// After an update the client reconnected, hit `PeerClosed` on attempt 0
+    /// because the predecessor had already dropped its listener, and was killed
+    /// by the "first attempt is fatal" guard with
+    /// "Failed to connect to server. Is `alphacode serve` running?" printed over
+    /// "server reload in progress". A handoff must be allowed to retry.
+    #[test]
+    fn reload_handoff_first_attempt_is_not_fatal() {
+        assert!(
+            !first_attempt_failure_is_fatal(0, false, true),
+            "a failed first attempt during a reload handoff must retry, not abort"
+        );
+        assert!(
+            reload_handoff_signalled(false, true),
+            "an on-disk reload marker alone must count as a handoff in progress"
+        );
+        assert!(
+            reload_handoff_signalled(true, false),
+            "in-memory reload state alone must count as a handoff in progress"
+        );
+    }
+
+    /// The original behavior must be preserved when nothing is reloading:
+    /// a user who never started a server still gets an immediate, actionable
+    /// error instead of an endless reconnect spinner.
+    #[test]
+    fn first_attempt_stays_fatal_without_a_reload() {
+        assert!(
+            first_attempt_failure_is_fatal(0, false, false),
+            "a first failure with no reload underway must stay fatal"
+        );
+        assert!(
+            !first_attempt_failure_is_fatal(0, true, false),
+            "a spawning server explains the first failure; keep waiting"
+        );
+        assert!(
+            !first_attempt_failure_is_fatal(1, false, false),
+            "later attempts always go through the bounded retry path"
+        );
+        assert!(!reload_handoff_signalled(false, false));
+    }
 
     #[test]
     fn missing_or_mismatched_target_sessions_are_terminal_reconnect_errors() {
@@ -1087,5 +1178,12 @@ mod tests {
         assert!(!connect_error_is_terminal(&anyhow::anyhow!(
             "connection reset by server"
         )));
+        // The exact reported failure must never be classified as terminal.
+        assert!(
+            !connect_error_is_terminal(&anyhow::anyhow!(
+                "server disconnected during protocol bootstrap: PeerClosed"
+            )),
+            "a PeerClosed bootstrap drop must be retryable, not terminal"
+        );
     }
 }

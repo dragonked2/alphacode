@@ -842,7 +842,7 @@ fn build_shell_command(cmd_str: &str) -> TokioCommand {
         // and should use Windows-native commands.
         if let Some(ref bash_path) = *GIT_BASH_PATH {
             let mut cmd = TokioCommand::new(bash_path);
-            cmd.arg("-c").arg(cmd_str);
+            cmd.arg("-c").arg(with_pipefail(cmd_str));
             configure_tool_scratch(&mut cmd);
             configure_shell_process(&mut cmd);
             crate::alphacode_core::env::strip_internal_env(&mut cmd);
@@ -864,11 +864,43 @@ fn build_shell_command(cmd_str: &str) -> TokioCommand {
     #[cfg(not(windows))]
     {
         let mut cmd = TokioCommand::new("bash");
-        cmd.arg("-c").arg(cmd_str);
+        cmd.arg("-c").arg(with_pipefail(cmd_str));
         configure_tool_scratch(&mut cmd);
         crate::alphacode_core::env::strip_internal_env(&mut cmd);
         cmd
     }
+}
+
+/// Prefix a POSIX shell command with `set -o pipefail` so a failure anywhere in
+/// a pipeline is visible in the exit status.
+///
+/// Without it only the *last* command decides the status, so
+/// `curl -s "$url" | grep -i welcome | head` exits 0 whenever `head` succeeds —
+/// even when `curl` could not connect, or `grep` matched nothing. The tool then
+/// sees exit 0 with empty output and reports the literal string "ok", a false
+/// success claim. A real session hit exactly this: a login check piped through
+/// `grep … | head` reported "ok" while nothing had been verified, and the
+/// conclusion built on it was wrong.
+///
+/// No `-e` is added and `allexport` is untouched: this changes what the exit
+/// status *means*, never how the user's own command runs.
+fn with_pipefail(cmd_str: &str) -> String {
+    // `2>/dev/null` keeps shells that predate pipefail silent; if the option is
+    // unavailable the command still runs exactly as before.
+    format!("set -o pipefail 2>/dev/null; {cmd_str}")
+}
+
+/// Whether an empty "ok" may be masking a failed upstream pipeline stage.
+///
+/// This is the only signal available on the cmd.exe fallback, which has no
+/// `pipefail`: its status already describes just the final command. Reporting
+/// it keeps an empty success from a piped command from reading as verified.
+fn pipeline_success_is_unverified(
+    cmd_str: &str,
+    output_is_empty: bool,
+    exit_code: Option<i32>,
+) -> bool {
+    output_is_empty && exit_code == Some(0) && cmd_str.contains('|')
 }
 
 #[cfg(unix)]
@@ -1010,6 +1042,53 @@ mod utf8_truncation_tests {
     use super::{BashTool, Tool, ToolContext, format_command_output, read_stream_capped};
     use serde_json::json;
     use std::time::Duration;
+
+    /// Regression: a pipeline whose *first* stage failed reported success.
+    ///
+    /// `curl … | grep … | head` exits 0 whenever `head` succeeds, so a failed
+    /// connection or an empty grep looked identical to success and the tool
+    /// printed a bare "ok". A real session built a conclusion on exactly that.
+    #[test]
+    fn pipefail_wrapper_is_prepended_to_the_command() {
+        let wrapped = super::with_pipefail("echo hi | grep hi");
+        assert!(
+            wrapped.starts_with("set -o pipefail"),
+            "the wrapper must enable pipefail before the user command: {wrapped}"
+        );
+        assert!(
+            wrapped.ends_with("echo hi | grep hi"),
+            "the user command must be passed through unmodified: {wrapped}"
+        );
+    }
+
+    /// On the cmd.exe fallback there is no `pipefail`, so an empty success from
+    /// a pipeline must be labelled unverified rather than reported as "ok".
+    #[test]
+    fn empty_pipeline_success_is_marked_unverified() {
+        assert!(super::pipeline_success_is_unverified(
+            "curl -s u | grep x | head",
+            true,
+            Some(0)
+        ));
+        // A non-pipeline command's empty success is genuine.
+        assert!(!super::pipeline_success_is_unverified(
+            "true",
+            true,
+            Some(0)
+        ));
+        // A nonzero status is already reported as a failure.
+        assert!(!super::pipeline_success_is_unverified(
+            "a | b",
+            true,
+            Some(1)
+        ));
+        // Real output needs no caveat.
+        assert!(!super::pipeline_success_is_unverified(
+            "a | b",
+            false,
+            Some(0)
+        ));
+    }
 
     /// A background run must resume the agent that launched it. The regression
     /// was silent: the command finished, the status file said `completed`, and
@@ -1886,6 +1965,9 @@ impl BashTool {
         let stdin_tx = ctx.stdin_request_tx.clone();
         let tool_call_id = ctx.tool_call_id.clone();
         let title_for_work = title.clone();
+        // The task below is `'static`, so it cannot borrow the parsed input.
+        // Needed to report whether an empty pipeline result is unverified.
+        let command_for_report = params.command.clone();
         // Shared with the supervisor below; every output byte refreshes it.
         let activity = ActivityTracker::new();
         let activity_for_stdout = activity.clone();
@@ -2018,7 +2100,23 @@ impl BashTool {
                     }
                     output.push_str(&stderr);
                 }
-                let output = format_command_output(output, status.code());
+                let mut output = format_command_output(output, status.code());
+                // A piped command that produced nothing is not verification.
+                // `pipefail` covers the POSIX shells, but the cmd.exe fallback
+                // has no equivalent, so say plainly that the status describes
+                // only the last stage. Without this, an empty `ok` read as
+                // confirmed success while the upstream step may have failed.
+                if pipeline_success_is_unverified(
+                    &command_for_report,
+                    output.trim() == "ok",
+                    status.code(),
+                ) {
+                    output.push_str(
+                        "\n\n[no output from a pipeline: the exit status describes only the last \
+                         command, so an upstream failure (connection refused, no match, missing \
+                         file) would not appear here. This is not evidence the step succeeded.]",
+                    );
+                }
                 Ok(ToolOutput::new(output)
                     .with_title(title_for_work)
                     .with_metadata(json!({"process_exit_code": status.code()})))

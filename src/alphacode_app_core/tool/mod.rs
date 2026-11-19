@@ -1798,6 +1798,14 @@ impl Registry {
         // Normalize before failure hashing, preflight, hooks and dispatch so
         // every consumer sees the same schema-backed scalar values.
         let parameter_schema = tool.parameters_schema();
+        let recovered_structured_fields =
+            schema_preflight::normalize_structured_arguments(&parameter_schema, &mut input);
+        if recovered_structured_fields > 0 {
+            crate::logging::info(&format!(
+                "Recovered {recovered_structured_fields} stringified structured argument(s) for tool '{resolved_name}' [session {}]",
+                ctx.session_id
+            ));
+        }
         schema_preflight::normalize_scalar_arguments(&parameter_schema, &mut input);
 
         // Validate the same canonical payload the native parser accepts.

@@ -6,6 +6,44 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.12] - 2026-11-19
+
+### Fixed
+
+- The shared tool dispatcher now recovers schema-declared JSON arrays and
+  objects that arrive as serialized strings when the schema makes conversion
+  unambiguous. Malformed structured arguments receive a path-specific error
+  instead of an opaque downstream parse failure.
+
+- An auto-update could end in
+  `Failed to connect to server. Is 'alphacode serve' running? … server
+  disconnected during protocol bootstrap: PeerClosed` printed over a
+  "reload in progress" status. The reconnect loop treated *any* failure on its
+  first attempt as fatal, which is right for a user who never started a server
+  and wrong during a handoff: the predecessor drops its listener before the
+  replacement binds, so attempt 0 legitimately fails. A first-attempt failure is
+  now fatal only when no reload is underway — the in-memory run state and the
+  on-disk reload marker are both consulted — and it otherwise falls through to
+  the existing bounded retry path, which already knows how to wait for the
+  handoff and to start a replacement server.
+- The `bash` tool reported a bare `ok` for a pipeline that had actually failed.
+  It ran commands through plain `bash -c`, where only the last stage decides the
+  exit status, so `curl … | grep … | head` exited 0 whenever `head` succeeded —
+  even when `curl` could not connect or `grep` matched nothing. With no output
+  and status 0 the tool printed `ok`, and a real session built a wrong
+  conclusion on exactly that. Commands now run under `set -o pipefail`, so an
+  upstream failure reaches the exit status. The `cmd.exe` fallback has no
+  equivalent, so an empty success from a piped command is labelled as
+  unverified rather than presented as confirmed.
+- `browser` rejected `wait_for_load` with
+  `Unsupported browser action: 'wait_for_load'`. The Playwright/Puppeteer load-
+  wait spellings (`wait_for_load`, `wait_for_navigation`, `wait_for_selector`,
+  `wait_for_network_idle`, …) now resolve to `wait`, and an unqualified `wait`
+  means "wait for the page to settle" instead of failing with
+  `wait requires one of: selector, text, contains, timeout_ms`. An explicit
+  selector or timeout still takes precedence, and the bridge action and its
+  parameters are derived from one helper so they cannot disagree.
+
 ## [1.1.11] - 2026-11-18
 
 ### Fixed
