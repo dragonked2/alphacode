@@ -9,7 +9,7 @@ returns normally. Task modules exiting early cannot bypass that check.
 Interrupted reports retain `status: running`; only a finished run becomes
 `complete`. Existing reports are never overwritten.
 
-The bundled two-task manifest is a **smoke suite for the evaluation workflow**,
+The bundled three-task manifest is a **smoke suite for the evaluation workflow**,
 not a representative benchmark or evidence of superiority over another agent.
 Runner tests use small Python fixture agents, not real coding models.
 
@@ -18,7 +18,7 @@ Runner tests use small Python fixture agents, not real coding models.
 From the repository root, supply a JSON argument array for the agent executable:
 
 ```powershell
-python scripts/agent_eval.py --manifest tests/agent_eval/tasks.json --agent-command '["alphacode","run","{prompt}"]' --label 'Alphacode VERSION / MODEL' --output "$env:TEMP/alphacode-eval-RUN.json" --timeout 300 --repetitions 3
+python scripts/agent_eval.py --manifest tests/agent_eval/tasks.json --agent-command '["alphacode","run","--no-update","--ndjson","{prompt}"]' --label 'Alphacode VERSION / MODEL' --output "$env:TEMP/alphacode-eval-RUN.json" --timeout 300 --repetitions 3
 ```
 
 Use a distinct output path for each run. `{prompt}`, `{workspace}`, and `{python}`
@@ -26,6 +26,8 @@ are replaced in command arguments without shell evaluation. The verifier uses
 the same Python interpreter as the runner. Set the model and authentication
 through the agent's own configuration. Record actual agent/model versions in
 the label; the runner does not verify that label or infer model selection.
+`--no-update` pins the AlphaCode executable for the run. `--ndjson` records
+streaming progress and provider connection phases in each trial's agent log.
 
 The command exits nonzero if any task fails. Inspect `agent.log` and
 `verifier.log` in the report's artifact directory to distinguish agent errors

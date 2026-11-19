@@ -278,6 +278,12 @@ impl ModelCatalogService {
         let Ok(mut in_flight) = self.in_flight.write() else {
             return false;
         };
+        // A concurrent refresh can finish between the optimistic read and
+        // acquiring this lock. Recheck freshness and retry throttling before
+        // dispatching another provider request for the same scope.
+        if self.is_fresh(scope) || self.refresh_throttled(scope) {
+            return false;
+        }
         match in_flight.get(scope) {
             // Another refresh is genuinely running; back off.
             Some(started_at)

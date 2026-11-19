@@ -126,7 +126,7 @@ class AgentEvalTests(unittest.TestCase):
         manifest = Path(__file__).parents[2] / "tests/agent_eval/tasks.json"
         baseline = agent_eval.evaluate(manifest, [sys.executable, "-c", "pass"], "broken fixtures", self.root / "baseline.json")
         self.assertEqual(baseline["passed"], 0)
-        self.assertEqual(baseline["planned_trials"], 2)
+        self.assertEqual(baseline["planned_trials"], 3)
         quantity = (
             "import math\n"
             "def parse_quantity(value):\n"
@@ -141,12 +141,25 @@ class AgentEvalTests(unittest.TestCase):
             "    return number\n"
         )
         ordered = "def unique_in_order(values):\n    return list(dict.fromkeys(values))\n"
-        repair = (
-            "from pathlib import Path; "
-            f"p=Path('quantity.py'); p.write_text({quantity!r}) if p.exists() else Path('ordered.py').write_text({ordered!r})"
+        sku = (
+            "def normalize_sku(value):\n"
+            "    if not isinstance(value, str) or not value.strip():\n"
+            "        raise ValueError('invalid SKU')\n"
+            "    return value.strip().casefold()\n"
         )
+        repair = "\n".join([
+            "from pathlib import Path",
+            "if Path('quantity.py').exists():",
+            f"    Path('quantity.py').write_text({quantity!r})",
+            "elif Path('ordered.py').exists():",
+            f"    Path('ordered.py').write_text({ordered!r})",
+            "else:",
+            f"    Path('sku.py').write_text({sku!r})",
+            "    path = Path('inventory.py')",
+            "    path.write_text(path.read_text().replace('.get(sku, 0)', '.get(normalize_sku(sku), 0)'))",
+        ])
         fixed = agent_eval.evaluate(manifest, [sys.executable, "-c", repair], "known fixture repairs", self.root / "fixed.json")
-        self.assertEqual(fixed["passed"], 2)
+        self.assertEqual(fixed["passed"], baseline["planned_trials"])
 
     def test_existing_report_is_preserved(self):
         output = self.root / "report.json"
@@ -154,6 +167,13 @@ class AgentEvalTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.run_agent("pass")
         self.assertEqual(output.read_text(), "previous evidence")
+
+    def test_initial_report_publication_cannot_replace_a_competing_run(self):
+        output = self.root / "report.json"
+        agent_eval.write_report(output, {"label": "winner"}, create=True)
+        with self.assertRaises(FileExistsError):
+            agent_eval.write_report(output, {"label": "loser"}, create=True)
+        self.assertEqual(json.loads(output.read_text()), {"label": "winner"})
 
     def test_early_zero_exit_from_task_code_cannot_pass_the_verifier(self):
         manifest = Path(__file__).parents[2] / "tests/agent_eval/tasks.json"

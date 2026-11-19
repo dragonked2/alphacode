@@ -1025,7 +1025,7 @@ fn test_journal_replay_salvages_glued_entries_on_torn_line() -> Result<()> {
     session.add_message(
         Role::Assistant,
         vec![ContentBlock::Text {
-            text: "second".to_string(),
+            text: "second 🦀".to_string(),
             cache_control: None,
         }],
     );
@@ -1039,14 +1039,17 @@ fn test_journal_replay_salvages_glued_entries_on_torn_line() -> Result<()> {
     );
     session.save()?;
 
-    // Simulate a torn append glued to the next complete entry: half of entry 1
-    // followed (no newline) by all of entry 2 on the same line.
+    // Simulate an append torn inside a UTF-8 character, followed immediately
+    // by the next complete entry on the same line.
     let journal_path = session_journal_path(session_id)?;
     let journal = std::fs::read_to_string(&journal_path)?;
     let lines: Vec<&str> = journal.lines().collect();
     assert_eq!(lines.len(), 2);
-    let torn = &lines[0][..lines[0].len() / 2];
-    std::fs::write(&journal_path, format!("{}{}\n", torn, lines[1]))?;
+    let split = lines[0].find('🦀').expect("journal stores UTF-8") + 1;
+    let mut torn = lines[0].as_bytes()[..split].to_vec();
+    torn.extend_from_slice(lines[1].as_bytes());
+    torn.push(b'\n');
+    std::fs::write(&journal_path, torn)?;
 
     // The glued complete entry ("third") must be salvaged from the corrupt line.
     let loaded = Session::load(session_id)?;

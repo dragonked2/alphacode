@@ -109,7 +109,7 @@ def run_command(argv, cwd, timeout, log):
     return {"status": status, "exit_code": exit_code, "seconds": time.monotonic() - started}
 
 
-def write_report(path, report):
+def write_report(path, report, *, create=False):
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as scratch:
         scratch_path = Path(scratch.name)
         try:
@@ -120,7 +120,11 @@ def write_report(path, report):
             scratch_path.unlink(missing_ok=True)
             raise
     try:
-        scratch_path.replace(path)
+        if create:
+            # Publish the complete initial report without replacing another run.
+            os.link(scratch_path, path)
+        else:
+            scratch_path.replace(path)
     finally:
         scratch_path.unlink(missing_ok=True)
 
@@ -152,7 +156,11 @@ def evaluate(manifest, command, label, output, timeout=300, verify_timeout=60, r
         "agent_timeout_seconds": timeout, "verifier_timeout_seconds": verify_timeout,
         "trials": [],
     }
-    write_report(output, report)
+    try:
+        write_report(output, report, create=True)
+    except OSError:
+        artifacts.rmdir()
+        raise
     for repetition in range(1, repetitions + 1):
         for task in tasks:
             trial_dir = artifacts / f"{task['id']}-{repetition}"

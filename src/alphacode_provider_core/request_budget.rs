@@ -99,15 +99,12 @@ fn transact(
         if limit == 0 {
             continue;
         }
-        let recent: Vec<_> = ledger
+        let first_recent = ledger
             .starts
-            .iter()
-            .copied()
-            .filter(|&start| now_ms.saturating_sub(start) < window)
-            .collect();
-        if recent.len() >= limit {
+            .partition_point(|&start| now_ms.saturating_sub(start) >= window);
+        if ledger.starts.len() - first_recent >= limit {
             wait_ms = wait_ms.max(
-                recent[recent.len() - limit]
+                ledger.starts[ledger.starts.len() - limit]
                     .saturating_add(window)
                     .saturating_sub(now_ms),
             );

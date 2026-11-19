@@ -442,10 +442,6 @@ async fn stream_response(
     req = super::apply_agentrouter_client_headers(req, &api_base);
     req = super::apply_opencode_provider_headers(req, &api_base);
 
-    // Diagnostics: estimated prompt size, timeout, and mode. Never includes secrets.
-    // The caller already encoded the body; recounting by serializing the whole
-    // request again doubled the per-request CPU on long sessions.
-    let request_estimate = super::estimate_chat_request_tokens(request);
     let suppress_upstream_error_details = is_alphax_free_gateway(&api_base);
     let response = crate::alphacode_provider_core::transport::send_with_initial_response_timeout(
         req.body(request_body),
@@ -459,7 +455,7 @@ async fn stream_response(
             endpoint_label,
             model_label,
             auth.label(),
-            request_estimate,
+            super::estimate_chat_request_tokens(request),
             stream_idle_timeout.as_secs(),
             hint
         );
@@ -481,6 +477,7 @@ async fn stream_response(
     ));
 
     if !response.status().is_success() {
+        let request_estimate = super::estimate_chat_request_tokens(request);
         let status = response.status();
         let retry_after =
             crate::alphacode_provider_core::retry_after::retry_after(response.headers());
@@ -737,7 +734,6 @@ async fn stream_via_responses_endpoint(
         )
     })?;
     let endpoint_label = user_facing_endpoint_label(&api_base, url.as_str());
-    let request_estimate = super::estimate_chat_request_tokens(&request);
     let suppress_upstream_error_details = is_alphax_free_gateway(&api_base);
 
     let mut req = super::apply_agentrouter_client_headers(
@@ -776,7 +772,7 @@ async fn stream_via_responses_endpoint(
             endpoint_label,
             model_label,
             auth.label(),
-            request_estimate,
+            super::estimate_chat_request_tokens(&request),
             stream_idle_timeout.as_secs(),
             hint
         );
@@ -795,6 +791,7 @@ async fn stream_via_responses_endpoint(
     ));
 
     if !response.status().is_success() {
+        let request_estimate = super::estimate_chat_request_tokens(&request);
         let status = response.status();
         let retry_after =
             crate::alphacode_provider_core::retry_after::retry_after(response.headers());

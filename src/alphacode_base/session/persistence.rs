@@ -32,16 +32,16 @@ impl JournalReplayStats {
 /// Serialized entries always begin with `{"meta":` (struct field order), so
 /// scan for candidate starts and stream-parse consecutive complete entries
 /// from the first position that yields any.
-fn salvage_glued_journal_entries(line: &str, mut apply: impl FnMut(SessionJournalEntry)) -> usize {
-    const ENTRY_START: &str = "{\"meta\":";
+fn salvage_glued_journal_entries(line: &[u8], mut apply: impl FnMut(SessionJournalEntry)) -> usize {
+    const ENTRY_START: &[u8] = b"{\"meta\":";
     let mut salvaged = 0usize;
     let mut search_from = 0usize;
-    while let Some(rel) = line
-        .get(search_from..)
-        .and_then(|rest| rest.find(ENTRY_START))
-    {
+    while let Some(rel) = line.get(search_from..).and_then(|rest| {
+        rest.windows(ENTRY_START.len())
+            .position(|bytes| bytes == ENTRY_START)
+    }) {
         let candidate_start = search_from + rel;
-        let mut stream = serde_json::Deserializer::from_str(&line[candidate_start..])
+        let mut stream = serde_json::Deserializer::from_slice(&line[candidate_start..])
             .into_iter::<SessionJournalEntry>();
         let mut parsed = Vec::new();
         for item in &mut stream {
@@ -83,14 +83,17 @@ fn replay_journal_lines(
     }
 
     let file = std::fs::File::open(journal_path)?;
-    let reader = BufReader::new(file);
-    for (line_idx, line) in reader.lines().enumerate() {
-        let line = line?;
-        let trimmed = line.trim();
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let mut line_number = 0;
+    while reader.read_until(b'\n', &mut line)? != 0 {
+        line_number += 1;
+        let trimmed = line.trim_ascii();
         if trimmed.is_empty() {
+            line.clear();
             continue;
         }
-        match serde_json::from_str::<SessionJournalEntry>(trimmed) {
+        match serde_json::from_slice::<SessionJournalEntry>(trimmed) {
             Ok(entry) => {
                 stats.entries += 1;
                 apply(entry);
@@ -103,13 +106,14 @@ fn replay_journal_lines(
                 crate::logging::warn(&format!(
                     "Session journal parse failed at {} line {} ({}); salvaged {} glued entr{} and continuing replay",
                     journal_path.display(),
-                    line_idx + 1,
+                    line_number,
                     err,
                     salvaged,
                     if salvaged == 1 { "y" } else { "ies" }
                 ));
             }
         }
+        line.clear();
     }
 
     if stats.is_corrupt() {
