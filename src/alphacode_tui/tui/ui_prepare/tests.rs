@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn assistant_selection_reuses_the_width_constrained_markdown_render() {
+    let content = "The **entire line** remains available for selection after wrapping.";
+    let message = DisplayMessage::assistant(content.to_owned());
+    let width = 26;
+    let lines = markdown::render_markdown_with_width(content, Some(usize::from(width)));
+    let before = markdown::thread_render_count();
+    let aux = assistant_aux_data(
+        &message,
+        &lines,
+        width,
+        false,
+        crate::config::DiffDisplayMode::Inline,
+        ratatui::layout::Alignment::Left,
+    );
+
+    assert_eq!(markdown::thread_render_count() - before, 1);
+    assert_eq!(aux.content_line_count, lines.len());
+    assert_eq!(
+        aux.logical_plain_lines,
+        ["The entire line remains available for selection after wrapping."]
+    );
+}
+
+#[test]
 fn centered_mode_centers_unstructured_messages_and_preserves_structured_left_blocks() {
     for role in ["user", "assistant", "meta", "usage", "error", "memory"] {
         assert_eq!(

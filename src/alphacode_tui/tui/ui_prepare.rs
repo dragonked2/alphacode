@@ -89,9 +89,20 @@ fn assistant_aux_data(
     align: ratatui::layout::Alignment,
 ) -> std::sync::Arc<AssistantAuxData> {
     let build = || {
-        let content_lines =
-            markdown::render_markdown_with_width(&msg.content, Some(content_width as usize));
-        let content_line_count = content_lines.len().min(cached.len());
+        let content_line_count = if !centered
+            && content_width > 0
+            && msg.tool_calls.is_empty()
+            && !msg.content.contains("```plan")
+        {
+            // The cached message is exactly the width-constrained Markdown
+            // render in this case. Only selection's logical lines need a
+            // separate render.
+            cached.len()
+        } else {
+            markdown::render_markdown_with_width(&msg.content, Some(content_width as usize))
+                .len()
+                .min(cached.len())
+        };
         let logical_plain_lines: Vec<String> =
             if content_prefers_display_as_logical_lines(&msg.content) {
                 cached
