@@ -73,11 +73,10 @@ fresh directory for each measured run:
 ```powershell
 $env:ALPHACODE_PROVIDER_AUDIT_DIR = "$env:TEMP\alphacode-traffic-117"
 alphacode
-# After the observed task completes:
-python scripts/provider_traffic.py "$env:TEMP\alphacode-traffic-117"
 ```
 
-The script reports counts per prompt invocation, session, UTC calendar minute,
+The original [traffic summarizer](https://github.com/dragonked2/alphacode/blob/v1.1.12/scripts/provider_traffic.py)
+was removed in 1.1.13. It reports counts per prompt invocation, session, UTC calendar minute,
 origin, and category, and the peak half-open rolling 60-second window. A session
 is not necessarily one task: it may contain several prompts. Separate sessions
 from spawned agents are reported separately. Null prompt/session IDs mean

@@ -6,7 +6,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.1.13] - Pending release
+## [1.1.13] - 2026-11-20
 
 ### Changed
 
@@ -20,9 +20,6 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Headless runs use the same noninteractive provider setup for text, JSON, and
   NDJSON output. Providers that require credentials must be configured before
   the run starts.
-- Concurrent coding evaluations preserve the first report written to a shared
-  output path. The smoke suite includes a two-file inventory repair and can
-  record provider dispatch counts per trial.
 - Alphax Free preserves provider cooldown deadlines when masking upstream
   connection details.
 
@@ -37,6 +34,11 @@ adheres to [Semantic Versioning](https://semver.org/).
   quota lookups without allocating temporary timestamp lists.
 - Normalize each path-completion query once and clone only the candidates
   shown in the palette.
+
+### Removed
+
+- Removed the Python coding evaluation runner, fixtures, and provider traffic
+  summarizer from the repository.
 
 ## [1.1.12] - 2026-11-19
 
