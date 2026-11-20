@@ -1971,6 +1971,12 @@ impl App {
         &mut self,
         mouse: MouseEvent,
     ) -> Option<&'static str> {
+        if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+            return self
+                .scrollbar_drag_rows
+                .take()
+                .map(|_| "chat_scrollbar_release");
+        }
         let geometry = super::super::ui::last_chat_scrollbar_geometry()?;
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -1996,13 +2002,6 @@ impl App {
                 let target = geometry.drag_scroll(mouse.row, grab)?;
                 self.set_chat_scroll_absolute(target);
                 Some("chat_scrollbar_drag")
-            }
-            MouseEventKind::Up(MouseButton::Left) => {
-                if self.scrollbar_drag_rows.take().is_some() {
-                    Some("chat_scrollbar_release")
-                } else {
-                    None
-                }
             }
             // Wheel gestures over the scrollbar column stay with the general
             // transcript wheel path; only thumb scrubbing is owned here.

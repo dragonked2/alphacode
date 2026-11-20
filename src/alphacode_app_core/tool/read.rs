@@ -7,11 +7,11 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::path::Path;
+use tokio::io::AsyncBufReadExt as _;
 
 const DEFAULT_LIMIT: usize = 5000;
 const MAX_LINE_LEN: usize = 2000;
 const BINARY_DETECT_SIZE: usize = 8192;
-const BINARY_NULL_THRESHOLD: f64 = 0.1;
 const MAX_IMAGE_READ_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PDF_READ_BYTES: u64 = 100 * 1024 * 1024;
 #[cfg(feature = "pdf")]
@@ -181,7 +181,11 @@ impl Tool for ReadTool {
                 },
                 "start_line": {
                     "type": "integer",
-                    "description": "1-based start line for text files. Use with limit; omit offset. Do not mix 1-based line fields with 0-based offset."
+                    "description": "1-based start line for text files. Use with end_line or limit; omit offset."
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Inclusive 1-based end line for text files. Defaults to using limit when omitted; omit offset."
                 },
                 "offset": {
                     "type": "integer",
@@ -210,44 +214,52 @@ impl Tool for ReadTool {
 
         let path = ctx.resolve_path_for_read(Path::new(&params.file_path));
 
-        // Check if file exists
         let metadata = match tokio::fs::metadata(&path).await {
-            Ok(metadata) => Some(metadata),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let suggestions =
+                    tokio::task::spawn_blocking(move || find_similar_files(&path)).await?;
+                if suggestions.is_empty() {
+                    anyhow::bail!("File not found: {}", params.file_path);
+                }
+                anyhow::bail!(
+                    "File not found: {}\nDid you mean: {}",
+                    params.file_path,
+                    suggestions.join(", ")
+                );
+            }
             Err(error) => {
                 return Err(error).with_context(|| format!("Cannot access {}", path.display()));
             }
         };
-        if metadata.is_none() {
-            // Try to find similar files
-            let suggestions = find_similar_files(&path);
-            if suggestions.is_empty() {
-                return Err(anyhow::anyhow!("File not found: {}", params.file_path));
-            } else {
-                return Err(anyhow::anyhow!(
-                    "File not found: {}\nDid you mean: {}",
-                    params.file_path,
-                    suggestions.join(", ")
-                ));
-            }
-        }
-
-        if metadata.is_some_and(|metadata| metadata.is_dir()) {
+        if metadata.is_dir() {
             return read_directory(&path, &params.file_path, range).await;
         }
+        anyhow::ensure!(
+            metadata.is_file(),
+            "Cannot read special file {}",
+            path.display()
+        );
 
         // Check for image files and display in terminal if supported
         if is_image_file(&path) {
-            return handle_image_file(&path, &params.file_path);
+            return tokio::task::spawn_blocking(move || {
+                handle_image_file(&path, &params.file_path)
+            })
+            .await?;
         }
 
         // Check for PDF files and extract text
         if is_pdf_file(&path) {
-            return handle_pdf_file(&path, &params.file_path);
+            return tokio::task::spawn_blocking(move || handle_pdf_file(&path, &params.file_path))
+                .await?;
         }
 
-        // Check for binary files
-        if is_binary_file(&path) {
+        let file = tokio::fs::File::open(&path)
+            .await
+            .with_context(|| format!("Cannot open {}", path.display()))?;
+        let mut reader = tokio::io::BufReader::with_capacity(BINARY_DETECT_SIZE, file);
+        if has_binary_extension(&path) || is_binary_sample(reader.fill_buf().await?) {
             return Ok(ToolOutput::new(format!(
                 "Binary file detected: {}\nUse appropriate tools to handle binary files.",
                 params.file_path
@@ -256,7 +268,7 @@ impl Tool for ReadTool {
 
         // Stream instead of loading the entire file. This keeps memory bounded
         // for large logs and counts lines in the same pass.
-        let range_read = read_text_range(&path, range).await?;
+        let range_read = read_text_range(&mut reader, range).await?;
         let mut output = range_read.output;
         let total_lines = range_read.lines_observed;
         let truncated_line_count = range_read.truncated_line_count;
@@ -378,18 +390,16 @@ async fn read_directory(
         let kind = entry.file_type().await?;
         // Escape controls in filenames so listing an untrusted folder cannot
         // inject terminal escapes or forge output rows.
-        let name: String = entry
-            .file_name()
-            .to_string_lossy()
-            .chars()
-            .flat_map(|ch| {
-                if ch.is_control() {
-                    ch.escape_default().collect::<Vec<_>>()
-                } else {
-                    vec![ch]
-                }
-            })
-            .collect();
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        let mut name = String::with_capacity(file_name.len());
+        for ch in file_name.chars() {
+            if ch.is_control() {
+                name.extend(ch.escape_default());
+            } else {
+                name.push(ch);
+            }
+        }
         let suffix = if kind.is_symlink() {
             "@"
         } else if kind.is_dir() {
@@ -402,7 +412,9 @@ async fn read_directory(
     entries.sort();
     let mut output = format!("Directory: {display_path}\n");
     for (_, name, suffix) in &entries {
-        output.push_str(&format!("{name}{suffix}\n"));
+        output.push_str(name);
+        output.push_str(suffix);
+        output.push('\n');
     }
     if entries.is_empty() && !more {
         output.push_str(if range.offset == 0 {
@@ -449,250 +461,10 @@ struct RangeRead {
 /// read are proportional to the window rather than to the file size. The
 /// line count is reported as a lower bound when the file continues past the
 /// window.
-async fn read_text_range(path: &Path, range: NormalizedReadRange) -> Result<RangeRead> {
-    // Repeated-read fast path (Phase 4.3): a session typically touches the
-    // same files repeatedly. When the file metadata is unchanged since a
-    // previous read and its line ledger still covers the requested window,
-    // replay from memory instead of re-opening and re-scanning the file (one
-    // `metadata()` probe instead of the whole file read).
-    if let Some(replay) = cached_window_for(path, &range)
-        && let Some(replayed) = replay_cached_window(&range, &replay)
-    {
-        return Ok(replayed);
-    }
-
-    let uncached = read_text_range_uncached(path, range).await?;
-    remember_cached_window(path, range, &uncached);
-    Ok(uncached)
-}
-
-// === Repeated-read window cache ===
-
-use std::time::SystemTime;
-
-/// One line as the scanner observed it: enough to re-run the identical
-/// `append_read_line` call without the file.
-///
-/// `Clone` is required because a cached window is cloned out of the map to
-/// hand back an `Arc` without holding the map's lock while the caller reads.
-#[derive(Clone)]
-struct CachedReadLine {
-    len: usize,
-    last_byte: Option<u8>,
-    ended_with_newline: bool,
-    bytes: Vec<u8>,
-}
-
-struct CachedReadWindow {
-    mtime: Option<SystemTime>,
-    file_len: u64,
-    /// Line index of the first cached line (0 unless the cached read itself
-    /// started mid-file).
-    start_index: usize,
-    lines: Vec<CachedReadLine>,
-    /// The cached scan ended at EOF, so `start_index + lines.len()` is the
-    /// file's true line count. When false the window stops one line earlier
-    /// deliberately and only same-or-earlier windows may replay.
-    ended_at_eof: bool,
-    /// The `more_lines` flag observed when scanning stopped exactly at this
-    /// window's end.
-    more_at_end: bool,
-}
-
-static READ_WINDOW_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, CachedReadWindow>>,
-> = std::sync::OnceLock::new();
-
-/// Cache bound. Entries are whole read windows; the common working set is a
-/// handful of files, and a stale entry costs one `metadata()` probe.
-const READ_WINDOW_CACHE_ENTRIES: usize = 24;
-/// Total line bytes cached across the map before new entries are refused.
-const READ_WINDOW_CACHE_BYTES: usize = 8 * 1024 * 1024;
-
-fn read_window_cache()
--> std::sync::MutexGuard<'static, std::collections::BTreeMap<std::path::PathBuf, CachedReadWindow>>
-{
-    let map =
-        READ_WINDOW_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
-    map.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn window_bytes(entry: &CachedReadWindow) -> usize {
-    entry.lines.iter().map(|line| line.bytes.len()).sum()
-}
-
-/// Look up a fresh window covering the requested range. The metadata probe
-/// is the id check: a different mtime or size means the entry is stale and
-/// the read falls through to the file.
-fn cached_window_for(
-    path: &Path,
-    range: &NormalizedReadRange,
-) -> Option<std::sync::Arc<CachedReadWindow>> {
-    let metadata = std::fs::metadata(path).ok()?;
-    let mtime = metadata.modified().ok();
-    let file_len = metadata.len();
-    // The guard must outlive `cached`: the entry borrows from the map the
-    // guard owns, so a borrow of a temporary guard would dangle.
-    let cache = read_window_cache();
-    let cached = cache.get(path)?;
-    if cached.mtime != mtime || cached.file_len != file_len {
-        return None;
-    }
-    // The replay must not request lines beyond what the cached scan saw:
-    // beyond a non-EOF window the ledger simply does not have them.
-    let span_end = cached.start_index + cached.lines.len();
-    if range.offset > span_end {
-        return None;
-    }
-    if range.next_offset() > span_end && !cached.ended_at_eof {
-        return None;
-    }
-    Some(std::sync::Arc::new(CachedReadWindow {
-        mtime: cached.mtime,
-        file_len: cached.file_len,
-        start_index: cached.start_index,
-        lines: cached.lines.clone(),
-        ended_at_eof: cached.ended_at_eof,
-        more_at_end: cached.more_at_end,
-    }))
-}
-
-fn replay_cached_window(
-    range: &NormalizedReadRange,
-    replay: &CachedReadWindow,
-) -> Option<RangeRead> {
-    let end_exclusive = range.next_offset();
-    let span_end = replay.start_index + replay.lines.len();
-    if range.offset < replay.start_index || range.offset > span_end {
-        return None;
-    }
-    if end_exclusive > span_end && !replay.ended_at_eof {
-        return None;
-    }
-
-    let mut output = String::with_capacity(range.limit.min(2000) * 80);
-    let mut truncated_line_count = 0usize;
-    for (offset_from_start, line) in replay.lines.iter().enumerate() {
-        let index = replay.start_index + offset_from_start;
-        if index >= end_exclusive {
-            continue;
-        }
-        append_read_line(
-            &mut output,
-            ReadLinePreview {
-                index,
-                len: line.len,
-                last_byte: line.last_byte,
-                ended_with_newline: line.ended_with_newline,
-                bytes: &line.bytes,
-            },
-            *range,
-            &mut truncated_line_count,
-        )
-        .ok()?;
-    }
-
-    let hit_end = end_exclusive.min(span_end);
-    let more = if hit_end < span_end {
-        // The cached ledger continues past the requested stop, so the file
-        // certainly does: the original scanner would have seen the same.
-        true
-    } else if replay.ended_at_eof {
-        false
-    } else {
-        replay.more_at_end
-    };
-    Some(RangeRead {
-        output,
-        lines_observed: hit_end,
-        truncated_line_count,
-        more_lines: more,
-    })
-}
-
-fn remember_cached_window(path: &Path, range: NormalizedReadRange, read: &RangeRead) {
-    // Only windows built from observed lines are cacheable; the replay needs
-    // the per-line ledger, so the reader would have to expose it. Reuse the
-    // cheap whole-content case instead: files small enough to hold fully.
-    if range.offset != 0 {
-        return;
-    }
-    if read.output.len() > 1024 * 1024 {
-        return;
-    }
-    // The ledger is not available from `RangeRead`; skip populating from the
-    // processed output and only cache when a full scan reached EOF.
-    if read.more_lines {
-        return;
-    }
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return;
-    };
-    let Ok(mtime) = metadata.modified() else {
-        return;
-    };
-    let Ok(content) = std::fs::read(path) else {
-        return;
-    };
-    if content.len() > READ_WINDOW_CACHE_BYTES / 4 {
-        return;
-    }
-    let lines: Vec<CachedReadLine> = {
-        let mut entries = Vec::new();
-        for piece in content.split_inclusive(|b| *b == b'\n') {
-            let ended_with_newline = piece.last() == Some(&b'\n');
-            let body = if ended_with_newline {
-                &piece[..piece.len() - 1]
-            } else {
-                piece
-            };
-            if body.contains(&b'\0') {
-                // Binary-ish content: outputs would not match the renderer.
-                return;
-            }
-            entries.push(CachedReadLine {
-                len: body.len(),
-                last_byte: body.last().copied(),
-                ended_with_newline,
-                bytes: body.to_vec(),
-            });
-            if entries.len() > 20_000 {
-                return;
-            }
-        }
-        entries
-    };
-    let bytes_needed = window_bytes_len(&lines);
-    let mut cache = read_window_cache();
-    if cache.len() >= READ_WINDOW_CACHE_ENTRIES {
-        cache.pop_first();
-    }
-    let total: usize = cache.values().map(window_bytes).sum();
-    if total + bytes_needed > READ_WINDOW_CACHE_BYTES {
-        return;
-    }
-    cache.insert(
-        path.to_path_buf(),
-        CachedReadWindow {
-            mtime: Some(mtime),
-            file_len: metadata.len(),
-            start_index: 0,
-            lines,
-            ended_at_eof: true,
-            more_at_end: false,
-        },
-    );
-}
-
-fn window_bytes_len(lines: &[CachedReadLine]) -> usize {
-    lines.iter().map(|line| line.bytes.len()).sum()
-}
-
-async fn read_text_range_uncached(path: &Path, range: NormalizedReadRange) -> Result<RangeRead> {
-    use tokio::io::AsyncBufReadExt as _;
-
-    let file = tokio::fs::File::open(path).await?;
-    let mut reader = tokio::io::BufReader::new(file);
+async fn read_text_range(
+    reader: &mut tokio::io::BufReader<tokio::fs::File>,
+    range: NormalizedReadRange,
+) -> Result<RangeRead> {
     let mut output = String::with_capacity(range.limit.min(2000) * 80);
     let mut line_bytes = Vec::with_capacity(MAX_LINE_LEN + 1);
     let mut line_len = 0usize;
@@ -833,55 +605,57 @@ fn append_read_line(
 #[cfg(test)]
 mod tests;
 
-use std::io::Read;
+fn has_binary_extension(path: &Path) -> bool {
+    let Some(ext) = path.extension() else {
+        return false;
+    };
+    let ext = ext.to_string_lossy().to_ascii_lowercase();
+    [
+        "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "zip", "tar", "gz", "bz2", "xz", "7z",
+        "rar", "exe", "dll", "so", "dylib", "o", "a", "class", "pyc", "wasm", "mp3", "mp4", "avi",
+        "mov", "mkv", "flac", "ogg", "wav",
+    ]
+    .contains(&ext.as_str())
+}
 
-fn is_binary_file(path: &Path) -> bool {
-    if let Some(ext) = path.extension() {
-        let ext = ext.to_string_lossy().to_lowercase();
-        let binary_exts = [
-            "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "zip", "tar", "gz", "bz2", "xz",
-            "7z", "rar", "exe", "dll", "so", "dylib", "o", "a", "class", "pyc", "wasm", "mp3",
-            "mp4", "avi", "mov", "mkv", "flac", "ogg", "wav",
-        ];
-        if binary_exts.contains(&ext.as_str()) {
-            return true;
-        }
+fn is_binary_sample(bytes: &[u8]) -> bool {
+    let null_count = bytes.iter().filter(|&&byte| byte == 0).count();
+    if null_count > bytes.len() / 10 {
+        return true;
     }
 
-    if let Ok(mut file) = std::fs::File::open(path) {
-        let mut buf = [0u8; BINARY_DETECT_SIZE];
-        if let Ok(n) = file.read(&mut buf)
-            && n > 0
-        {
-            let null_count = buf[..n].iter().filter(|&&b| b == 0).count();
-            if null_count as f64 > n as f64 * BINARY_NULL_THRESHOLD {
+    // An incomplete final code point may continue in the next buffer.
+    let sample = match std::str::from_utf8(bytes) {
+        Ok(sample) => sample,
+        Err(error) if error.error_len().is_none() => {
+            let Ok(prefix) = std::str::from_utf8(&bytes[..error.valid_up_to()]) else {
                 return true;
-            }
-            // UTF-8 text outside ASCII (for example Japanese source or Arabic
-            // logs) is still text. Classify by decoding and control characters
-            // instead of requiring most bytes to be ASCII-printable.
-            let sample = match std::str::from_utf8(&buf[..n]) {
-                Ok(sample) => sample,
-                Err(error) if error.error_len().is_none() => {
-                    match std::str::from_utf8(&buf[..error.valid_up_to()]) {
-                        Ok(sample) => sample,
-                        Err(_) => return true,
-                    }
-                }
-                Err(_) => return true,
             };
-            let char_count = sample.chars().count();
-            let control_count = sample
-                .chars()
-                .filter(|ch| ch.is_control() && !matches!(ch, '\t' | '\n' | '\r' | '\u{000c}'))
-                .count();
-            if char_count > 0 && control_count.saturating_mul(10) > char_count {
-                return true;
-            }
+            prefix
+        }
+        Err(_) => return true,
+    };
+    let mut char_count = 0;
+    let mut control_count = 0usize;
+    for ch in sample.chars() {
+        char_count += 1;
+        if ch.is_control() && !matches!(ch, '\t' | '\n' | '\r' | '\u{000c}') {
+            control_count += 1;
         }
     }
+    control_count.saturating_mul(10) > char_count
+}
 
-    false
+#[cfg(test)]
+fn is_binary_file(path: &Path) -> bool {
+    use std::io::Read as _;
+
+    has_binary_extension(path)
+        || std::fs::File::open(path).is_ok_and(|mut file| {
+            let mut sample = [0; BINARY_DETECT_SIZE];
+            file.read(&mut sample)
+                .is_ok_and(|len| is_binary_sample(&sample[..len]))
+        })
 }
 
 fn find_similar_files(path: &Path) -> Vec<String> {

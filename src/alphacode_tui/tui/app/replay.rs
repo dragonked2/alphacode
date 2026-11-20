@@ -4,7 +4,6 @@ use crate::alphacode_tui::tui::backend::{RemoteEventState, ReplayRemoteState};
 use crate::alphacode_tui::tui::terminal_events::TerminalEventStream as EventStream;
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
-use futures::StreamExt;
 use ratatui::{
     DefaultTerminal, Frame, Terminal, backend::TestBackend, buffer::Buffer, layout::Rect,
 };
@@ -49,7 +48,7 @@ pub(super) async fn run_replay(
                 let ops = app.stream_buffer.flush();
                 app.apply_stream_ops(ops);
             }
-            event = event_stream.next() => {
+            event = event_stream.next_live() => {
                 if let Some(Ok(event)) = event {
                     handle_replay_input(&mut app, &mut terminal, event, replay_done, &mut paused, &mut replay_speed, &mut next_event_at);
                 }
@@ -150,7 +149,7 @@ pub(super) async fn run_swarm_replay(
 
         tokio::select! {
             _ = redraw_interval.tick() => {}
-            event = event_stream.next() => {
+            event = event_stream.next_live() => {
                 if let Some(Ok(event)) = event {
                     handle_swarm_replay_input(
                         &mut terminal,

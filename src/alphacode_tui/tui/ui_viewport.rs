@@ -45,10 +45,10 @@ pub(crate) fn copy_badge_alt_badge() -> String {
     format!("[{}]", copy_badge_alt_label())
 }
 
-fn copy_badge_shortcut_width(key_label: &str) -> usize {
+pub(super) fn copy_badge_shortcut_width() -> usize {
     // Includes the single separator space rendered between the row content and
-    // the first badge.
-    UnicodeWidthStr::width(format!(" {} [⇧] [{key_label}]", copy_badge_alt_badge()).as_str())
+    // the first badge. All shortcut keys are single ASCII letters.
+    copy_badge_alt_label().width() + " [] [⇧] [A]".width()
 }
 
 /// Display width reserved for the inline expand-edit badge (`[Alt] [⇧] [E] …`).
@@ -119,9 +119,7 @@ fn resolve_tail_follow_scroll(max_scroll: usize, viewport_height: usize) -> usiz
     }
 }
 
-use super::selection_highlight::{
-    highlight_line_range, highlight_line_selection, search_current_hit_bg_for, search_hit_bg_for,
-};
+use super::selection_highlight::{highlight_line_selection, highlight_search_hits};
 pub(crate) fn truncate_line_in_place_to_width(line: &mut Line<'static>, max_width: usize) {
     *line = crate::alphacode_tui_render::truncate_line_to_width(line, max_width);
 }
@@ -204,12 +202,17 @@ pub(crate) fn copy_badge_reserved_width(
     copy_badge_ui: &crate::alphacode_tui::tui::app::CopyBadgeUiState,
     now: std::time::Instant,
 ) -> usize {
-    let mut reserved = copy_badge_shortcut_width("A");
-    if copy_badge_ui.feedback_for_key(key, now).is_some() {
+    let mut reserved = copy_badge_shortcut_width();
+    if let Some(success) = copy_badge_ui.feedback_for_key(key, now) {
         // Feedback text plus the spacer between it and the shortcut badges.
         // The separator before the feedback is already counted in
         // `copy_badge_shortcut_width`.
-        reserved = reserved.saturating_add(UnicodeWidthStr::width("✓ Copied! "));
+        let feedback = if success {
+            "✓ Copied! "
+        } else {
+            "✗ Copy failed "
+        };
+        reserved = reserved.saturating_add(feedback.width());
     }
     reserved
 }
@@ -667,6 +670,25 @@ pub(super) fn draw_messages(
         }
     }
 
+    // Reuse the same indexed hits that drive the counter and navigation.
+    // Paint them before adding viewport decorations that shift columns.
+    if let Some(index) = app.transcript_search_index()
+        && let Some(view) = app.transcript_search()
+    {
+        let index = index.borrow();
+        let selected = index.matches.get(view.selected).copied();
+        let first = index.matches.partition_point(|hit| hit.abs_line < scroll);
+        let end = index
+            .matches
+            .partition_point(|hit| hit.abs_line < visible_end);
+        for hits in index.matches[first..end].chunk_by(|a, b| a.abs_line == b.abs_line) {
+            let abs_line = hits[0].abs_line;
+            let line = &mut visible_lines[abs_line - scroll];
+            *line =
+                highlight_search_hits(line, hits, selected.filter(|hit| hit.abs_line == abs_line));
+        }
+    }
+
     if let Some(active) = &active_file_context {
         let highlight_style = Style::default().fg(file_link_color()).bold();
         let accent_style = Style::default().fg(file_link_color());
@@ -887,45 +909,6 @@ pub(super) fn draw_messages(
             let rel_idx = region.abs_line_idx - scroll;
             if let Some(line) = visible_lines.get_mut(rel_idx) {
                 *line = Line::default();
-            }
-        }
-    }
-
-    // Find-in-page highlight: paint every hit of the active query that is on
-    // screen. The selected hit gets a stronger background so "where am I"
-    // is answerable at a glance.
-    //
-    // The columns come from the *plain* text of the wrapped line, which is
-    // exactly the text the paragraph is about to paint, so the highlight
-    // lands on the matched characters even though the rendered line also
-    // carries role prefixes and decorations.
-    if let Some(view) = app.transcript_search()
-        && !view.query.is_empty()
-    {
-        for (rel, line) in visible_lines.iter_mut().enumerate() {
-            let abs_idx = scroll + rel;
-            let Some(text) = prepared.wrapped_plain_line(abs_idx) else {
-                continue;
-            };
-            let hits = crate::alphacode_tui::tui::transcript_search::find_line_matches(
-                text,
-                &view.query,
-                view.case_sensitive,
-            );
-            if hits.is_empty() {
-                continue;
-            }
-            let is_current = view.current_line == Some(abs_idx);
-            for (start_col, end_col) in hits {
-                *line = highlight_line_range(line, start_col, end_col, |style| {
-                    if is_current {
-                        style
-                            .bg(search_current_hit_bg_for(style.bg))
-                            .add_modifier(Modifier::UNDERLINED)
-                    } else {
-                        style.bg(search_hit_bg_for(style.bg))
-                    }
-                });
             }
         }
     }

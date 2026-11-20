@@ -338,9 +338,6 @@ async fn apply_terminal_event(
                 }
                 return Ok(false);
             }
-            // Start the key-to-paint clock at the moment the key is read, which is
-            // the only point that corresponds to the user's press.
-            crate::alphacode_tui::tui::ui::note_key_event_read();
             input_attribution.event = Some(format!("key:{:?}:{:?}", key.code, key.kind));
             input_attribution.scroll_delta = key_scroll_delta(&key);
             app.note_client_interaction();

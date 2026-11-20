@@ -510,3 +510,90 @@ fn search_refreshes_after_same_size_transcript_edit() {
     render_frame(&app, &mut terminal);
     assert_eq!(app.transcript_search_view().unwrap().match_count, 0);
 }
+
+#[test]
+fn transcript_search_paste_edits_the_query_and_keeps_the_draft() {
+    let mut app = app_with_transcript(&["alpha needle"]);
+    app.input = "unsent draft".to_string();
+    app.open_transcript_search_with_query("👩\u{200d}💻");
+    app.handle_key(KeyCode::Backspace, KeyModifiers::NONE)
+        .unwrap();
+    assert!(app.transcript_search_view().unwrap().query.is_empty());
+
+    app.handle_paste("alpha\r\nneedle".to_string());
+    assert_eq!(app.transcript_search_view().unwrap().query, "alpha needle");
+    assert_eq!(app.input, "unsent draft");
+}
+
+#[test]
+fn transcript_search_caret_follows_grapheme_navigation() {
+    let mut app = app_with_transcript(&["alpha"]);
+    app.centered = true;
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+    app.open_transcript_search_with_query("a界e\u{301}");
+    render_frame(&app, &mut terminal);
+    let end = terminal.get_cursor_position().unwrap();
+
+    app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+    render_frame(&app, &mut terminal);
+    let middle = terminal.get_cursor_position().unwrap();
+    assert_eq!(middle.y, end.y);
+    assert_eq!(middle.x + 1, end.x);
+    assert_eq!(
+        terminal.backend().buffer()[(middle.x, middle.y)].symbol(),
+        "e\u{301}"
+    );
+
+    app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+    render_frame(&app, &mut terminal);
+    let left = terminal.get_cursor_position().unwrap();
+    assert_eq!(left.y, end.y);
+    assert_eq!(left.x + 2, middle.x);
+    assert_eq!(terminal.backend().buffer()[(left.x, left.y)].symbol(), "界");
+}
+
+#[test]
+fn transcript_search_underlines_only_the_selected_hit_and_wraps() {
+    use ratatui::style::Modifier;
+
+    let mut app = app_with_transcript(&["needle and needle"]);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+    app.open_transcript_search_with_query("needle");
+
+    let selected_cells = |terminal: &ratatui::Terminal<ratatui::backend::TestBackend>| {
+        let buffer = terminal.backend().buffer();
+        let line = "needle and needle";
+        for y in 0..buffer.area.height {
+            for x in 0..=buffer.area.width - line.len() as u16 {
+                let cells = (x..x + line.len() as u16).map(|col| &buffer[(col, y)]);
+                let text: String = cells.clone().map(|cell| cell.symbol()).collect();
+                if text == line {
+                    return cells
+                        .enumerate()
+                        .filter_map(|(offset, cell)| {
+                            cell.modifier
+                                .contains(Modifier::UNDERLINED)
+                                .then_some(offset)
+                        })
+                        .collect::<Vec<_>>();
+                }
+            }
+        }
+        panic!("the matching transcript row must be visible");
+    };
+
+    render_frame(&app, &mut terminal);
+    assert_eq!(selected_cells(&terminal), (0..6).collect::<Vec<_>>());
+
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::CONTROL)
+        .unwrap();
+    render_frame(&app, &mut terminal);
+    assert_eq!(app.transcript_search_view().unwrap().selected, 1);
+    assert_eq!(selected_cells(&terminal), (11..17).collect::<Vec<_>>());
+
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::CONTROL)
+        .unwrap();
+    render_frame(&app, &mut terminal);
+    assert_eq!(app.transcript_search_view().unwrap().selected, 0);
+    assert_eq!(selected_cells(&terminal), (0..6).collect::<Vec<_>>());
+}

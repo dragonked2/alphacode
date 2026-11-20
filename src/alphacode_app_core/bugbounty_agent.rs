@@ -83,26 +83,128 @@ pub struct Vulnerability {
     pub discovered_at: String,
 }
 
-/// Vulnerability types.
+/// Vulnerability types - comprehensive coverage of OWASP Top 10, CWE, and modern attack surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VulnType {
+    // Injection Flaws (OWASP A03)
     XSS,
     SQLi,
-    SSRF,
+    NoSQLi,
+    CommandInjection,
+    LDAPInjection,
+    XPathInjection,
+    XXE,
+    SSTI,
+    ELInjection,
+    // Broken Access Control (OWASP A01)
     IDOR,
+    BrokenFunctionLevelAuth,
+    BrokenObjectLevelAuth,
+    BrokenObjectPropertyLevelAuth,
+    VerticalPrivEsc,
+    HorizontalPrivEsc,
+    // Cryptographic Failures (OWASP A02)
+    WeakCrypto,
+    InsecureDeserialization,
+    InsecureCertValidation,
+    // Injection - Server Side
+    SSRF,
     CSRF,
     CORS,
     CRLF,
-    SSTI,
-    RCE,
+    // Server-Side Request Forgery variants
+    SSRFInternal,
+    SSRFCloudMetadata,
+    SSRFProxy,
+    // Path Traversal & File Access
     LFI,
+    RFI,
+    PathTraversal,
+    DirectoryTraversal,
+    // Open Redirect
     OpenRedirect,
+    // Subdomain Takeover
     SubdomainTakeover,
+    // Information Disclosure
     InformationDisclosure,
+    DebugInfoDisclosure,
+    SourceCodeDisclosure,
+    StackTraceDisclosure,
+    ConfigDisclosure,
+    // Security Misconfiguration (OWASP A05)
     SecurityMisconfiguration,
+    DefaultCredentials,
+    UnnecessaryFeatures,
+    VerboseErrors,
+    ExposedAdminPanel,
+    MissingSecurityHeaders,
+    // Authentication & Session (OWASP A07)
     AuthenticationBypass,
+    WeakPasswordPolicy,
+    CredentialStuffing,
+    SessionFixation,
+    SessionHijacking,
+    JWTWeakness,
+    OAuthMisconfiguration,
+    MFABypass,
+    // Authorization (OWASP A01 continued)
     AuthorizationBypass,
+    RBACBypass,
+    ABACBypass,
+    // Rate Limiting & DoS (OWASP A04)
     RateLimiting,
+    MissingRateLimit,
+    ResourceExhaustion,
+    // API Specific (OWASP API Top 10)
+    APIBrokenObjectAuth,
+    APIBrokenUserAuth,
+    APIExcessiveDataExposure,
+    APILackOfResources,
+    APIBrokenFunctionAuth,
+    APIMassAssignment,
+    APISecurityMisconfig,
+    APIInjection,
+    APIImproperAssetsMgmt,
+    APIInsufficientLogging,
+    // GraphQL Specific
+    GraphQLIntrospection,
+    GraphQLDoS,
+    GraphQLFieldDuplication,
+    GraphQLDirectiveOverloading,
+    // WebSocket & Real-time
+    WebSocketHijacking,
+    RealTimeAuthBypass,
+    // Business Logic
+    BusinessLogicFlaw,
+    RaceCondition,
+    TOCTOU,
+    PriceManipulation,
+    CouponAbuse,
+    WorkflowBypass,
+    // Supply Chain
+    DependencyConfusion,
+    MaliciousPackage,
+    BuildPipelineCompromise,
+    // Cloud & Infrastructure
+    CloudMetadataExposure,
+    IAMMisconfiguration,
+    StorageMisconfiguration,
+    ContainerEscape,
+    // Client-Side
+    DOMXSS,
+    PostMessageXSS,
+    PrototypePollution,
+    WebCachePoisoning,
+    WebCacheDeception,
+    Clickjacking,
+    CSRFTokenLeak,
+    // Deserialization
+    DeserializationRCE,
+    DeserializationDoS,
+    // Template Injection variants
+    SstiRce,
+    SstiInfoDisclosure,
+    // Other
     Other,
 }
 

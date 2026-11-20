@@ -263,6 +263,7 @@ fn short_terminals_keep_composer_and_picker_visible() {
         ..Default::default()
     };
     for (width, height) in [
+        (80, 4),
         (80, 5),
         (80, 7),
         (80, 8),
@@ -270,13 +271,20 @@ fn short_terminals_keep_composer_and_picker_visible() {
         (80, 12),
         (80, 16),
         (80, 24),
+        (20, 4),
         (20, 12),
     ] {
         clear_flicker_frame_history_for_tests();
         let (rows, layout) = draw_frame(&state, width, height);
         let input = layout.input_area.expect("composer");
         assert!(input.height >= 3, "height {height}: {input:?}");
-        assert!(layout.messages_area.height >= 1, "height {height}");
+        if height == 4 {
+            assert_eq!(input.height, 3);
+            assert_eq!(layout.messages_area.height, 0);
+            assert!(rows.iter().any(|row| row.contains("› model-17")));
+        } else {
+            assert!(layout.messages_area.height >= 1, "height {height}");
+        }
         assert!(
             rows.iter().any(|row| row.contains("DRAFT sentinel")),
             "height {height}: {}",
@@ -321,6 +329,15 @@ fn tiny_terminal_clears_old_hit_targets_and_shows_resize_hint() {
     let (rows, layout) = draw_frame(&state, 11, 4);
     assert!(
         rows.iter().any(|row| row.contains("Resize")),
+        "{}",
+        rows.join("\n")
+    );
+    assert!(layout.input_area.is_none());
+    assert_eq!(layout.messages_area, Rect::default());
+
+    let (rows, layout) = draw_frame(&state, 20, 3);
+    assert!(
+        rows.iter().any(|row| row.contains("Minimum 12 × 4")),
         "{}",
         rows.join("\n")
     );

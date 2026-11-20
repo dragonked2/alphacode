@@ -1,10 +1,10 @@
 use super::diff_utils::generate_diff_with_start;
 use super::{Tool, ToolContext, ToolOutput};
-use anyhow::Result;
+use anyhow::{Context as _, Result, bail, ensure};
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
+use tokio::io::AsyncWriteExt;
 
 pub struct PatchTool;
 
@@ -14,24 +14,33 @@ impl PatchTool {
     }
 }
 
-#[derive(Deserialize)]
-struct PatchInput {
-    patch_text: String,
-}
-
 #[derive(Debug)]
-struct FilePatch {
-    path: String,
-    hunks: Vec<Hunk>,
+struct FilePatch<'a> {
+    path: &'a str,
+    hunks: Vec<Hunk<'a>>,
     is_new: bool,
     is_delete: bool,
 }
 
 #[derive(Debug)]
-struct Hunk {
+struct Hunk<'a> {
     old_start: usize,
-    old_lines: Vec<String>,
-    new_lines: Vec<String>,
+    old_len: usize,
+    lines: Vec<DiffLine<'a>>,
+}
+
+#[derive(Debug)]
+struct DiffLine<'a> {
+    kind: DiffKind,
+    text: &'a str,
+    has_newline: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffKind {
+    Context,
+    Remove,
+    Add,
 }
 
 #[async_trait]
@@ -41,7 +50,7 @@ impl Tool for PatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply a unified diff (---/+++ headers). Prefer apply_patch for Codex patches."
+        "Apply a unified diff (---/+++ headers). Old lines and context must match the file at the given line numbers. Use apply_patch for Codex patches."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -62,7 +71,7 @@ impl Tool for PatchTool {
         // Alias-tolerant extraction (parity with apply_patch): models often
         // send `patch`, `content`, or `diff` instead of `patch_text`.
         let patch_text = if let Some(obj) = input.as_object() {
-            let mut found: Option<String> = None;
+            let mut found = None;
             for key in [
                 "patch_text",
                 "patch",
@@ -72,7 +81,7 @@ impl Tool for PatchTool {
                 "text",
             ] {
                 if let Some(value) = obj.get(key).and_then(|v| v.as_str()) {
-                    found = Some(value.to_string());
+                    found = Some(value);
                     break;
                 }
             }
@@ -89,7 +98,7 @@ impl Tool for PatchTool {
                         crate::logging::warn(&format!(
                             "patch: diff recovered from non-standard key '{key}'"
                         ));
-                        found = Some(text.to_string());
+                        found = Some(text);
                         break;
                     }
                 }
@@ -111,11 +120,7 @@ impl Tool for PatchTool {
                 "missing field `patch_text`: expected a JSON object with a `patch_text` string"
             );
         };
-        let params = PatchInput {
-            patch_text: patch_text.clone(),
-        };
-
-        let patches = parse_patch(&params.patch_text)?;
+        let patches = parse_patch(patch_text)?;
 
         if patches.is_empty() {
             return Err(anyhow::anyhow!("No valid patches found in input"));
@@ -126,7 +131,7 @@ impl Tool for PatchTool {
         let risk_ctx =
             crate::alphacode_command_risk::RiskContext::from_env(ctx.working_dir.clone());
         for patch in &patches {
-            let resolved = ctx.resolve_path_guarded(Path::new(&patch.path))?;
+            let resolved = ctx.resolve_path_guarded(Path::new(patch.path))?;
             if crate::alphacode_command_risk::is_catastrophic_target(&resolved, &risk_ctx) {
                 return Err(anyhow::anyhow!(
                     "Refused: '{}' resolves to a protected path ({}). No changes applied.",
@@ -139,15 +144,15 @@ impl Tool for PatchTool {
         let mut results = Vec::new();
         let mut succeeded = 0usize;
         let mut failed = 0usize;
-        let mut touched: Vec<String> = Vec::new();
+        let mut touched = Vec::new();
 
         for patch in patches {
-            let resolved_path = ctx.resolve_path_guarded(Path::new(&patch.path))?;
+            let resolved_path = ctx.resolve_path_guarded(Path::new(patch.path))?;
             let result = apply_patch_with_diff(&patch, &resolved_path).await;
             match result {
                 Ok((msg, diff)) => {
                     succeeded += 1;
-                    touched.push(patch.path.clone());
+                    touched.push(patch.path);
                     if diff.is_empty() {
                         results.push(format!("✓ {}: {}", patch.path, msg));
                     } else {
@@ -156,7 +161,7 @@ impl Tool for PatchTool {
                 }
                 Err(e) => {
                     failed += 1;
-                    results.push(format!("✗ {}: {}", patch.path, e));
+                    results.push(format!("✗ {}: {e:#}", patch.path));
                 }
             }
         }
@@ -177,72 +182,74 @@ impl Tool for PatchTool {
             "touched_paths": touched,
         });
         Ok(ToolOutput::new(summary)
-            .with_file_paths(touched.iter())
+            .with_file_paths(touched)
             .with_metadata(metadata))
     }
 }
 
-fn parse_patch(text: &str) -> Result<Vec<FilePatch>> {
+fn parse_patch(text: &str) -> Result<Vec<FilePatch<'_>>> {
     let mut patches = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0;
 
     while i < lines.len() {
-        // Look for --- line
-        if lines[i].starts_with("---") {
-            let old_file = lines[i]
-                .strip_prefix("--- ")
-                .unwrap_or("")
-                .split('\t')
-                .next()
-                .unwrap_or("");
-
+        let Some(old_file) = lines[i].strip_prefix("--- ") else {
             i += 1;
-            if i >= lines.len() || !lines[i].starts_with("+++") {
-                continue;
-            }
-
-            let new_file = lines[i]
-                .strip_prefix("+++ ")
-                .unwrap_or("")
-                .split('\t')
-                .next()
-                .unwrap_or("");
-
-            // Determine the actual file path
-            let path = if new_file == "/dev/null" {
-                old_file.strip_prefix("a/").unwrap_or(old_file).to_string()
-            } else {
-                new_file.strip_prefix("b/").unwrap_or(new_file).to_string()
-            };
-
-            let is_new = old_file == "/dev/null";
-            let is_delete = new_file == "/dev/null";
-
-            i += 1;
-
-            // Parse hunks
-            let mut hunks = Vec::new();
-            while i < lines.len() && !lines[i].starts_with("---") {
-                if lines[i].starts_with("@@") {
-                    if let Some(hunk) = parse_hunk(&lines, &mut i) {
-                        hunks.push(hunk);
-                    }
-                } else {
-                    i += 1;
-                }
-            }
-
-            if !hunks.is_empty() || is_new || is_delete {
-                patches.push(FilePatch {
-                    path,
-                    hunks,
-                    is_new,
-                    is_delete,
-                });
-            }
+            continue;
+        };
+        let new_file = lines
+            .get(i + 1)
+            .and_then(|line| line.strip_prefix("+++ "))
+            .with_context(|| format!("Expected a +++ file header at patch line {}", i + 2))?;
+        let old_file = old_file.split('\t').next().unwrap_or_default();
+        let new_file = new_file.split('\t').next().unwrap_or_default();
+        let is_new = old_file == "/dev/null";
+        let is_delete = new_file == "/dev/null";
+        ensure!(
+            !(old_file.is_empty() || new_file.is_empty() || is_new && is_delete),
+            "Invalid file headers at patch line {}",
+            i + 1
+        );
+        let path = if is_delete {
+            old_file.strip_prefix("a/").unwrap_or(old_file)
         } else {
-            i += 1;
+            new_file.strip_prefix("b/").unwrap_or(new_file)
+        };
+        i += 2;
+
+        let mut hunks = Vec::new();
+        loop {
+            while lines.get(i) == Some(&"") {
+                i += 1;
+            }
+            if !lines.get(i).is_some_and(|line| line.starts_with("@@")) {
+                break;
+            }
+            let patch_line = i + 1;
+            hunks.push(
+                parse_hunk(&lines, &mut i)
+                    .with_context(|| format!("{path}, patch line {patch_line}"))?,
+            );
+        }
+        // A diff body ends at its declared counts. The next signed line can
+        // only be another file header.
+        if let Some(line) = lines.get(i)
+            && line.starts_with([' ', '+', '-', '\\'])
+            && *line != "-- "
+            && !(line.starts_with("--- ")
+                && lines
+                    .get(i + 1)
+                    .is_some_and(|line| line.starts_with("+++ ")))
+        {
+            bail!("{path}, patch line {}: unexpected line after hunk", i + 1);
+        }
+        if !hunks.is_empty() || is_new || is_delete {
+            patches.push(FilePatch {
+                path,
+                hunks,
+                is_new,
+                is_delete,
+            });
         }
     }
 
@@ -263,124 +270,175 @@ fn looks_like_unified_diff(text: &str) -> bool {
     text.contains("@@") && (text.contains("\n+") || text.contains("\n-"))
 }
 
-fn parse_hunk(lines: &[&str], i: &mut usize) -> Option<Hunk> {
-    // Parse @@ -start,count +start,count @@
-    let header = lines[*i];
-    let parts: Vec<&str> = header.split_whitespace().collect();
-
-    if parts.len() < 3 {
-        *i += 1;
-        return None;
-    }
-
-    let old_range = parts[1].strip_prefix('-').unwrap_or(parts[1]);
-    let old_start: usize = old_range
-        .split(',')
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1);
-
+fn parse_hunk<'a>(lines: &[&'a str], i: &mut usize) -> Result<Hunk<'a>> {
+    let mut parts = lines[*i].split_whitespace();
+    ensure!(parts.next() == Some("@@"), "Invalid hunk header");
+    let (old_start, old_len) = parse_range(parts.next(), '-')?;
+    let (_, new_len) = parse_range(parts.next(), '+')?;
+    ensure!(
+        parts.next() == Some("@@"),
+        "Missing closing @@ in hunk header"
+    );
     *i += 1;
 
-    let mut old_lines = Vec::new();
-    let mut new_lines = Vec::new();
+    let mut old_remaining = old_len;
+    let mut new_remaining = new_len;
+    let mut body = Vec::new();
+    while old_remaining != 0 || new_remaining != 0 {
+        let line = lines.get(*i).context("Truncated hunk body")?;
+        let (kind, text) = match line.as_bytes().first() {
+            Some(b'-') => (DiffKind::Remove, &line[1..]),
+            Some(b'+') => (DiffKind::Add, &line[1..]),
+            Some(b' ') => (DiffKind::Context, &line[1..]),
+            None => (DiffKind::Context, ""),
+            _ => bail!("Invalid hunk body at patch line {}", *i + 1),
+        };
 
-    while *i < lines.len() {
-        let line = lines[*i];
-
-        if line.starts_with("@@") || line.starts_with("---") {
-            break;
+        if kind != DiffKind::Add {
+            old_remaining = old_remaining.checked_sub(1).context("Too many old lines")?;
         }
-
-        if let Some(content) = line.strip_prefix('-') {
-            old_lines.push(content.to_string());
-        } else if let Some(content) = line.strip_prefix('+') {
-            new_lines.push(content.to_string());
-        } else if let Some(content) = line.strip_prefix(' ') {
-            old_lines.push(content.to_string());
-            new_lines.push(content.to_string());
-        } else if line.is_empty() || line == "\\ No newline at end of file" {
-            // Context line or special marker
+        if kind != DiffKind::Remove {
+            new_remaining = new_remaining.checked_sub(1).context("Too many new lines")?;
         }
-
         *i += 1;
+        let has_newline = lines.get(*i) != Some(&"\\ No newline at end of file");
+        *i += usize::from(!has_newline);
+        body.push(DiffLine {
+            kind,
+            text,
+            has_newline,
+        });
     }
 
-    Some(Hunk {
+    Ok(Hunk {
         old_start,
-        old_lines,
-        new_lines,
+        old_len,
+        lines: body,
     })
 }
 
-/// Apply a patch and return (status_message, diff_output)
-async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String, String)> {
-    // Handle deletion
-    if patch.is_delete {
-        if path.exists() {
-            let old_content = tokio::fs::read_to_string(path).await.unwrap_or_default();
-            tokio::fs::remove_file(path).await?;
-            let diff = generate_diff_with_start(&old_content, "", 1);
-            return Ok(("deleted".to_string(), diff));
-        } else {
-            return Err(anyhow::anyhow!("file does not exist"));
+fn parse_range(range: Option<&str>, prefix: char) -> Result<(usize, usize)> {
+    let range = range
+        .and_then(|range| range.strip_prefix(prefix))
+        .context("Missing line range in hunk header")?;
+    let (start, count) = range.split_once(',').unwrap_or((range, "1"));
+    let start = start.parse().context("Invalid line number")?;
+    let count = count.parse().context("Invalid line count")?;
+    ensure!(start != 0 || count == 0, "Nonempty range starts at line 0");
+    Ok((start, count))
+}
+
+fn split_line_ending(line: &str) -> (&str, &'static str) {
+    if let Some(text) = line.strip_suffix("\r\n") {
+        (text, "\r\n")
+    } else if let Some(text) = line.strip_suffix('\n') {
+        (text, "\n")
+    } else {
+        (line, "")
+    }
+}
+
+fn apply_hunks(content: &str, hunks: &[Hunk<'_>]) -> Result<String> {
+    let source: Vec<&str> = content.split_inclusive('\n').collect();
+    let default_ending = source
+        .first()
+        .map(|line| split_line_ending(line).1)
+        .filter(|ending| !ending.is_empty())
+        .unwrap_or("\n");
+    let mut next_old = 0;
+    let mut output = String::with_capacity(content.len());
+
+    for hunk in hunks {
+        // A zero-length range inserts after the named old line.
+        let start = hunk.old_start - usize::from(hunk.old_len != 0);
+        ensure!(
+            start >= next_old && start <= source.len() && hunk.old_len <= source.len() - start,
+            "Hunk range at old line {} is out of bounds or overlaps an earlier hunk",
+            hunk.old_start
+        );
+        if start != next_old {
+            ensure_line_boundary(&output)?;
+            output.extend(source[next_old..start].iter().copied());
+        }
+        next_old = start;
+
+        for line in &hunk.lines {
+            if line.kind == DiffKind::Add {
+                ensure_line_boundary(&output)?;
+                output.push_str(line.text);
+                if line.has_newline {
+                    output.push_str(default_ending);
+                }
+                continue;
+            }
+
+            let original = source[next_old];
+            next_old += 1;
+            let (text, ending) = split_line_ending(original);
+            ensure!(
+                line.text == text && line.has_newline != ending.is_empty(),
+                "Patch context does not match line {next_old}. Re-read the file and regenerate the diff."
+            );
+            if line.kind == DiffKind::Context {
+                ensure_line_boundary(&output)?;
+                output.push_str(original);
+            }
         }
     }
 
-    // Handle new file
-    if patch.is_new {
-        if path.exists() {
-            return Err(anyhow::anyhow!("file already exists"));
-        }
+    if next_old < source.len() {
+        ensure_line_boundary(&output)?;
+        output.extend(source[next_old..].iter().copied());
+    }
+    Ok(output)
+}
 
-        // Create parent directories
+fn ensure_line_boundary(output: &str) -> Result<()> {
+    ensure!(
+        output.is_empty() || output.ends_with('\n'),
+        "A line without a trailing newline must be the final line"
+    );
+    Ok(())
+}
+
+/// Validate every hunk against the same file snapshot before applying changes.
+async fn apply_patch_with_diff(patch: &FilePatch<'_>, path: &Path) -> Result<(String, String)> {
+    let old_content = if patch.is_new {
+        String::new()
+    } else {
+        tokio::fs::read_to_string(path).await?
+    };
+    let new_content = apply_hunks(&old_content, &patch.hunks)?;
+
+    let status = if patch.is_delete {
+        ensure!(
+            new_content.is_empty(),
+            "Delete hunk must remove the entire file"
+        );
+        tokio::fs::remove_file(path).await?;
+        "deleted".to_string()
+    } else if patch.is_new {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
+        let mut file = tokio::fs::File::create_new(path).await?;
+        file.write_all(new_content.as_bytes()).await?;
+        file.flush().await?;
+        "created".to_string()
+    } else {
+        if new_content != old_content {
+            tokio::fs::write(path, &new_content).await?;
+        }
+        format!("modified ({} hunks)", patch.hunks.len())
+    };
 
-        // Collect all new lines from hunks
-        let content: String = patch
-            .hunks
-            .iter()
-            .flat_map(|h| h.new_lines.iter())
-            .map(|l| format!("{}\n", l))
-            .collect();
-
-        tokio::fs::write(path, &content).await?;
-        let diff = generate_diff_with_start("", &content, 1);
-        return Ok(("created".to_string(), diff));
-    }
-
-    // Handle modification
-    if !path.exists() {
-        return Err(anyhow::anyhow!("file does not exist"));
-    }
-
-    let old_content = tokio::fs::read_to_string(path).await?;
-    let mut lines: Vec<String> = old_content.lines().map(|s| s.to_string()).collect();
-
-    // Find the first affected line for diff context
-    let first_line = patch.hunks.iter().map(|h| h.old_start).min().unwrap_or(1);
-
-    // Apply hunks in reverse order to preserve line numbers
-    for hunk in patch.hunks.iter().rev() {
-        let start = hunk.old_start.saturating_sub(1);
-        let end = (start + hunk.old_lines.len()).min(lines.len());
-
-        // Remove old lines and insert new ones
-        lines.splice(start..end, hunk.new_lines.iter().cloned());
-    }
-
-    let new_content = lines.join("\n") + "\n";
-    tokio::fs::write(path, &new_content).await?;
-
-    let diff = generate_diff_with_start(&old_content, &new_content, first_line);
-    Ok((format!("modified ({} hunks)", patch.hunks.len()), diff))
+    let diff = generate_diff_with_start(&old_content, &new_content, 1);
+    Ok((status, diff))
 }
 
 #[cfg(test)]
 mod patch_extraction_tests {
-    use super::looks_like_unified_diff;
+    use super::{apply_hunks, apply_patch_with_diff, looks_like_unified_diff, parse_patch};
     use serde_json::json;
 
     #[test]
@@ -417,6 +475,65 @@ mod patch_extraction_tests {
             obj.values()
                 .filter_map(|v| v.as_str())
                 .all(|text| !looks_like_unified_diff(text))
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_later_hunk_leaves_the_file_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("note.txt");
+        let original = "first\nskip\nactual\n";
+        tokio::fs::write(&file, original).await.unwrap();
+        let patches = parse_patch(
+            "--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-first\n+new\n@@ -3 +3 @@\n-stale\n+wrong\n",
+        )
+        .unwrap();
+
+        let error = apply_patch_with_diff(&patches[0], &file).await.unwrap_err();
+        assert!(error.to_string().contains("does not match line 3"));
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), original);
+
+        let corrected =
+            parse_patch("--- a/note.txt\n+++ b/note.txt\n@@ -3 +3 @@\n-actual\n+correct\n")
+                .unwrap();
+        let (_, diff) = apply_patch_with_diff(&corrected[0], &file).await.unwrap();
+        assert_eq!(diff, "3- actual\n3+ correct");
+    }
+
+    #[tokio::test]
+    async fn stale_delete_does_not_remove_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("note.txt");
+        tokio::fs::write(&file, "updated\n").await.unwrap();
+        let patches = parse_patch("--- a/note.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n").unwrap();
+        assert!(apply_patch_with_diff(&patches[0], &file).await.is_err());
+        assert_eq!(tokio::fs::read_to_string(file).await.unwrap(), "updated\n");
+    }
+
+    #[test]
+    fn unified_diff_preserves_crlf_and_handles_header_like_text_and_eof() {
+        let patches = parse_patch(
+            "--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n--- heading\n++++ new\n@@ -2 +2 @@\n-tail\n\\ No newline at end of file\n+updated\n\\ No newline at end of file\n",
+        )
+        .unwrap();
+        assert_eq!(
+            apply_hunks("-- heading\r\ntail", &patches[0].hunks).unwrap(),
+            "+++ new\r\nupdated"
+        );
+    }
+
+    #[test]
+    fn unified_diff_handles_zero_length_ranges_and_rejects_out_of_bounds_ranges() {
+        let patches =
+            parse_patch("--- a/note.txt\n+++ b/note.txt\n@@ -1,0 +2 @@\n+inserted\n").unwrap();
+        assert_eq!(
+            apply_hunks("first\nlast\n", &patches[0].hunks).unwrap(),
+            "first\ninserted\nlast\n"
+        );
+        assert!(apply_hunks("", &patches[0].hunks).is_err());
+        assert!(
+            parse_patch("--- a/note.txt\n+++ b/note.txt\n@@ -1,2 +1 @@\n-incomplete\n+new\n")
+                .is_err()
         );
     }
 }

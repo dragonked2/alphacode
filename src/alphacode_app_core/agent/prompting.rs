@@ -585,12 +585,11 @@ impl Agent {
                 format!(
                     "\n\n# Verification Loop Detected\n\n\
                 You have made {} consecutive read-only tool calls without a state-changing result. \
-                This pattern indicates you are verifying against derived artifacts instead of the authoritative signal.\n\n\
-                **Stop and re-derive the completion predicate from first principles:**\n\
-                1. What is the exact authoritative signal? (not grep output, not substring match)\n\
-                2. Have you observed it directly in a tool result?\n\
-                3. If not, what specific state change would produce it?\n\
-                4. Use a state-changing tool (bash, write, edit) to advance toward the goal, or report the blocker.",
+                Check whether those calls are still producing new evidence.\n\n\
+                1. Identify the observable result that answers the current task.\n\
+                2. If you have observed it, deliver the result with the evidence.\n\
+                3. If evidence is missing, run a check that can distinguish the remaining possibilities.\n\
+                4. Change state only when the user asked for a change and the evidence supports it. Report a blocker when the decisive check is unavailable.",
                     consecutive_read_only
                 )
             };

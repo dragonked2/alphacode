@@ -398,6 +398,10 @@ pub trait TuiState {
     fn transcript_search(&self) -> Option<TranscriptSearchView> {
         None
     }
+    /// Byte offset of the caret within the transcript search query.
+    fn transcript_search_cursor(&self) -> Option<usize> {
+        None
+    }
     /// Mutable handle to the renderer-owned transcript search index.
     ///
     /// The renderer scans the prepared transcript (the text the user actually

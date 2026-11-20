@@ -33,9 +33,7 @@ pub(crate) fn generic_batch_schema() -> Value {
                     "additionalProperties": true
                 },
                 "minItems": 1,
-                // Keep in sync with MAX_PARALLEL: a mismatch teaches the model
-                // a wrong limit (accuracy) and rejects valid plans.
-                "maxItems": 20
+                "maxItems": MAX_PARALLEL
             }
         }
     })
@@ -265,7 +263,7 @@ impl Tool for BatchTool {
 
         if params.tool_calls.len() > MAX_PARALLEL {
             return Err(anyhow::anyhow!(
-                "Maximum {} parallel tool calls allowed",
+                "Maximum {} tool calls allowed per batch",
                 MAX_PARALLEL
             ));
         }
@@ -277,7 +275,7 @@ impl Tool for BatchTool {
             }
         }
 
-        // Execute all tools in parallel, emitting progress events as each completes
+        // Execute read-only groups concurrently and publish progress for each call.
         let num_tools = params.tool_calls.len();
         use futures::StreamExt;
         let subcalls: Arc<Vec<(usize, String, Value)>> = Arc::new(

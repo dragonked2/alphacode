@@ -504,11 +504,13 @@ fn browser_target_summary(
 
 fn browser_summary(tool: &ToolCall, max_width: Option<usize>) -> String {
     let bounded = |preferred: usize| max_width.unwrap_or(preferred);
-    let action = tool
+    let requested_action = tool
         .input
         .get("action")
         .and_then(|v| v.as_str())
+        .map(str::trim)
         .unwrap_or("browser");
+    let action = crate::alphacode_app_core::tool::normalize_browser_action(requested_action);
 
     let summary = match action {
         "open" | "new_tab" => {
@@ -528,11 +530,13 @@ fn browser_summary(tool: &ToolCall, max_width: Option<usize>) -> String {
             }
         }
         "get_content" => {
-            let format_name = tool
-                .input
-                .get("format")
-                .and_then(|v| v.as_str())
-                .unwrap_or("text");
+            let format_name = tool.input.get("format").and_then(|v| v.as_str()).unwrap_or(
+                if requested_action == "html" {
+                    "html"
+                } else {
+                    "text"
+                },
+            );
             if let Some(target) = browser_target_summary(tool, max_width, true) {
                 format!("content {} {}", format_name, target)
             } else {
@@ -1636,24 +1640,52 @@ pub(super) fn get_tool_summary_with_budget(
     }
 }
 
-pub(super) fn render_batch_subcall_line(
+pub(super) fn push_batch_subcall_lines(
+    lines: &mut Vec<Line<'static>>,
     tool: &ToolCall,
     icon: &str,
     icon_color: Color,
     bash_max_chars: usize,
     max_width: Option<usize>,
     output_content: Option<&str>,
-) -> Line<'static> {
+) {
     let display_name = tool_display_label(tool);
-    let token_badge = output_content.map(|content| {
+    let token_suffix = output_content.map(|content| {
         let tokens = crate::util::estimate_tokens(content);
         let color = match crate::util::approx_tool_output_token_severity(tokens) {
             crate::util::ApproxTokenSeverity::Normal => rgb(118, 118, 118),
             crate::util::ApproxTokenSeverity::Warning => rgb(214, 184, 92),
             crate::util::ApproxTokenSeverity::Danger => rgb(224, 118, 118),
         };
-        (crate::util::format_approx_token_count(tokens), color)
+        Line::from(vec![
+            Span::styled(" · ", Style::default().fg(dim_color())),
+            Span::styled(
+                crate::util::format_approx_token_count(tokens),
+                Style::default().fg(color),
+            ),
+        ])
     });
+    let mut spans = Vec::with_capacity(7);
+    spans.push(Span::styled(
+        format!("    {} ", icon),
+        Style::default().fg(icon_color),
+    ));
+    spans.push(Span::styled(
+        display_name,
+        Style::default().fg(tool_color()),
+    ));
+    if let Some(reason) = output_content.and_then(concise_tool_error_summary) {
+        let token_suffix = token_suffix.unwrap_or_default();
+        super::messages::push_tool_failure_lines(
+            lines,
+            Line::from(spans),
+            Span::styled(reason, Style::default().fg(icon_color)),
+            &token_suffix,
+            max_width.unwrap_or(usize::MAX),
+            "      ",
+        );
+        return;
+    }
     let intent = tool
         .intent
         .as_deref()
@@ -1664,43 +1696,21 @@ pub(super) fn render_batch_subcall_line(
             .map(|width| truncate_end_display(intent, (width / 3).max(16)))
             .unwrap_or_else(|| intent.to_string())
     });
-    // Pre-compute reserved width without intermediate format! allocations
-    let indent_width = 4 + icon.width() + 1; // "    {icon} "
-    let name_width = display_name.width();
     let intent_width = intent_display
         .as_ref()
         .map_or(0, |intent| " · ".width() + intent.width());
-    let token_width = token_badge
-        .as_ref()
-        .map_or(0, |(label, _)| " · ".width() + label.width());
-    let reserved = indent_width + name_width + 1 + intent_width + token_width;
+    let token_width = token_suffix.as_ref().map_or(0, Line::width);
+    let header_width = spans.iter().map(Span::width).sum::<usize>();
+    let reserved = header_width + 1 + intent_width + token_width;
     let summary_budget = max_width.map(|w| w.saturating_sub(reserved));
-    let error_summary = output_content.and_then(concise_tool_error_summary);
-    let is_error = error_summary.is_some();
-    let summary = error_summary.unwrap_or_else(|| {
-        if skill_name_for_tool(tool).is_some() && output_content.is_some() {
-            skill_result_summary(tool, false)
-        } else {
-            get_tool_summary_with_budget(tool, bash_max_chars, summary_budget)
-        }
-    });
-
-    // Pre-allocate spans with known capacity
-    let mut spans = Vec::with_capacity(10);
-    spans.push(Span::styled(
-        format!("    {} ", icon),
-        Style::default().fg(icon_color),
-    ));
-    spans.push(Span::styled(
-        display_name.to_string(),
-        Style::default().fg(tool_color()),
-    ));
+    let is_skill = skill_name_for_tool(tool).is_some();
+    let summary = if is_skill && output_content.is_some() {
+        skill_result_summary(tool, false)
+    } else {
+        get_tool_summary_with_budget(tool, bash_max_chars, summary_budget)
+    };
     if let Some(intent) = intent_display {
-        // Error summaries always render so failures stay diagnosable even
-        // when technical details are hidden. Compare against `intent` before
-        // moving it into the span so the borrow checker is happy.
-        let show_detail =
-            show_tool_call_details() || is_error || skill_name_for_tool(tool).is_some();
+        let show_detail = show_tool_call_details() || is_skill;
         let intent_matches_summary = summary == intent;
         spans.push(Span::styled(" · ", Style::default().fg(dim_color())));
         spans.push(Span::styled(intent, Style::default().fg(tool_color())));
@@ -1714,26 +1724,18 @@ pub(super) fn render_batch_subcall_line(
             Style::default().fg(dim_color()),
         ));
     }
-    let token_suffix = token_badge.map(|(label, color)| {
-        Line::from(vec![
-            Span::styled(" · ", Style::default().fg(dim_color())),
-            Span::styled(label, Style::default().fg(color)),
-        ])
-    });
-
     if let (Some(max_width), Some(token_suffix)) = (max_width, token_suffix.as_ref()) {
-        return truncate_line_preserving_suffix_to_width(
+        lines.push(truncate_line_preserving_suffix_to_width(
             &Line::from(spans),
             token_suffix,
             max_width,
-        );
+        ));
+    } else {
+        if let Some(token_suffix) = token_suffix {
+            spans.extend(token_suffix.spans);
+        }
+        lines.push(Line::from(spans));
     }
-
-    if let Some(token_suffix) = token_suffix {
-        spans.extend(token_suffix.spans);
-    }
-
-    Line::from(spans)
 }
 
 pub(super) fn summarize_batch_running_tools_compact(running: &[ToolCall]) -> Option<String> {

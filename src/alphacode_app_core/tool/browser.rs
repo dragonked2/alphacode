@@ -27,7 +27,7 @@
 //! | `fill_form` / `select` | `fillForm` | `<select>` fields route to `selectOption` (`value` / `values`) |
 //! | `drag_and_drop` | `drag` | params are `source`/`target`, **not** `sourceSelector`/`targetSelector` |
 //! | `wait` | `waitFor` / `waitForStable` | `waitFor` has no quiet-period mode; `waitForStable` is a separate action |
-//! | `screenshot` | `screenshot` | returns `dataUrl`; there is **no** `filename` param and **no** `saved` result |
+//! | `screenshot` | `screenshot` | extension returns `dataUrl`; the CLI can save it to a requested `filename` |
 //! | `eval` | `evaluate` | `pageWorld: true` runs in the page's own JS world |
 //! | `scroll` | `scroll` | `scrollTo: {x, y}`, `position`, `behavior` |
 //! | `upload` | `uploadFile` | needs base64 `files: [{name, type, data}]`; **no** `filePath` |
@@ -127,119 +127,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 pub struct BrowserTool;
 
 static FIREFOX_PROVIDER: FirefoxBridgeProvider = FirefoxBridgeProvider;
-
-/// Tracks consecutive read-only actions to detect verification loops.
-///
-/// When the agent makes 3+ consecutive read-only calls (snapshot, get_content,
-/// list_tabs, etc.) without any state-changing action, it's likely stuck in a
-/// verification loop. This counter helps detect that pattern and suggest a
-/// different approach.
-static READ_ONLY_COUNTER: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
-
-/// Maximum consecutive read-only actions before suggesting a different approach.
-const MAX_READ_ONLY_ACTIONS: u32 = 3;
-/// Session IDs are supplied by callers and may outlive the browser operation.
-/// Keep abandoned sessions from retaining memory for the lifetime of the
-/// process. This is deliberately generous for a single Alphacode process.
-const MAX_TRACKED_READ_ONLY_SESSIONS: usize = 256;
-
-/// Check if the current action is read-only and should be counted.
-fn is_read_only_action(action: &str) -> bool {
-    matches!(
-        action,
-        "snapshot"
-            | "get_content"
-            | "list_tabs"
-            | "get_active_tab"
-            | "list_frames"
-            | "interactables"
-            | "screenshot"
-            | "get_cookies"
-            | "list_cookies"
-    )
-}
-
-/// Check if the current action is state-changing.
-fn is_state_changing_action(action: &str) -> bool {
-    matches!(
-        action,
-        "open"
-            | "new_tab"
-            | "select_tab"
-            | "click"
-            | "hover"
-            | "type"
-            | "fill_form"
-            | "select"
-            | "drag_and_drop"
-            | "press"
-            | "scroll"
-            | "upload"
-            | "set_cookies"
-            | "delete_cookie"
-            | "close_tab"
-            | "reload"
-            | "go_back"
-            | "go_forward"
-            | "screenshot"
-    )
-}
-
-/// Increment the read-only counter for a session and return the new count.
-///
-/// Returns true if the agent should be warned about a verification loop.
-fn increment_read_only_counter(session: &str) -> bool {
-    let mut counter = READ_ONLY_COUNTER
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let map = counter.get_or_insert_with(HashMap::new);
-    if !map.contains_key(session)
-        && map.len() >= MAX_TRACKED_READ_ONLY_SESSIONS
-        && let Some(evicted) = map.keys().next().cloned()
-    {
-        map.remove(&evicted);
-    }
-    let count = map.entry(session.to_string()).or_insert(0);
-    *count = count.saturating_add(1);
-    *count >= MAX_READ_ONLY_ACTIONS
-}
-
-/// Reset the read-only counter for a session.
-fn reset_read_only_counter(session: &str) {
-    let mut counter = READ_ONLY_COUNTER
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(map) = counter.as_mut() {
-        map.remove(session);
-    }
-}
-
-/// Get a warning message if the agent is in a verification loop.
-fn get_verification_loop_warning(session: &str) -> Option<String> {
-    let mut counter = READ_ONLY_COUNTER
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(map) = counter.as_mut()
-        && let Some(count) = map.get(session)
-        && *count >= MAX_READ_ONLY_ACTIONS
-    {
-        return Some(format!(
-            "WARNING: You have made {} consecutive read-only actions without any state-changing results. \
-             You may be stuck in a verification loop. \
-             Try a different approach: \
-             1) If you're trying to verify something, make a state-changing action instead. \
-             2) If you're exploring, try to find something actionable. \
-             3) If you're stuck, report your findings and move on.",
-            count
-        ));
-    }
-    None
-}
 
 /// Session → agent-owned tab pin.
 ///
@@ -352,8 +244,8 @@ fn browser_tool_description_text() -> &'static str {
      Check status once if needed; do not loop on setup. 'open' creates an agent-owned \
      background tab; follow with 'snapshot'. For forms, use one 'fill_form' call with all \
      known selector/value pairs and submit=true; inspect only when selectors are unknown. \
-     'interactables' (alias 'find') prints index=N; pass that index to click/hover/type \
-     rather than guessing selectors. Add include_hidden for collapsed or hidden targets. \
+     Read visible text with 'get_content' (alias 'get_page_content'). \
+     Use selectors returned by 'interactables' for click, hover, and type. \
      Cookies: 'get_cookies' sees HttpOnly, 'set_cookies'/'delete_cookie' write. \
      Eval: end scripts with `return <expr>`; top-level await works; read responses with \
      `await (await fetch(u)).text()`. \
@@ -445,11 +337,11 @@ struct BrowserInput {
     position: Option<String>,
     #[serde(default)]
     behavior: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "timeoutMs")]
     timeout_ms: Option<u64>,
     #[serde(default)]
     path: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "maxLength", alias = "maxChars")]
     max_length: Option<usize>,
     #[serde(default)]
     fields: Option<Vec<BrowserField>>,
@@ -528,12 +420,7 @@ struct CookieInput {
 
 /// Every action the dispatch table accepts (aliases already normalized).
 ///
-/// Kept separate from the schema `enum` so the pre-flight check in
-/// `Tool::execute` can reject a typo *before* the readiness probe runs —
-/// otherwise an unknown action on a not-ready bridge reports "browser not
-/// ready" and sends the agent off installing a browser it already has. The
-/// `schema_action_enum_matches_known_actions` test keeps it in sync with the
-/// published schema.
+/// Also used for the model-facing action enum and diagnostics.
 const KNOWN_ACTIONS: &[&str] = &[
     "status",
     "setup",
@@ -722,23 +609,16 @@ impl Tool for BrowserTool {
             "action".into(),
             json!({
                 "type": "string",
-                "enum": [
-                    "status", "setup", "list_tabs", "new_tab", "select_tab", "get_active_tab",
-                    "list_frames", "open", "reload", "go_back", "go_forward", "close_tab",
-                    "snapshot", "get_content", "interactables", "click", "hover", "type",
-                    "fill_form", "select", "drag_and_drop", "wait", "screenshot", "eval",
-                    "scroll", "upload", "press", "get_cookies", "set_cookies", "delete_cookie",
-                    "list_cookies", "provider_command"
-                ],
-                "description": "Action. 'open' reuses an agent-owned working tab or creates a background tab; follow with 'snapshot'. 'fill_form' sets multiple fields in one call; include submit=true to submit in that same call. 'wait' with only timeout_ms is a plain delay. 'press' sends a real key; 'type' with submit=true submits. 'upload' takes a local file path. Aliases: navigate/goto=open, evaluate=eval, set_files=upload."
+                "enum": KNOWN_ACTIONS,
+                "description": "Use open to navigate and snapshot to inspect structure. get_content returns page text by default (get_page_content is accepted as an alias). fill_form sets multiple fields and can submit in the same call. wait with only timeout_ms delays locally."
             }),
         );
         properties.insert(
             "browser".into(),
             json!({
                 "type": "string",
-                "enum": ["auto", "firefox", "chrome", "safari", "edge"],
-                "description": "Browser."
+                "enum": FIREFOX_PROVIDER.supported_browsers(),
+                "description": "Both options use the connected Firefox browser."
             }),
         );
         properties.insert(
@@ -789,7 +669,7 @@ impl Tool for BrowserTool {
             ),
             (
                 "index",
-                json!({"type": "integer", "description": "0-based index of the selector match to act on. 'interactables' numbers its results, so index=2 targets the 3rd entry — use this instead of guessing a selector."}),
+                json!({"type": "integer", "minimum": 0, "description": "With a CSS selector, choose its zero-based match. Copy the selector shown by interactables."}),
             ),
             (
                 "include_hidden",
@@ -869,8 +749,8 @@ impl Tool for BrowserTool {
             "format".into(),
             json!({
                 "type": "string",
-                "enum": ["annotated", "text", "textFast", "html", "title"],
-                "description": "Format."
+                "enum": ["annotated", "text", "html", "title"],
+                "description": "Output format for get_content."
             }),
         );
         properties.insert(
@@ -922,25 +802,25 @@ impl Tool for BrowserTool {
         // running it reports "browser not ready" for every action — including
         // typos. A misspelled action used to hide behind that message and
         // send the agent into a pointless install loop.
-        if !matches!(action, "status" | "setup") && !KNOWN_ACTIONS.contains(&action) {
+        if !KNOWN_ACTIONS.contains(&action) {
             anyhow::bail!(unsupported_action_message(action));
         }
 
-        // Verification loop detection: track consecutive read-only actions
-        let session = ctx.session_id.as_str();
-        let loop_warning = if is_state_changing_action(action) {
-            reset_read_only_counter(session);
-            None
-        } else if is_read_only_action(action) {
-            let should_warn = increment_read_only_counter(session);
-            if should_warn {
-                get_verification_loop_warning(session)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        if is_fixed_delay_wait(&params) {
+            let waited_ms = params.timeout_ms.unwrap_or(0).min(MAX_FIXED_DELAY_WAIT_MS);
+            tokio::time::sleep(Duration::from_millis(waited_ms)).await;
+            return Ok(attach_browser_metadata(
+                render_browser_output(
+                    action,
+                    "browser wait".into(),
+                    json!({
+                        "waited": true, "ms": waited_ms, "source": "local"
+                    }),
+                ),
+                provider.id(),
+                "firefox",
+            ));
+        }
 
         match action {
             "status" => provider.status(&ctx).await,
@@ -948,16 +828,10 @@ impl Tool for BrowserTool {
             other => {
                 let setup_message = provider.ensure_ready().await?;
                 let output = provider.execute(other, &params, &ctx).await?;
-                let output = match setup_message {
+                Ok(match setup_message {
                     Some(message) if !message.is_empty() => prepend_setup_message(output, &message),
                     _ => output,
-                };
-                // Append verification loop warning if detected
-                if let Some(warning) = loop_warning {
-                    Ok(ToolOutput::new(format!("{}\n\n{}", output.output, warning)))
-                } else {
-                    Ok(output)
-                }
+                })
             }
         }
     }
@@ -990,13 +864,15 @@ fn invalid_input_error(input: &Value, error: &serde_json::Error) -> anyhow::Erro
 /// `setInputFiles`) and was told the action did not exist, even though
 /// `upload` does exactly that. Accepting the names outright is better than
 /// rejecting a correct intent over vocabulary.
-fn normalize_action(action: &str) -> &str {
-    match action {
+pub(crate) fn normalize_action(action: &str) -> &str {
+    match action.trim() {
         "navigate" | "navigate_and_wait" | "goto" | "visit" => "open",
         "back" => "go_back",
         "forward" => "go_forward",
         "close" => "close_tab",
-        "content" | "text" | "html" => "get_content",
+        "content" | "text" | "html" | "getContent" | "get_page_content" | "getPageContent" => {
+            "get_content"
+        }
         "evaluate" | "js" | "javascript" | "run_script" => "eval",
         "press_key" | "key" | "keypress" => "press",
         "fill" => "fill_form",
@@ -1165,41 +1041,16 @@ async fn firefox_setup(provider: &FirefoxBridgeProvider) -> Result<ToolOutput> {
 }
 
 async fn ensure_firefox_ready() -> Result<Option<String>> {
-    // Full status inspection runs a ping plus a sequential probe for every
-    // bridge capability. That is useful for explicit diagnostics, but was
-    // multiplying normal interactions by ~20 CLI launches. A live ping is
-    // enough before an action; the requested action itself reports precisely
-    // if that one capability is unsupported.
-    //
-    // First use on a fresh machine must not dead-end on "run browser
-    // action='setup'": the bridge binaries and native manifests are installed
-    // automatically here, and the one step that cannot be automated — adding
-    // the signed Firefox extension from AMO — has its page opened for the
-    // user. Explicit `action='setup'` remains for repair and diagnostics.
-    if !crate::browser::browser_binary_path().exists() {
-        let log = run_auto_browser_setup().await;
-        let _ = crate::browser::ensure_browser_assets_installed_silent();
-        if crate::browser::browser_bridge_responding()
-            .await
-            .unwrap_or(false)
-        {
-            return Ok(Some(log));
-        }
-        anyhow::bail!(
-            "Browser bridge was installed automatically, but the Firefox extension is not connected yet.\n{log}"
-        );
-    }
-    // Preserve the old self-healing native-host manifest behavior without
-    // running the full compatibility probe suite on every browser action.
-    let _ = crate::browser::ensure_browser_assets_installed_silent();
     if crate::browser::browser_bridge_responding().await? {
         return Ok(None);
     }
 
-    // The binary exists but nothing answered: most often the extension is
-    // missing or Firefox is closed. Run the repair flow (installs or updates
-    // manifests, opens the Add-ons page) instead of only opening the page.
-    let log = run_auto_browser_setup().await;
+    // Setup handles first install and repair. Keep registry and manifest work
+    // off the happy path for an already connected browser.
+    let log = match crate::browser::ensure_browser_setup().await {
+        Ok(log) => log,
+        Err(error) => format!("Automatic browser setup failed: {error}"),
+    };
     if crate::browser::browser_bridge_responding()
         .await
         .unwrap_or(false)
@@ -1207,20 +1058,8 @@ async fn ensure_firefox_ready() -> Result<Option<String>> {
         return Ok(Some(log));
     }
     anyhow::bail!(
-        "Browser bridge is installed but not responding.\n{log}\nStart Firefox with the AlphaCode Browser Agent enabled. For read-only research, listings, docs, or APIs use webfetch/websearch."
+        "Firefox browser bridge is not responding. Start Firefox with the AlphaCode Browser Agent enabled and check action='status'.\n{log}"
     );
-}
-
-/// Automatic setup, serialized so concurrent sessions in one server process
-/// cannot race the binary download or the native-manifest install.
-async fn run_auto_browser_setup() -> String {
-    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    let lock = LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
-    let _guard = lock.lock().await;
-    match crate::browser::ensure_browser_setup().await {
-        Ok(log) => log,
-        Err(error) => format!("Automatic browser setup failed to run: {error}\n"),
-    }
 }
 
 #[derive(Clone)]
@@ -1300,6 +1139,7 @@ where
     let mut reused = false;
     let mut previous_url = None;
     if !explicit_target {
+        let connection = bridge("status", json!({})).await?["nativePortOpenedAt"].as_u64();
         let (owned, pending) = {
             let mut states = open_states();
             let states = states.get_or_insert_with(HashMap::new);
@@ -1309,9 +1149,17 @@ where
                 );
             }
             let state = states.entry(session.to_owned()).or_default();
+            // Firefox can reuse numeric IDs after a restart. Never recycle IDs
+            // learned from a different connection, even at the tab limit.
+            state.owned.retain(|tab| {
+                let same_connection = connection.is_some() && tab.connection == connection;
+                if !same_connection {
+                    forget_session_tab(session, tab.id);
+                }
+                same_connection
+            });
             (state.owned.clone(), state.pending.clone())
         };
-        let connection = bridge("status", json!({})).await?["nativePortOpenedAt"].as_u64();
         let mut target = None;
         if let Some(marker) = pending {
             let tabs = bridge("listTabs", json!({})).await?;
@@ -1449,6 +1297,9 @@ where
         previous_url = tab["url"].as_str().map(str::to_owned);
         remember_session_tab(session, id);
         params["tabId"] = json!(id);
+    } else if params["wait"] != false {
+        let tab = bridge("getTab", json!({"tabId": params["tabId"]})).await?;
+        previous_url = tab["url"].as_str().map(str::to_owned);
     }
 
     params["newTab"] = json!(false);
@@ -1459,6 +1310,7 @@ where
         .as_u64()
         .unwrap_or(DEFAULT_PAGE_WAIT_TIMEOUT_MS)
         .clamp(1_000, MAX_PAGE_WAIT_TIMEOUT_MS);
+    params["timeoutMs"] = json!(timeout_ms);
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     match bridge("navigate", params).await {
         Ok(mut result) => {
@@ -1535,13 +1387,21 @@ async fn execute_firefox_action(
         // The wire mapping defaults to newTab for older bridge callers. Here
         // the default is reuse, with allocation handled before navigation.
         bridge_params["newTab"] = json!(input.new_tab.unwrap_or(false));
-        let (result, reused) = open_in_firefox(&ctx.session_id, bridge_params, |action, params| {
-            firefox_run_bridge_command(action, params, ctx)
-        })
-        .await
-        .map_err(|error| enrich_browser_error(action, error))?;
+        let started = SystemTime::now();
+        let (mut result, reused) =
+            open_in_firefox(&ctx.session_id, bridge_params, |action, params| {
+                firefox_run_bridge_command(action, params, ctx)
+            })
+            .await
+            .map_err(|error| enrich_browser_error(action, error))?;
         if let Some(tab_id) = tab_id_from_value(&result) {
             remember_session_tab(&ctx.session_id, tab_id);
+        }
+        if let Some(tab) = result.get_mut("tab") {
+            annotate_firefox_tab_load(tab);
+            if input.wait != Some(false) {
+                check_firefox_navigation(tab, Some(started), ctx).await?;
+            }
         }
         let result = if reused {
             annotate_pinned_targeting(result)
@@ -1570,23 +1430,6 @@ async fn execute_firefox_action(
 
     if bridge_action == "screenshot" {
         return screenshot_via_bridge(&bridge_params, title, ctx).await;
-    }
-
-    // The content script's `waitFor` has no "just sleep" mode: with no
-    // selector/text/url target its check falls through to
-    // `document.readyState`, which is normally already true, so a bare
-    // `timeout_ms` returned in ~0 ms despite the schema promising a fixed
-    // delay. Honor it locally instead — no bridge round-trip, no page access.
-    if is_fixed_delay_wait(input) {
-        let waited_ms = input.timeout_ms.unwrap_or(0).min(MAX_FIXED_DELAY_WAIT_MS);
-        if waited_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(waited_ms)).await;
-        }
-        return Ok(render_browser_output(
-            action,
-            title,
-            json!({"waited": true, "ms": waited_ms, "source": "local"}),
-        ));
     }
 
     // The wire has no batch cookie-set: one `setCookie` call per cookie.
@@ -1627,7 +1470,7 @@ async fn execute_firefox_action(
         let mut enter = Map::new();
         enter.insert("key".into(), json!("Enter"));
         enter.insert("submit".into(), json!(true));
-        for key in ["tabId", "frameId", "allFrames"] {
+        for key in ["tabId", "frameId"] {
             if let Some(value) = bridge_params.get(key) {
                 enter.insert(key.into(), value.clone());
             }
@@ -1637,12 +1480,20 @@ async fn execute_firefox_action(
         None
     };
 
-    let mut result =
-        firefox_run_bridge_command_with_retry(action, &bridge_action, bridge_params, ctx)
-            .await
-            .map_err(|e| enrich_browser_error(action, e))?;
+    let started = SystemTime::now();
+    let mut result = if action == "upload" {
+        run_firefox_upload(bridge_params, ctx).await
+    } else {
+        firefox_run_bridge_command_with_retry(action, &bridge_action, bridge_params, ctx).await
+    }
+    .map_err(|error| enrich_browser_error(action, error))?;
 
-    if let Some(press_params) = submit_press {
+    if let Some(mut press_params) = submit_press {
+        if press_params.get("frameId").is_none()
+            && let Some(frame_id) = result["frameId"].as_i64()
+        {
+            press_params["frameId"] = json!(frame_id);
+        }
         let pressed = firefox_run_bridge_command("press", press_params, ctx)
             .await
             .map_err(|e| enrich_browser_error("press", e))?;
@@ -1655,11 +1506,11 @@ async fn execute_firefox_action(
     }
 
     if matches!(action, "snapshot" | "get_content") {
-        let limit = input
-            .max_length
-            .unwrap_or(MAX_BROWSER_CONTENT_CHARS)
-            .min(MAX_BROWSER_CONTENT_CHARS);
-        cap_browser_page_content(&mut result, limit);
+        if action == "get_content" && input.format.as_deref() == Some("title") {
+            retain_content_titles(&mut result);
+        } else {
+            cap_browser_page_content(&mut result, content_limit(input));
+        }
     }
 
     // Learn/maintain the session tab pin from the actions that create or
@@ -1682,12 +1533,109 @@ async fn execute_firefox_action(
         _ => {}
     }
 
+    match action {
+        "new_tab" | "reload" | "go_back" | "go_forward" => {
+            annotate_firefox_tab_load(&mut result);
+            if input.wait != Some(false) {
+                check_firefox_navigation(&result, Some(started), ctx).await?;
+            }
+        }
+        "get_active_tab" => annotate_firefox_tab_load(&mut result),
+        "list_tabs" => {
+            if let Some(tabs) = result["tabs"].as_array_mut() {
+                tabs.iter_mut().for_each(annotate_firefox_tab_load);
+            }
+        }
+        _ => {}
+    }
+
     let result = if pinned {
         annotate_pinned_targeting(result)
     } else {
         result
     };
     Ok(render_browser_output(action, title, result))
+}
+
+fn annotate_firefox_tab_load(tab: &mut Value) {
+    let url = tab["url"].as_str().unwrap_or("");
+    let internal_error = ["about:neterror", "about:certerror", "about:blocked"]
+        .iter()
+        .any(|name| url.split(['?', '#']).next() == Some(name));
+    let error_title = tab["title"]
+        .as_str()
+        .is_some_and(|title| title.trim().eq_ignore_ascii_case("Problem loading page"));
+
+    if internal_error {
+        tab["loadState"] = json!("failed");
+    } else if error_title && tab["status"] == "complete" {
+        // Firefox can expose the requested HTTP URL and a complete tab even
+        // when it is showing browser error UI. A page can share the title.
+        tab["loadState"] = json!("possible_error");
+    }
+}
+
+async fn check_firefox_navigation(
+    tab: &Value,
+    navigation_started: Option<SystemTime>,
+    ctx: &ToolContext,
+) -> Result<()> {
+    let (Some(id), Some(url)) = (tab_id_from_value(tab), tab["url"].as_str()) else {
+        return Ok(());
+    };
+    if tab["loadState"] == "failed" {
+        anyhow::bail!(
+            "Firefox could not load tab {id} ({url}). Firefox is showing a browser error page."
+        );
+    }
+    // Firefox can report a complete error document before it updates the
+    // title, and the title is localized. Check recent main-frame failures
+    // even if the title appears normal.
+    if (url.starts_with("http://") || url.starts_with("https://"))
+        && let Ok(Ok(log)) = tokio::time::timeout(
+            Duration::from_secs(2),
+            firefox_run_bridge_command(
+                "getNetworkLog",
+                json!({"tabId": id, "type": "main_frame", "limit": 8}),
+                ctx,
+            ),
+        )
+        .await
+        && let Some(reason) = firefox_navigation_error(&log, url, navigation_started)
+    {
+        anyhow::bail!(
+            "Firefox could not load tab {id} ({url}): {reason}. The tab is still open. Check the address and connection, then use reload if appropriate."
+        );
+    }
+    Ok(())
+}
+
+fn firefox_navigation_error<'a>(
+    log: &'a Value,
+    url: &str,
+    navigation_started: Option<SystemTime>,
+) -> Option<&'a str> {
+    let (url, _) = url.split_once('#').unwrap_or((url, ""));
+    let latest = log["entries"]
+        .as_array()?
+        .iter()
+        .rev()
+        .find(|entry| entry["frameId"] == 0 && entry["url"].as_str() == Some(url))?;
+    let started_ms = navigation_started
+        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as f64);
+    if latest["stage"] != "error"
+        || started_ms.is_some_and(|started| {
+            latest["timeStamp"]
+                .as_f64()
+                .is_none_or(|time| time < started)
+        })
+    {
+        return None;
+    }
+    latest["error"]
+        .as_str()
+        .filter(|reason| reason.starts_with("NS_ERROR_") && *reason != "NS_ERROR_ABORT")
 }
 
 /// Ceiling for a locally honored `wait` delay, so a mistyped `timeout_ms`
@@ -1699,7 +1647,8 @@ const MAX_FIXED_DELAY_WAIT_MS: u64 = 120_000;
 /// The extension's `waitFor` resolves a targetless request against
 /// `document.readyState`, so `timeout_ms` on its own never actually waits.
 fn is_fixed_delay_wait(input: &BrowserInput) -> bool {
-    input.timeout_ms.is_some()
+    matches!(input.action.trim(), "wait" | "wait_for_timeout" | "sleep")
+        && input.timeout_ms.is_some()
         && input.selector.is_none()
         && input.text.is_none()
         && input.contains.is_none()
@@ -1728,8 +1677,7 @@ fn enrich_browser_error(action: &str, err: anyhow::Error) -> anyhow::Error {
             "{msg}\n\nHint: the browser tab changed or closed (often after a bridge/server restart). \
              Run action='list_tabs', then action='select_tab' with a current tab_id, or action='open' \
              to create a fresh tab before retrying. \
-             IMPORTANT: Always reuse existing authenticated tabs instead of opening new ones. \
-             Check 'list_tabs' first to find tabs that are already logged in."
+             Use an existing tab only if it is the intended target."
         );
     }
     if lower.contains("connection refused")
@@ -1806,9 +1754,7 @@ fn enrich_browser_error(action: &str, err: anyhow::Error) -> anyhow::Error {
     {
         return anyhow::anyhow!(
             "{msg}\n\nHint: nothing on the page matched the given selector/text/coordinates. \
-             Run action='interactables' (or 'snapshot') first — 'interactables' prints an 'index=N' \
-             for every interactive element, and passing that index back with the selector (or \
-             'contains' for text) is more reliable than a hand-written selector. If the element is \
+             Run action='interactables' or 'snapshot' and copy the returned selector. If the element is \
              present but hidden (collapsed menu, display:none), add include_hidden=true. If the page \
              was still loading, action='wait' for the text before retrying. Elements inside iframes \
              need action='list_frames' plus frame targeting."
@@ -1827,7 +1773,7 @@ fn enrich_browser_error(action: &str, err: anyhow::Error) -> anyhow::Error {
             "{msg}\n\nHint: the bridge expects the file's bytes inline as 'files: [{{name, type, data}}]' with base64 data (it cannot read the agent's filesystem). Alphacode now sends that automatically; if you reached this via action='provider_command', pass 'files' yourself rather than a filesystem path."
         );
     }
-    if action == "upload" && (lower.contains("no file input") || lower.contains("no such file")) {
+    if action == "upload" && lower.contains("no file input") {
         return anyhow::anyhow!(
             "{msg}\n\nHint: the page has no usable <input type=\"file\"> (it may be hidden, disabled, or inside a frame). Run action='interactables' to find a file input, pass its 'selector', and target the right frame via action='list_frames' + frame_id."
         );
@@ -1984,7 +1930,7 @@ fn effective_wait_position(input: &BrowserInput) -> Option<&str> {
     if let Some(position) = input.position.as_deref() {
         return Some(position);
     }
-    match input.action.as_str() {
+    match input.action.trim() {
         "wait_for_network_idle" | "wait_for_networkidle" => Some("network-idle"),
         "wait_for_load"
         | "waitforload"
@@ -2018,67 +1964,23 @@ fn unsupported_action_message(action: &str) -> String {
     // hand. Naming the near-misses gets the intended action accepted on the
     // next turn instead of another wrong guess.
     let mut message = format!("Unsupported browser action: '{action}'.");
-    let aliases: &[(&str, &str)] = &[
-        ("navigate", "open"),
-        ("goto", "open"),
-        ("visit", "open"),
-        ("evaluate", "eval"),
-        ("js", "eval"),
-        ("javascript", "eval"),
-        ("run_script", "eval"),
-        ("back", "go_back"),
-        ("forward", "go_forward"),
-        ("close", "close_tab"),
-        ("text", "get_content"),
-        ("content", "get_content"),
-        ("find", "interactables"),
-        ("search", "interactables"),
-        ("locate", "interactables"),
-        ("query", "interactables"),
-        ("elements", "interactables"),
-        ("list_interactables", "interactables"),
-        ("set_files", "upload"),
-        ("set_input_files", "upload"),
-        ("upload_file", "upload"),
-        ("upload_files", "upload"),
-        ("setFiles", "upload"),
-        ("attach_file", "upload"),
-        ("press_key", "press"),
-        ("key", "press"),
-        ("fill", "fill_form"),
-        ("frame_list", "list_frames"),
-        ("tab_list", "list_tabs"),
-    ];
-    let suggestions: Vec<String> = aliases
-        .iter()
-        .filter(|(alias, _)| alias.eq_ignore_ascii_case(action))
-        .map(|(_, canonical)| format!("'{canonical}'"))
-        .chain(
-            super::Registry::closest_tool_names(action, KNOWN_ACTIONS)
-                .into_iter()
-                .map(|name| format!("'{name}'")),
-        )
-        .collect();
-    let suggestions = dedupe_preserving_order(suggestions);
+    let lower = action.to_ascii_lowercase();
+    let canonical = normalize_action(&lower);
+    let suggestions = if KNOWN_ACTIONS.contains(&canonical) {
+        vec![format!("'{canonical}'")]
+    } else {
+        super::Registry::closest_tool_names(action, KNOWN_ACTIONS)
+            .into_iter()
+            .map(|name| format!("'{name}'"))
+            .collect()
+    };
     if !suggestions.is_empty() {
         message.push_str(&format!(" Did you mean {}?", suggestions.join(", ")));
     }
-    message.push_str(
-        " Valid actions: status, setup, list_tabs, new_tab, select_tab, get_active_tab, \
-         list_frames, open (alias: navigate), reload, go_back, go_forward, close_tab, snapshot, \
-         get_content, interactables (alias: find), click, hover, type, fill_form, select, \
-         drag_and_drop, wait, screenshot, eval, scroll, upload (aliases: set_files, set_input_files), \
-         press, get_cookies, set_cookies, delete_cookie, list_cookies, provider_command.",
-    );
+    message.push_str(" Valid actions: ");
+    message.push_str(&KNOWN_ACTIONS.join(", "));
+    message.push('.');
     message
-}
-
-fn dedupe_preserving_order(items: Vec<String>) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    items
-        .into_iter()
-        .filter(|item| seen.insert(item.clone()))
-        .collect()
 }
 
 fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, String)> {
@@ -2086,12 +1988,22 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
 
     let mut params = Map::new();
     apply_common_targeting(&mut params, input);
+    if matches!(action, "click" | "hover" | "type")
+        && let Some(index) = input.index
+        && (index < 0 || input.selector.is_none())
+    {
+        anyhow::bail!(
+            "{action}: index requires a CSS selector and a non-negative match number. Copy the selector from interactables."
+        );
+    }
 
     match action {
         "new_tab" => {
             if let Some(url) = &input.url {
                 params.insert("url".into(), json!(url));
             }
+            params.insert("focus".into(), json!(input.focus.unwrap_or(false)));
+            params.insert("wait".into(), json!(input.wait.unwrap_or(true)));
             params.insert(
                 "timeoutMs".into(),
                 json!(
@@ -2134,7 +2046,13 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
                 }),
             );
             if let Some(timeout_ms) = input.timeout_ms {
-                params.insert("timeoutMs".into(), json!(timeout_ms));
+                params.insert(
+                    "timeoutMs".into(),
+                    json!(timeout_ms.clamp(1_000, MAX_PAGE_WAIT_TIMEOUT_MS)),
+                );
+            }
+            if let Some(focus) = input.focus {
+                params.insert("focus".into(), json!(focus));
             }
             // `navigate` otherwise ships a full annotated content dump back
             // with the navigation result, which landed in both the rendered
@@ -2157,19 +2075,34 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
         }
         "snapshot" => {
             params.insert("format".into(), json!("annotated"));
-            params.insert("maxChars".into(), json!(MAX_BROWSER_CONTENT_CHARS));
-            params.insert("textMaxChars".into(), json!(MAX_BROWSER_CONTENT_CHARS));
+            let max_length = content_limit(input);
+            params.insert("maxChars".into(), json!(max_length));
+            params.insert("textMaxChars".into(), json!(max_length));
         }
         "get_content" => {
-            let format = input.format.as_deref().unwrap_or("text");
+            let requested = input.format.as_deref().unwrap_or_else(|| {
+                if input.action.trim() == "html" {
+                    "html"
+                } else {
+                    "text"
+                }
+            });
+            let format = match requested {
+                "annotated" | "html" | "text" => requested,
+                "textFast" | "title" => "text",
+                other => anyhow::bail!(
+                    "Unsupported get_content format '{other}'. Use annotated, text, html, or title."
+                ),
+            };
             params.insert("format".into(), json!(format));
             // The content script clamps with `maxChars` (and `textMaxChars`
             // for annotated output). Always send a bounded default; plain text
             // and annotated DOM dumps used to be unbounded.
-            let max_length = input
-                .max_length
-                .unwrap_or(MAX_BROWSER_CONTENT_CHARS)
-                .min(MAX_BROWSER_CONTENT_CHARS);
+            let max_length = if requested == "title" {
+                1000
+            } else {
+                content_limit(input)
+            };
             params.insert("maxChars".into(), json!(max_length));
             if format == "annotated" {
                 params.insert("textMaxChars".into(), json!(max_length));
@@ -2191,11 +2124,10 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
             if input.selector.is_none()
                 && input.text.is_none()
                 && input.contains.is_none()
-                && input.index.is_none()
                 && !matches!((input.x, input.y), (Some(_), Some(_)))
             {
                 anyhow::bail!(
-                    "click requires one of: selector, text, contains, index (from interactables), \
+                    "click requires one of: selector, text, contains, \
                      or both x and y coordinates"
                 );
             }
@@ -2209,10 +2141,16 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
         }
         "hover" => {
             if input.selector.is_none()
-                && input.index.is_none()
+                && input.text.is_none()
+                && input.contains.is_none()
                 && !matches!((input.x, input.y), (Some(_), Some(_)))
             {
-                anyhow::bail!("hover requires selector, index, or both x and y coordinates");
+                anyhow::bail!("hover requires selector, text, or both x and y coordinates");
+            }
+            if input.text.is_none()
+                && let Some(contains) = &input.contains
+            {
+                params.insert("text".into(), json!(contains));
             }
         }
         "drag_and_drop" => {
@@ -2232,7 +2170,21 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
                 .text
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("text is required for type"))?;
-            params.insert("text".into(), json!(text));
+            if input.selector.is_none() && !matches!((input.x, input.y), (Some(_), Some(_))) {
+                anyhow::bail!("type requires a selector or both x and y coordinates");
+            }
+            if input.submit == Some(true)
+                && input.all_frames == Some(true)
+                && input.frame_id.is_none()
+            {
+                anyhow::bail!(
+                    "type with submit requires a single frame. Pass frame_id or omit all_frames."
+                );
+            }
+            // The bridge uses text for both input and target lookup. Keep
+            // typed text out of the locator and pass the value separately.
+            params.remove("text");
+            params.insert("value".into(), json!(text));
             if let Some(clear) = input.clear {
                 params.insert("clear".into(), json!(clear));
             }
@@ -2291,14 +2243,12 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
             }
         }
         "wait" => {
-            if matches!(
-                input.action.as_str(),
-                "wait_for_selector" | "waitforselector"
-            ) && input.selector.is_none()
+            if matches!(input.action.trim(), "wait_for_selector" | "waitforselector")
+                && input.selector.is_none()
             {
                 anyhow::bail!("wait_for_selector requires a selector");
             }
-            if matches!(input.action.as_str(), "wait_for_timeout" | "sleep")
+            if matches!(input.action.trim(), "wait_for_timeout" | "sleep")
                 && input.timeout_ms.is_none()
             {
                 anyhow::bail!("wait_for_timeout requires timeout_ms");
@@ -2343,8 +2293,7 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
             }
             // Nothing left to insert for the quiet-period modes: the action
             // itself (`waitForStable`, not `waitFor`) is what carries them.
-            // A bare `timeout_ms` is handled locally in
-            // `execute_firefox_action` and never reaches the bridge.
+            // Tool::execute handles a bare delay locally.
         }
         "screenshot" => {}
         "eval" => {
@@ -2716,57 +2665,48 @@ fn apply_common_targeting(params: &mut Map<String, Value>, input: &BrowserInput)
     }
 }
 
-/// Detect the bridge's target-resolution failures without treating ordinary
-/// page errors as a missing browser tab.
-///
-/// A false positive here is expensive: it both replaces the real error with a
-/// tab hint and (in `run_bridge_with_tab_recovery`) re-resolves the active tab
-/// and replays the request. `ReferenceError: Tab is not defined` must not
-/// match, and neither must page text that merely starts with a needle —
-/// "no table of contents" contains "no tab", and "Error: Table not found"
-/// contains "error: tab".
+/// Match the native bridge's errors for tab resolution, not arbitrary text
+/// about tabs returned by a page or from an eval exception.
 fn missing_tab_error(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    // JavaScript exceptions can contain any text, including "no tab". The
-    // script may already have changed the page, so never replay it as a tab
-    // resolution failure just because its exception mentions a tab.
-    if lower.contains("evaluate error:") {
-        return false;
+    let message = message
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let message = message
+        .strip_prefix("browser bridge action '")
+        .and_then(|details| details.split_once("' failed: "))
+        .map_or(message.as_str(), |(_, details)| details);
+    let cause = message.strip_prefix("error: ").unwrap_or(message);
+    if cause.starts_with("no active tab found")
+        || cause == "no active tab is available"
+        || matches!(
+            cause,
+            "tab not found" | "active tab not found" | "tab is closed"
+        )
+    {
+        return true;
     }
-    [
-        "no active tab",
-        "active tab not found",
-        "tab not found",
-        "invalid tab",
-        "tab closed",
-        "tab is closed",
-        "no tab",
-        "error: tab",
-    ]
-    .iter()
-    .any(|needle| contains_phrase(&lower, needle))
-}
-
-/// Substring match on a whole-token basis: both the leading *and* trailing
-/// edges must be non-alphanumeric (or the string boundary).
-///
-/// The leading guard stops `ReferenceError: Tab is not defined` from matching
-/// `error: tab`. The trailing guard stops `no table` from matching `no tab`
-/// and `Error: Table not found` from matching `error: tab`, while still
-/// accepting the bridge's real messages, which continue with punctuation or a
-/// space (`Error: Tab 199 no longer exists`, `tab closed: 42`).
-fn contains_phrase(haystack: &str, needle: &str) -> bool {
-    haystack.match_indices(needle).any(|(start, matched)| {
-        let leading_ok = !haystack[..start]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_ascii_alphanumeric());
-        let trailing_ok = !haystack[start + matched.len()..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric());
-        leading_ok && trailing_ok
-    })
+    if let Some(id) = cause
+        .strip_prefix("invalid tab id:")
+        .or_else(|| cause.strip_prefix("invalid tab identifier:"))
+        .or_else(|| cause.strip_prefix("no tab with id:"))
+        .or_else(|| cause.strip_prefix("tab closed:"))
+    {
+        return id.trim().trim_end_matches('.').parse::<u64>().is_ok();
+    }
+    cause
+        .strip_prefix("tab ")
+        .and_then(|detail| detail.split_once(' '))
+        .is_some_and(|(id, detail)| {
+            id.parse::<u64>().is_ok()
+                && (detail.starts_with("is no longer available (")
+                    || matches!(
+                        detail.trim_end_matches('.'),
+                        "no longer exists" | "does not exist" | "not found" | "is closed"
+                    ))
+        })
 }
 
 /// Extract a Firefox tab id from the shapes returned by bridge versions.
@@ -2839,10 +2779,24 @@ async fn run_bridge_with_tab_recovery(
         // it unconditionally: keeping it made every follow-up action retry the
         // same dead id and fail identically (the agent loop reported on
         // Discord admin sessions).
-        let pin_is_stale = session_tab_pin(&ctx.session_id) == Some(dead_tab_id);
-        if pin_is_stale {
-            forget_session_tab(&ctx.session_id, dead_tab_id);
+        // The extension can report a missing tab on content delivery to a
+        // live error document. Verify the ID using the tabs API before
+        // discarding the session target.
+        if bridge_action != "getTab" {
+            match firefox_run_bridge_command("getTab", json!({"tabId": dead_tab_id}), ctx).await {
+                Ok(mut tab) => {
+                    annotate_firefox_tab_load(&mut tab);
+                    check_firefox_navigation(&tab, None, ctx).await?;
+                    anyhow::bail!(
+                        "Firefox tab {dead_tab_id} is still open, but the bridge could not run '{logical_action}' in its current document. Inspect the tab and wait for navigation to finish before retrying."
+                    );
+                }
+                Err(probe_error) if missing_tab_error(&probe_error.to_string()) => {}
+                Err(_) => return Err(err),
+            }
         }
+        forget_session_tab(&ctx.session_id, dead_tab_id);
+        forget_open_tab(&ctx.session_id, dead_tab_id);
         let hint = live_session_tabs_hint(ctx).await;
         if hint.is_empty() {
             return Err(err);
@@ -2937,11 +2891,7 @@ async fn firefox_run_bridge_command_with_retry(
         {
             Ok(value) => return Ok(value),
             Err(err) => {
-                // Don't burn retries on errors that retrying can't fix
-                // (bad input, unsupported action) — only on the kind of
-                // failure that suggests a transient process/IPC hiccup.
-                let msg = err.to_string();
-                if msg.contains("Unknown action:") || msg.contains("is required") {
+                if !transient_browser_transport_error(&err.to_string()) {
                     return Err(err);
                 }
                 last_err = Some(err);
@@ -2953,6 +2903,42 @@ async fn firefox_run_bridge_command_with_retry(
     }
     Err(last_err
         .unwrap_or_else(|| anyhow::anyhow!("browser bridge command failed with no error detail")))
+}
+
+fn transient_browser_transport_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "connection reset",
+        "connection refused",
+        "actively refused",
+        "broken pipe",
+        "unexpected eof",
+        "websocket protocol error",
+    ]
+    .iter()
+    .any(|text| lower.contains(text))
+}
+
+async fn run_firefox_upload(params: Value, ctx: &ToolContext) -> Result<Value> {
+    // The CLI rewrites direct uploadFile commands as path-only uploads.
+    // Sending the extension command inside a batch preserves tab and frame.
+    let response = firefox_run_bridge_command(
+        "batch",
+        json!({"commands": [{"action": "uploadFile", "params": params}]}),
+        ctx,
+    )
+    .await?;
+    let first = &response["results"][0];
+    if first["ok"] != true {
+        let reason = first["error"]
+            .as_str()
+            .unwrap_or("no upload result from Firefox");
+        anyhow::bail!("Browser bridge action 'uploadFile' failed: {reason}");
+    }
+    first
+        .get("result")
+        .cloned()
+        .context("Firefox returned no upload result")
 }
 
 /// Hard deadline for one bridge CLI invocation.
@@ -2980,9 +2966,28 @@ async fn firefox_run_bridge_command(
     }
 
     let params_json = serde_json::to_string(&params)?;
+    // Stay well below operating-system argument size limits and keep large
+    // payloads such as file uploads out of process arguments.
+    let staged_params = if params_json.len() > 8 * 1024 || action == "batch" {
+        let file =
+            tempfile::NamedTempFile::new().context("Create private browser arguments file")?;
+        tokio::fs::write(file.path(), params_json.as_bytes())
+            .await
+            .context("Write browser arguments file")?;
+        Some(file)
+    } else {
+        None
+    };
     let mut command = tokio::process::Command::new(&bin);
     crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
-    command.arg(action).arg(&params_json);
+    command.arg(action);
+    if let Some(file) = &staged_params {
+        let mut argument = std::ffi::OsString::from("@");
+        argument.push(file.path());
+        command.arg(argument);
+    } else {
+        command.arg(&params_json);
+    }
     command.stdin(std::process::Stdio::null());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -2995,7 +3000,7 @@ async fn firefox_run_bridge_command(
 
     #[cfg(not(windows))]
     if std::env::var("BROWSER_SESSION").is_err()
-        && let Some(session_name) = crate::browser::ensure_browser_session(&_ctx.session_id)
+        && let Some(session_name) = crate::browser::ensure_browser_session(&_ctx.session_id).await
     {
         command.env("BROWSER_SESSION", session_name);
     }
@@ -3083,70 +3088,67 @@ async fn firefox_run_bridge_command(
     serde_json::from_str(&stdout).or_else(|_| Ok(json!({ "raw": stdout })))
 }
 
-/// Screenshot support.
-///
-/// The extension's `screenshot` action returns `{tabId, dataUrl, method}`
-/// where `dataUrl` is a `data:image/png;base64,...` string. There is no
-/// `filename` parameter and no `saved` result, so the previous
-/// implementation — ask the bridge to write a temp file, then look for
-/// `result.saved` — never found anything, failed to read its own temp path,
-/// attached no image, and still reported "Captured browser screenshot to
-/// <path>" for a file that did not exist. Decoding `dataUrl` also removes the
-/// temp file entirely, so there is nothing left to collide or leak.
+/// Accept captures returned inline by the extension or saved by the CLI.
 async fn screenshot_via_bridge(
     params: &Value,
     title: String,
     ctx: &ToolContext,
 ) -> Result<ToolOutput> {
-    let result = firefox_run_bridge_command("screenshot", params.clone(), ctx)
+    let temp = tempfile::Builder::new()
+        .prefix("alphacode-browser-")
+        .tempdir()
+        .context("Could not reserve a temporary browser screenshot directory")?;
+    let file = temp.path().join("capture.png");
+    let mut request = params.clone();
+    request["filename"] = json!(file);
+    let result = firefox_run_bridge_command("screenshot", request, ctx)
         .await
         .map_err(|error| enrich_browser_error("screenshot", error))?;
 
-    let mut output = ToolOutput::new(String::new())
-        .with_title(title)
-        .with_metadata(result.clone());
+    let (media_type, payload, size) =
+        if let Some((media_type, payload)) = screenshot_data_url(&result) {
+            let size = STANDARD
+                .decode(&payload)
+                .context("Invalid screenshot image data")?
+                .len();
+            (media_type, payload, size)
+        } else if is_requested_screenshot(&result, &file) {
+            let bytes = tokio::fs::read(&file)
+                .await
+                .context("Could not read browser screenshot")?;
+            let media_type = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                "image/png"
+            } else if bytes.starts_with(b"\xff\xd8\xff") {
+                "image/jpeg"
+            } else {
+                anyhow::bail!("Browser bridge saved an unrecognized screenshot format");
+            };
+            (media_type.into(), STANDARD.encode(&bytes), bytes.len())
+        } else {
+            anyhow::bail!(
+                "Browser bridge did not return a usable screenshot. Bridge response: {}",
+                summarize_bridge_result(&result)
+            );
+        };
 
-    if let Some((media_type, base64)) = screenshot_data_url(&result) {
-        let mut metadata = merge_into_metadata_object(output.metadata.take());
-        metadata.insert(
-            "image".into(),
-            json!({"mediaType": media_type, "bytes": base64.len()}),
-        );
-        output.metadata = Some(Value::Object(metadata));
-        output.output = format!(
-            "Captured a browser screenshot ({} bytes, {}).",
-            base64.len(),
-            media_type
-        );
-        return Ok(output.with_labeled_image(media_type, base64, "browser screenshot".to_string()));
+    let mut metadata = merge_into_metadata_object(Some(result));
+    for key in ["dataUrl", "data_url", "saved"] {
+        metadata.remove(key);
     }
+    metadata.insert(
+        "image".into(),
+        json!({"mediaType": media_type, "bytes": size}),
+    );
+    Ok(ToolOutput::new(format!(
+        "Captured a browser screenshot ({size} bytes, {media_type})."
+    ))
+    .with_title(title)
+    .with_metadata(Value::Object(metadata))
+    .with_labeled_image(media_type, payload, "browser screenshot".to_string()))
+}
 
-    // Compatibility path for a CLI build that persists the capture itself and
-    // reports where. The 1.6.0 extension does not do this, but reading it
-    // costs nothing and keeps such a build working.
-    if let Some(saved) = result.get("saved").and_then(Value::as_str)
-        && let Ok(bytes) = tokio::fs::read(saved).await
-    {
-        let _ = tokio::fs::remove_file(saved).await;
-        let encoded = STANDARD.encode(&bytes);
-        let mut metadata = merge_into_metadata_object(output.metadata.take());
-        metadata.insert(
-            "image".into(),
-            json!({"mediaType": "image/png", "bytes": bytes.len(), "savedTo": saved}),
-        );
-        output.metadata = Some(Value::Object(metadata));
-        output.output = format!("Captured a browser screenshot ({} bytes).", bytes.len());
-        return Ok(output.with_labeled_image(
-            "image/png",
-            encoded,
-            "browser screenshot".to_string(),
-        ));
-    }
-
-    anyhow::bail!(
-        "screenshot: the browser bridge returned no image data. This usually means the extension stripped the capture (the popup 'screenshot' button reports only dataUrlLength) or the tab was not capturable. Run action='status' to confirm the bridge version, then action='setup' to repair it. For page state use action='snapshot' or action='interactables', which return text and selectors instead of pixels. Bridge response: {}",
-        summarize_bridge_result(&result)
-    )
+fn is_requested_screenshot(result: &Value, requested: &Path) -> bool {
+    result["saved"].as_str().map(Path::new) == Some(requested)
 }
 
 /// Extract `(media_type, base64_payload)` from a `data:...;base64,` URL.
@@ -3160,10 +3162,14 @@ fn screenshot_data_url(result: &Value) -> Option<(String, String)> {
         return None;
     }
     let media_type = meta
-        .trim_start_matches("data:")
+        .strip_prefix("data:")?
         .trim_end_matches(";base64")
         .to_ascii_lowercase();
-    if media_type.is_empty() || payload.is_empty() {
+    if !matches!(
+        media_type.as_str(),
+        "image/png" | "image/jpeg" | "image/jpg"
+    ) || payload.is_empty()
+    {
         return None;
     }
     Some((
@@ -3228,7 +3234,7 @@ fn render_browser_output(action: &str, title: String, result: Value) -> ToolOutp
         // extension's `{pressed, keys, results, element}`, which the default
         // JSON arm renders faithfully.
         "eval" => format_eval_result(&result),
-        "open" => format_navigate_result(&result),
+        "open" | "new_tab" | "reload" | "go_back" | "go_forward" => format_navigate_result(&result),
         "list_cookies" => format_cookie_string_result(&result),
         "get_cookies" => {
             // Extract domain filter from result metadata if provided
@@ -3242,6 +3248,25 @@ fn render_browser_output(action: &str, title: String, result: Value) -> ToolOutp
     ToolOutput::new(body)
         .with_title(title)
         .with_metadata(result)
+}
+
+fn content_limit(input: &BrowserInput) -> usize {
+    input
+        .max_length
+        .unwrap_or(MAX_BROWSER_CONTENT_CHARS)
+        .min(MAX_BROWSER_CONTENT_CHARS)
+}
+
+fn retain_content_titles(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object
+                .retain(|key, _| matches!(key.as_str(), "title" | "url" | "frameId" | "frameUrl"));
+            object.insert("format".into(), json!("title"));
+        }
+        Value::Array(frames) => frames.iter_mut().for_each(retain_content_titles),
+        _ => {}
+    }
 }
 
 /// Cap page-body fields locally as a fallback for bridge versions that do not
@@ -3266,7 +3291,6 @@ fn cap_browser_page_content(value: &mut Value, limit: usize) {
                 cap_browser_page_content(nested, limit);
             }
         }
-        Value::String(text) => *text = truncate_browser_text(text, limit),
         _ => {}
     }
 }
@@ -3309,6 +3333,10 @@ fn format_navigate_result(result: &Value) -> String {
         && !page_title.is_empty()
     {
         lines.push(format!("title: {page_title}"));
+    }
+    if tab["loadState"] == "possible_error" {
+        lines.push("Firefox reports a possible load failure. Inspect the tab or retry the address if appropriate.".into());
+        return lines.join("\n");
     }
     if let Some(status) = tab.get("status").and_then(Value::as_str) {
         lines.push(format!("status: {status}"));
@@ -3493,37 +3521,27 @@ fn format_interactables_result(result: &Value) -> String {
     }
 
     let mut lines = Vec::new();
-    for (idx, element) in elements.iter().enumerate() {
+    for element in elements {
         let kind = element
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("element");
-        let tag = element.get("tag").and_then(|v| v.as_str()).unwrap_or("?");
-        let text = element
-            .get("text")
-            .or_else(|| element.get("label"))
-            .or_else(|| element.get("name"))
-            .and_then(|v| v.as_str())
+        let tag = element["tag"]
+            .as_str()
+            .or_else(|| element["element"]["tag"].as_str());
+        let text = ["name", "text", "label"]
+            .iter()
+            .filter_map(|key| element[*key].as_str())
+            .find(|text| !text.is_empty())
             .unwrap_or("");
         let selector = element
             .get("selector")
             .and_then(|v| v.as_str())
             .unwrap_or("-");
-        // Show the bridge's own 0-based index, not a 1-based ordinal. The
-        // previous rendering printed "1., 2., 3." while the only way to address
-        // a specific element was `index`, which the tool could not even accept —
-        // so the agent read a number that meant nothing and guessed a selector.
-        let index = element
-            .get("index")
-            .and_then(Value::as_i64)
-            .unwrap_or(idx as i64);
-        lines.push(format!(
-            "index={index} [{}] <{}> {} | selector: {}",
-            kind,
-            tag.to_lowercase(),
-            text,
-            selector
-        ));
+        let tag = tag
+            .map(|tag| format!(" <{}>", tag.to_lowercase()))
+            .unwrap_or_default();
+        lines.push(format!("[{kind}]{tag} {text} | selector: {selector}"));
     }
 
     lines.join("\n")
@@ -3735,7 +3753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a running Firefox and an installed native bridge"]
+    #[ignore = "requires a connected Firefox, installed bridge in ALPHACODE_HOME, and RUST_MIN_STACK=16777216 on Windows"]
     async fn firefox_working_tabs_stay_isolated_across_sessions() -> Result<()> {
         use crate::alphacode_tool_core::ToolExecutionMode;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3754,9 +3772,14 @@ mod tests {
                         if String::from_utf8_lossy(&request[..bytes]).contains("/slow HTTP/") {
                             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                         }
-                        let _ = stream.write_all(
-                            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 22\r\nConnection: close\r\n\r\n<title>Fixture</title>",
-                        ).await;
+                        let body = r#"<!doctype html><title>Fixture</title><h1>Local browser fixture</h1>
+                            <input id="message"><input id="attachment" type="file">
+                            <button id="confirm" onclick="document.querySelector('h1').textContent = 'Clicked'">Confirm</button>"#;
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = stream.write_all(response.as_bytes()).await;
                     }
                 });
             }
@@ -3819,6 +3842,51 @@ mod tests {
                     "Sequential open allocated a new tab"
                 );
             }
+            let registry = super::super::Registry::empty();
+            registry.register("browser".into(), std::sync::Arc::new(BrowserTool::new())).await;
+            let call = |input| registry.execute("browser", input, a.clone());
+            let content = call(json!({"action":"get_page_content"})).await?;
+            anyhow::ensure!(content.output.contains("Local browser fixture"), "Alias did not return page content: {}", content.output);
+            let controls = call(json!({"action":"interactables","contains":"Confirm"})).await?;
+            anyhow::ensure!(controls.output.contains("#confirm"), "Interactables did not return a usable selector: {}", controls.output);
+            call(json!({"action":"type","selector":"#message","text":"Live typing"})).await?;
+            call(json!({"action":"click","selector":"#confirm"})).await?;
+            let content = call(json!({"action":"getPageContent"})).await?;
+            anyhow::ensure!(content.output.contains("Clicked"), "Click did not update the fixture");
+            let typed = call(json!({"action":"eval","script":"document.querySelector('#message').value","timeout_ms":2000})).await?;
+            anyhow::ensure!(typed.output.contains("Live typing"), "Typing did not update the field: {}", typed.output);
+            let screenshot = call(json!({"action":"screenshot"})).await?;
+            anyhow::ensure!(screenshot.images.iter().any(|image| image.media_type == "image/png"), "Firefox did not attach the screenshot");
+
+            let upload = tempfile::tempdir()?;
+            let path = upload.path().join("fixture-upload.txt");
+            tokio::fs::write(&path, vec![b'x'; 32_000]).await?;
+            call(json!({"action":"upload","selector":"#attachment","path":path})).await?;
+            let file_size = call(json!({"action":"eval","script":"document.querySelector('#attachment').files[0].size"})).await?;
+            anyhow::ensure!(file_size.output.contains("32000"), "Upload did not populate the target input: {}", file_size.output);
+
+            let unavailable = std::net::TcpListener::bind("127.0.0.1:0")?;
+            let unavailable_url = format!("http://{}/unavailable", unavailable.local_addr()?);
+            drop(unavailable);
+            let error = match call(json!({"action":"open","url":unavailable_url,"timeout_ms":10000})).await {
+                Ok(output) => anyhow::bail!("Closed fixture port was reported as a successful load: {}", output.output),
+                Err(error) => error,
+            };
+            anyhow::ensure!(error.to_string().contains("Firefox could not load tab"), "Unexpected navigation error: {error}");
+            anyhow::ensure!(session_tab_pin(&a.session_id) == tab_id_from_value(&first), "Load failure discarded the working tab");
+            let failed_tab = tab_id_from_value(&first);
+            let content_error = match call(json!({"action":"get_content"})).await {
+                Ok(output) => anyhow::bail!("An error document returned page content: {}", output.output),
+                Err(error) => error,
+            };
+            anyhow::ensure!(
+                content_error.to_string().contains("Firefox could not load tab")
+                    && session_tab_pin(&a.session_id) == failed_tab,
+                "The bridge mislabeled a live error document as a closed tab: {content_error}"
+            );
+            call(json!({"action":"open","url":format!("{root}/recovered")})).await?;
+            let recovered = call(json!({"action":"get_page_content","format":"title"})).await?;
+            anyhow::ensure!(recovered.output.contains("Fixture"), "Working tab did not recover: {}", recovered.output);
             Ok(())
         }
         .await;
@@ -3853,6 +3921,59 @@ mod tests {
 
     fn browser_input(value: Value) -> BrowserInput {
         serde_json::from_value(value).expect("valid BrowserInput")
+    }
+
+    #[test]
+    fn model_content_aliases_use_the_browser_content_contract() {
+        for (alias, expected) in [
+            ("get_page_content", "text"),
+            ("getPageContent", "text"),
+            (" getContent ", "text"),
+            ("html", "html"),
+        ] {
+            let input = browser_input(json!({"action":alias,"max_length":1500}));
+            let (wire, params, _) =
+                bridge_request(normalize_action(&input.action), &input).unwrap();
+            assert_eq!(wire, "getContent");
+            assert_eq!(params["format"], expected);
+            assert_eq!(params["maxChars"], 1500);
+        }
+    }
+
+    #[test]
+    fn firefox_complete_status_does_not_establish_page_load_success() {
+        let mut tab = json!({"tabId":6,"url":"https://example.test/","title":"Problem loading page","status":"complete"});
+        annotate_firefox_tab_load(&mut tab);
+        assert_eq!(tab["loadState"], "possible_error");
+        assert!(!format_navigate_result(&tab).contains("status: complete"));
+        let mut log = json!({"entries":[
+            {"frameId":0,"timeStamp":1000.5,"url":"https://example.test/","stage":"error","error":"NS_ERROR_CONNECTION_REFUSED"},
+            {"frameId":4,"url":"https://example.test/","stage":"completed"}
+        ]});
+        assert_eq!(
+            firefox_navigation_error(&log, "https://example.test/#fragment", None),
+            Some("NS_ERROR_CONNECTION_REFUSED")
+        );
+        assert_eq!(
+            firefox_navigation_error(
+                &log,
+                "https://example.test/",
+                Some(SystemTime::UNIX_EPOCH + Duration::from_millis(1100))
+            ),
+            None
+        );
+        log["entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"frameId":0,"url":"https://example.test/","stage":"completed"}));
+        assert_eq!(
+            firefox_navigation_error(&log, "https://example.test/", None),
+            None
+        );
+        let mut internal_error =
+            json!({"tabId":6,"url":"about:neterror?e=dnsNotFound","status":"complete"});
+        annotate_firefox_tab_load(&mut internal_error);
+        assert_eq!(internal_error["loadState"], "failed");
     }
 
     #[test]
@@ -4072,7 +4193,9 @@ awaitAll(items)
 
     #[test]
     fn missing_tab_error_is_distinct_from_a_page_reference_error() {
-        assert!(missing_tab_error("Error: Tab"));
+        assert!(missing_tab_error(
+            "Error: Tab 5 is no longer available (explicit tab reference). Call listTabs."
+        ));
         assert!(missing_tab_error("Error: Tab 199 no longer exists"));
         assert!(missing_tab_error("No active tab is available"));
         assert!(missing_tab_error("tab not found"));
@@ -4092,6 +4215,8 @@ awaitAll(items)
             "Error: Table not found on the page",
             "Evaluate error: TypeError: cannot read properties of undefined (reading 'tab')",
             "TypeError: tabs is not iterable",
+            "Error: Tab order does not include the field",
+            "Error: No tab was selected in the web application",
         ] {
             assert!(
                 !missing_tab_error(message),
@@ -4104,7 +4229,9 @@ awaitAll(items)
     fn missing_tab_error_gets_actionable_recovery_hint() {
         let error = enrich_browser_error(
             "eval",
-            anyhow::anyhow!("Browser bridge action 'evaluate' failed: Error: Tab"),
+            anyhow::anyhow!(
+                "Browser bridge action 'evaluate' failed: Error: Tab 5 is no longer available (explicit tab reference)."
+            ),
         );
         let message = error.to_string();
         assert!(message.contains("list_tabs"));
@@ -4192,11 +4319,13 @@ awaitAll(items)
         let input = browser_input(json!({
             "action": "type",
             "text": "hello",
+            "selector": "#message",
             "submit": true,
         }));
         let (action, params, _) = bridge_request("type", &input).expect("bridge request");
         assert_eq!(action, "type");
-        assert_eq!(params["text"], "hello");
+        assert_eq!(params["value"], "hello");
+        assert!(params.get("text").is_none());
         assert!(
             params.get("submit").is_none(),
             "the content script ignores type/submit; the Enter press handles it"
@@ -4297,6 +4426,17 @@ awaitAll(items)
     fn bare_timeout_wait_is_detected_as_a_fixed_delay() {
         let delay = browser_input(json!({"action": "wait", "timeout_ms": 750}));
         assert!(is_fixed_delay_wait(&delay));
+        for action in [
+            "reload",
+            "new_tab",
+            "eval",
+            "wait_for_load",
+            "wait_for_network_idle",
+            "wait_for_selector",
+        ] {
+            let input = browser_input(json!({"action": action, "timeout_ms": 750}));
+            assert!(!is_fixed_delay_wait(&input), "{action}");
+        }
 
         // A target means it is a real bridge wait.
         for extra in [
@@ -4402,9 +4542,6 @@ awaitAll(items)
         assert!(message.contains("selector"), "{message}");
     }
 
-    /// `screenshot` returns `{tabId, dataUrl, method}`; the old code looked
-    /// for a `saved` path that never exists and reported a temp file the
-    /// bridge never wrote.
     #[test]
     fn screenshot_decodes_the_data_url_the_bridge_actually_returns() {
         let result = json!({
@@ -4426,7 +4563,23 @@ awaitAll(items)
     fn screenshot_rejects_a_non_base64_or_missing_data_url() {
         assert!(screenshot_data_url(&json!({"dataUrl": "data:image/png,raw"})).is_none());
         assert!(screenshot_data_url(&json!({"dataUrl": "data:image/png;base64,"})).is_none());
+        assert!(
+            screenshot_data_url(&json!({"dataUrl": "data:text/plain;base64,aGVsbG8="})).is_none()
+        );
         assert!(screenshot_data_url(&json!({"tabId": 3, "method": "captureTab"})).is_none());
+    }
+
+    #[test]
+    fn screenshot_accepts_only_the_requested_output_path() {
+        let requested = Path::new("private-temp/capture.png");
+        assert!(is_requested_screenshot(
+            &json!({"saved": requested}),
+            requested
+        ));
+        assert!(!is_requested_screenshot(
+            &json!({"saved": "unrelated.png"}),
+            requested
+        ));
     }
 
     #[test]
@@ -4812,9 +4965,7 @@ awaitAll(items)
         let message = error.to_string();
         assert!(message.contains("snapshot"));
         assert!(message.contains("interactables"));
-        // The hint must name the affordances that actually exist, or it sends
-        // the agent looking for something the tool cannot do.
-        assert!(message.contains("index"), "index not suggested: {message}");
+        assert!(message.contains("copy the returned selector"), "{message}");
         assert!(
             message.contains("include_hidden"),
             "include_hidden not suggested: {message}"
@@ -4868,7 +5019,7 @@ awaitAll(items)
     /// address a specific element was an `index` the tool could not accept, so
     /// the agent read a number that meant nothing and guessed a selector.
     #[test]
-    fn interactables_output_prints_the_index_it_accepts_back() {
+    fn interactables_output_shows_selectors_without_ambiguous_list_indexes() {
         let result = json!({
             "elements": [
                 { "index": 0, "type": "button", "tag": "BUTTON", "text": "Cancel", "selector": "#cancel" },
@@ -4876,11 +5027,11 @@ awaitAll(items)
             ]
         });
         let rendered = format_interactables_result(&result);
-        assert!(rendered.contains("index=0"), "{rendered}");
-        assert!(rendered.contains("index=1"), "{rendered}");
+        assert!(rendered.contains("selector: #cancel"), "{rendered}");
+        assert!(rendered.contains("selector: #login"), "{rendered}");
         assert!(rendered.contains("Sign in"), "{rendered}");
         // The 1-based ordinal is gone; it could not be used.
-        assert!(!rendered.contains("1. ["), "{rendered}");
+        assert!(!rendered.contains("index="), "{rendered}");
     }
 
     /// The index the tool prints must be the one it forwards, or the round trip
@@ -4954,15 +5105,11 @@ awaitAll(items)
         );
     }
 
-    /// An index from `interactables` output alone is a valid click target:
-    /// the bridge's `resolveElement` accepts it, and requiring a
-    /// selector/text/x/y on top of it dead-ended agents that had just read
-    /// an `index=N` line.
     #[test]
-    fn click_accepts_an_index_alone() {
+    fn click_requires_a_selector_for_an_index() {
         let input = browser_input(json!({"action": "click", "index": 3}));
-        let (_, params, _) = bridge_request("click", &input).expect("index is a click target");
-        assert_eq!(params["index"], json!(3));
+        let error = bridge_request("click", &input).expect_err("bare index is ambiguous");
+        assert!(error.to_string().contains("index requires a CSS selector"));
     }
 
     #[test]
@@ -4974,7 +5121,7 @@ awaitAll(items)
 
     #[test]
     fn index_is_forwarded_for_hover() {
-        let input = browser_input(json!({"action": "hover", "index": 2}));
+        let input = browser_input(json!({"action": "hover", "selector": "button", "index": 2}));
         let (_, params, _) = bridge_request("hover", &input).expect("bridge request");
         assert_eq!(params["index"], json!(2));
     }

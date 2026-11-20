@@ -80,6 +80,8 @@ struct ToolHelpInput {
     action: Option<String>,
     #[serde(default)]
     tools: Option<Vec<String>>,
+    #[serde(default)]
+    offset: usize,
 }
 
 /// Lists and promotes tools that progressive disclosure keeps off the wire.
@@ -137,7 +139,8 @@ impl Tool for ToolHelpTool {
         "Discover tools in this session. Use action=search with a task query to match names, \
          descriptions, and capability families without loading schemas. Then pass tools with exact \
          names to enable only what is useful. Use action=inspect with exact tool names (or one exact \
-         name in query) to read live parameter schemas immediately. With no arguments, list hidden tools. Registration \
+         name in query) to read live parameter schemas immediately. Use action=inventory for all tools \
+         available to the session, or call with no arguments for hidden tools. Registration \
          does not guarantee an installed binary, authenticated account, or running backend."
     }
 
@@ -147,13 +150,18 @@ impl Tool for ToolHelpTool {
             "properties": {
                 "intent": super::intent_schema_property(),
                 "action": {
-                    "type": "string", "enum": ["list", "search", "enable", "inspect"],
-                    "description": "search inspects matching tools without promoting them; enable loads selected schemas. Omitting action preserves automatic promotion for tools/query."
+                    "type": "string", "enum": ["list", "inventory", "search", "enable", "inspect"],
+                    "description": "list shows hidden tools; inventory includes advertised tools. Search finds matches without enabling them; inspect shows schemas; enable advertises selected schemas on the next model request."
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "For paginated catalog results, pass the next offset from the previous result with the same action and query."
                 },
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Exact tool names to enable or inspect, e.g. [\"sqlmap\",\"nuclei\"]."
+                    "description": "Exact tool names to enable or inspect, e.g. [\"read\",\"write\"]."
                 },
                 "query": {
                     "type": "string",
@@ -167,8 +175,11 @@ impl Tool for ToolHelpTool {
         let params: ToolHelpInput = serde_json::from_value(input)?;
         let action = params.action.as_deref().unwrap_or("auto");
         anyhow::ensure!(
-            matches!(action, "auto" | "list" | "search" | "enable" | "inspect"),
-            "unknown tool_help action; use list, search, enable, or inspect"
+            matches!(
+                action,
+                "auto" | "list" | "inventory" | "search" | "enable" | "inspect"
+            ),
+            "unknown tool_help action; use list, inventory, search, enable, or inspect"
         );
 
         // Everything the registry knows about, minus the always-advertised set.
@@ -187,6 +198,13 @@ impl Tool for ToolHelpTool {
                 })
             })
             .collect();
+        if action == "inventory" {
+            return Ok(ToolOutput::new(format_catalog(
+                &catalog,
+                "Session tool inventory",
+                params.offset,
+            )));
+        }
         let all: Vec<String> = catalog.iter().map(|(name, _)| name.clone()).collect();
         if action == "inspect" {
             let mut names = params.tools.unwrap_or_default();
@@ -214,6 +232,7 @@ impl Tool for ToolHelpTool {
                         return Ok(ToolOutput::new(format_catalog(
                             &matches,
                             "Inspect query is not an exact tool; matching tools",
+                            params.offset,
                         )));
                     }
                 }
@@ -228,6 +247,7 @@ impl Tool for ToolHelpTool {
                 return Ok(ToolOutput::new(format_catalog(
                     &catalog,
                     "Choose one or more exact tool names to inspect",
+                    params.offset,
                 )));
             }
             let unavailable: Vec<_> = names
@@ -295,6 +315,7 @@ impl Tool for ToolHelpTool {
             return Ok(ToolOutput::new(format_catalog(
                 &matches,
                 "Search results (not enabled)",
+                params.offset,
             )));
         }
 
@@ -322,7 +343,11 @@ impl Tool for ToolHelpTool {
                 .filter(|(name, _)| hidden.contains(name))
                 .cloned()
                 .collect();
-            return Ok(ToolOutput::new(format_catalog(&entries, "Hidden tools")));
+            return Ok(ToolOutput::new(format_catalog(
+                &entries,
+                "Hidden tools",
+                params.offset,
+            )));
         }
         let mut requested: Vec<String> = params
             .tools
@@ -378,7 +403,10 @@ impl Tool for ToolHelpTool {
                         .filter(|(name, _)| hidden.contains(name))
                         .cloned()
                         .collect();
-                    msg.push_str(&format!("\n\n{}", format_catalog(&entries, "Hidden tools")));
+                    msg.push_str(&format!(
+                        "\n\n{}",
+                        format_catalog(&entries, "Hidden tools", 0)
+                    ));
                 }
                 return Ok(ToolOutput::new(msg));
             }
@@ -397,7 +425,7 @@ impl Tool for ToolHelpTool {
                 return Ok(ToolOutput::new(format!(
                     "Broad query matched {} tools. No schemas loaded; choose exact tools to enable.\n{}",
                     valid.len(),
-                    format_catalog(&entries, "Matches")
+                    format_catalog(&entries, "Matches", params.offset)
                 )));
             }
             let newly = promote_tools(&ctx.session_id, &valid);
@@ -433,17 +461,18 @@ impl Tool for ToolHelpTool {
         Ok(ToolOutput::new(format_catalog(
             &entries,
             "Tools available but not advertised",
+            params.offset,
         )))
     }
 }
 
-fn format_catalog(entries: &[(String, String)], heading: &str) -> String {
+fn format_catalog(entries: &[(String, String)], heading: &str, offset: usize) -> String {
     let mut output = format!(
-        "{heading}: {} tool(s). Enable exact names with tool_help tools=[...].\n",
+        "{heading}: {} tool(s). Use action=inspect with exact names to see their arguments.\n",
         entries.len()
     );
     let mut shown = 0;
-    for (name, description) in entries.iter().take(40) {
+    for (name, description) in entries.iter().skip(offset).take(40) {
         let hint: String = description
             .split_whitespace()
             .flat_map(|word| word.chars().chain(std::iter::once(' ')))
@@ -461,8 +490,13 @@ fn format_catalog(entries: &[(String, String)], heading: &str) -> String {
         output.push_str(&line);
         shown += 1;
     }
-    if shown < entries.len() {
-        output.push_str("More matches omitted; narrow the query.\n");
+    let next_offset = offset.saturating_add(shown);
+    if next_offset < entries.len() {
+        output.push_str(&format!(
+            "Repeat this request with offset={next_offset} for more tools.\n"
+        ));
+    } else if shown == 0 && !entries.is_empty() {
+        output.push_str("No tools at this offset. Use offset=0 to start over.\n");
     }
     output
 }
@@ -621,7 +655,7 @@ mod tests {
     #[test]
     fn catalog_output_is_bounded_for_large_names_and_descriptions() {
         let entries = vec![("mcp__large".into(), "x".repeat(10_000)); 100];
-        assert!(format_catalog(&entries, "Matches").len() < 8100);
+        assert!(format_catalog(&entries, "Matches", 0).len() < 8100);
     }
 
     #[tokio::test]

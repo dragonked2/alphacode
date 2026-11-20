@@ -1,13 +1,78 @@
+use super::handterm_native_scroll::{HandtermNativeScrollClient, HostToApp};
 use super::idle_animation_repaint::{copy_cells_in, idle_animation_partial_repaint_allowed};
 use super::*;
 use crate::alphacode_tui::tui::TuiState;
+use crate::alphacode_tui::tui::backend::{RemoteConnection, RemoteRead};
 use crossterm::cursor::{RestorePosition, SavePosition};
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+use futures::future::select;
 use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+use std::future::Future;
 use std::io::Write;
+use tokio::sync::broadcast;
+use tokio::time::Interval;
 
 const STATUS_SPINNER_FPS: f32 = 12.5;
 pub(super) const STATUS_SPINNER_ONLY_INTERVAL: Duration = Duration::from_millis(80);
+pub(super) const MAX_READY_INPUT_EVENTS: usize = 32;
+pub(super) const READY_INPUT_BUDGET: Duration = Duration::from_millis(4);
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "streaming daemon events are consumed immediately without a per-event heap allocation"
+)]
+enum ShellEvent {
+    Input(Option<std::io::Result<Event>>),
+    Spinner,
+    Redraw,
+    NativeScroll(Option<HostToApp>),
+    Bus(std::result::Result<BusEvent, broadcast::error::RecvError>),
+    Server(RemoteRead),
+}
+
+#[derive(Default)]
+struct ShellWakeOrder {
+    background_first: bool,
+}
+
+impl ShellWakeOrder {
+    async fn next(
+        &mut self,
+        input: impl Future<Output = Option<std::io::Result<Event>>>,
+        background: impl Future<Output = ShellEvent>,
+    ) -> ShellEvent {
+        let input = std::pin::pin!(async { ShellEvent::Input(input.await) });
+        let background = std::pin::pin!(background);
+        // Input gets the first poll after background work. After a burst, give
+        // other ready work a turn without waiting if only input is available.
+        let event = if self.background_first {
+            select(background, input).await.factor_first().0
+        } else {
+            select(input, background).await.factor_first().0
+        };
+        self.background_first = matches!(event, ShellEvent::Input(Some(_)));
+        event
+    }
+}
+
+async fn next_background_event(
+    spinner: Option<&mut Interval>,
+    redraw: &mut Interval,
+    native_scroll: Option<&mut HandtermNativeScrollClient>,
+    bus: &mut broadcast::Receiver<BusEvent>,
+    remote: Option<&mut RemoteConnection>,
+) -> ShellEvent {
+    // Daemon streaming and the separate completion bus can both be ready.
+    // Let Tokio vary the polling order so a busy daemon can't hide paste or
+    // model refresh completions behind its stream of events.
+    tokio::select! {
+        _ = async { spinner.unwrap().tick().await }, if spinner.is_some() => ShellEvent::Spinner,
+        _ = redraw.tick() => ShellEvent::Redraw,
+        event = async { native_scroll.unwrap().recv().await }, if native_scroll.is_some() => ShellEvent::NativeScroll(event),
+        event = bus.recv() => ShellEvent::Bus(event),
+        event = async { remote.unwrap().next_event().await }, if remote.is_some() => ShellEvent::Server(event),
+    }
+}
 
 pub(super) fn redraw_timer(period: Duration) -> tokio::time::Interval {
     let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
@@ -497,7 +562,8 @@ impl StatusSpinnerRenderer {
             crate::alphacode_tui::tui::ui::draw(frame, app);
             render_elapsed = render_start.elapsed();
         })?;
-        let total_elapsed = draw_start.elapsed();
+        let draw_flushed_at = Instant::now();
+        let total_elapsed = draw_flushed_at.duration_since(draw_start);
         // The draw above refreshed the find-in-page hit index, so a step the
         // user asked for while the index was still one frame behind can be
         // applied now.
@@ -524,9 +590,15 @@ impl StatusSpinnerRenderer {
         };
         // `completed` borrows the terminal; it is unused past this point, so the
         // borrow ends here (NLL) before we touch the backend again below.
-        if sync {
-            let _ = crossterm::execute!(terminal.backend_mut(), EndSynchronizedUpdate);
-        }
+        // A synchronized frame becomes visible when its closing marker is
+        // flushed. Use the ordinary draw flush when that marker is unavailable.
+        let frame_flushed_at =
+            if sync && crossterm::execute!(terminal.backend_mut(), EndSynchronizedUpdate).is_ok() {
+                Instant::now()
+            } else {
+                draw_flushed_at
+            };
+        crate::alphacode_tui::tui::ui::note_frame_painted(frame_flushed_at);
         crate::alphacode_tui::tui::ui::record_draw_call_attribution(
             crate::alphacode_tui::tui::ui::DrawCallAttribution {
                 timestamp_ms: crate::alphacode_tui::tui::ui::wall_clock_ms(),
@@ -554,10 +626,6 @@ impl StatusSpinnerRenderer {
             self.last_full_frame_input.clear();
             self.last_full_frame_input.push_str(&app.input);
         }
-        // Close the key-to-paint clock here rather than at render time: the user
-        // sees the keystroke when the frame reaches the terminal, so anything
-        // before the flush would understate the latency they feel.
-        crate::alphacode_tui::tui::ui::note_frame_painted();
         Ok(())
     }
 
@@ -703,16 +771,28 @@ fn render_status_spinner_into_buffer_mut(buffer: &mut Buffer, area: Rect, symbol
     );
 }
 
+fn quit_if_terminal_abandoned(app: &mut App) -> bool {
+    if !super::terminal_liveness::terminal_abandoned() {
+        return false;
+    }
+    crate::logging::warn(
+        "Terminal input closed and controlling terminal is gone; exiting orphaned client",
+    );
+    app.should_quit = true;
+    true
+}
+
 impl App {
     /// Run the TUI application
     /// Returns Some(session_id) if hot-reload was requested
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<RunResult> {
-        super::terminal_liveness::capture_initial_tty();
+        super::terminal_liveness::capture_initial_terminal();
         let mut event_stream = EventStream::new();
         let mut redraw_period = crate::alphacode_tui::tui::redraw_interval(&self);
         let mut redraw_interval = redraw_timer(redraw_period);
         let mut status_spinner_interval = status_spinner_interval();
         let mut status_spinner_renderer = StatusSpinnerRenderer::default();
+        let mut wake_order = ShellWakeOrder::default();
         let mut needs_redraw = true;
         let mut handterm_native_scroll =
             super::handterm_native_scroll::HandtermNativeScrollClient::connect_from_env();
@@ -767,52 +847,63 @@ impl App {
                 local::finish_turn(&mut self);
                 needs_redraw = true;
             } else {
-                // Wait for input or redraw tick
-                tokio::select! {
-                    // Declaration-order polling: user input outranks timers and
-                    // bus chatter (see the remote loop for the rationale).
-                    biased;
-                    event = event_stream.next() => {
+                let spinner = status_spinner_renderer.spinner_only_available(&self);
+                let event = wake_order
+                    .next(
+                        event_stream.next_live(),
+                        next_background_event(
+                            spinner.then_some(&mut status_spinner_interval),
+                            &mut redraw_interval,
+                            handterm_native_scroll.as_mut(),
+                            &mut bus_receiver,
+                            None,
+                        ),
+                    )
+                    .await;
+                match event {
+                    ShellEvent::Input(event) => {
                         if event.is_some() {
-                            needs_redraw |= local::handle_terminal_event(&mut self, &mut terminal, event)?;
-                            // Drain only normalized events from the same reader.
-                            for _ in 0..32 {
-                                if self.should_quit { break; }
-                                let Some(Some(event)) = futures::FutureExt::now_or_never(event_stream.next()) else { break; };
-                                needs_redraw |= local::handle_terminal_event(&mut self, &mut terminal, Some(event))?;
-                                if self.should_quit { break; }
+                            let started = Instant::now();
+                            needs_redraw |=
+                                local::handle_terminal_event(&mut self, &mut terminal, event)?;
+                            // Drain already-ready events in order, leaving the rest
+                            // queued if dispatch has used this frame's input budget.
+                            for _ in 0..MAX_READY_INPUT_EVENTS {
+                                if self.should_quit || started.elapsed() >= READY_INPUT_BUDGET {
+                                    break;
+                                }
+                                let Some(Some(event)) =
+                                    futures::FutureExt::now_or_never(event_stream.next())
+                                else {
+                                    break;
+                                };
+                                needs_redraw |= local::handle_terminal_event(
+                                    &mut self,
+                                    &mut terminal,
+                                    Some(event),
+                                )?;
                             }
-                        } else if super::terminal_liveness::terminal_abandoned() {
-                            // Input EOF and the controlling terminal is gone:
-                            // this client is an orphan (window died without a
-                            // deliverable SIGHUP). Exit instead of looping
-                            // forever holding ~100 MB. The session persists
-                            // and can be resumed.
-                            crate::logging::warn(
-                                "Terminal input closed and controlling terminal is gone; exiting orphaned client",
-                            );
-                            self.should_quit = true;
                         } else {
-                            tokio::time::sleep(redraw_period).await;
+                            quit_if_terminal_abandoned(&mut self);
                         }
                     }
-                    _ = status_spinner_interval.tick(), if status_spinner_renderer.spinner_only_available(&self) => {
-                        if !status_spinner_renderer.draw_status_spinner_only(&self, &mut terminal)? {
+                    ShellEvent::Spinner => {
+                        if !status_spinner_renderer
+                            .draw_status_spinner_only(&self, &mut terminal)?
+                        {
                             needs_redraw = true;
                         }
                     }
-                    _ = redraw_interval.tick() => {
+                    ShellEvent::Redraw => {
+                        if event_stream.input_closed() && quit_if_terminal_abandoned(&mut self) {
+                            continue;
+                        }
                         needs_redraw |= local::handle_tick(&mut self);
                         // Refresh the health monitor's "tui_render" timestamp
                         // each redraw tick so a hung UI is visible.
                         crate::health::heartbeat("tui_render");
                     }
-                    command = async {
-                        match handterm_native_scroll.as_mut() {
-                            Some(native) => native.recv().await,
-                            None => futures::future::pending::<Option<super::handterm_native_scroll::HostToApp>>().await,
-                        }
-                    } => {
+                    ShellEvent::NativeScroll(command) => {
                         if let Some(command) = command {
                             self.apply_handterm_native_scroll(command);
                             self.request_full_redraw();
@@ -821,10 +912,10 @@ impl App {
                             handterm_native_scroll = None;
                         }
                     }
-                    // Handle background task completion notifications
-                    bus_event = bus_receiver.recv() => {
+                    ShellEvent::Bus(bus_event) => {
                         needs_redraw |= local::handle_bus_event(&mut self, bus_event);
                     }
+                    ShellEvent::Server(_) => unreachable!("local shell has no daemon connection"),
                 }
             }
         }
@@ -847,7 +938,7 @@ impl App {
         mut terminal: DefaultTerminal,
         remote_working_dir: Option<String>,
     ) -> Result<RunResult> {
-        super::terminal_liveness::capture_initial_tty();
+        super::terminal_liveness::capture_initial_terminal();
         let mut event_stream = EventStream::new();
         let mut redraw_period = crate::alphacode_tui::tui::redraw_interval(&self);
         let mut redraw_interval = redraw_timer(redraw_period);
@@ -925,6 +1016,7 @@ impl App {
             needs_redraw = true;
 
             let mut bus_receiver_remote = Bus::global().subscribe();
+            let mut wake_order = ShellWakeOrder::default();
             if let Some(status) = Bus::global().latest_update_status() {
                 self.handle_update_status(status);
                 needs_redraw = true;
@@ -988,48 +1080,68 @@ impl App {
                     continue;
                 }
 
-                tokio::select! {
-                    // Poll in declaration order so user input always wins the
-                    // race against server/bus chatter. During heavy streaming
-                    // the remote event branch is almost always ready; with the
-                    // default random polling it repeatedly outcompetes buffered
-                    // keystrokes, which shows up as a laggy, stuttering input
-                    // line while a turn is running.
-                    biased;
-                    event = event_stream.next() => {
+                let spinner = status_spinner_renderer.spinner_only_available(&self);
+                let event = wake_order
+                    .next(
+                        event_stream.next_live(),
+                        next_background_event(
+                            spinner.then_some(&mut status_spinner_interval),
+                            &mut redraw_interval,
+                            handterm_native_scroll.as_mut(),
+                            &mut bus_receiver_remote,
+                            Some(&mut remote_conn),
+                        ),
+                    )
+                    .await;
+                match event {
+                    ShellEvent::Input(event) => {
                         if event.is_some() {
-                            needs_redraw |= remote::handle_terminal_event(&mut self, &mut terminal, &mut remote_conn, event).await?;
-                            for _ in 0..32 {
-                                if self.should_quit { break; }
-                                let Some(Some(event)) = futures::FutureExt::now_or_never(event_stream.next()) else { break; };
-                                needs_redraw |= remote::handle_terminal_event(&mut self, &mut terminal, &mut remote_conn, Some(event)).await?;
-                                if self.should_quit { break; }
+                            let started = Instant::now();
+                            needs_redraw |= remote::handle_terminal_event(
+                                &mut self,
+                                &mut terminal,
+                                &mut remote_conn,
+                                event,
+                            )
+                            .await?;
+                            for _ in 0..MAX_READY_INPUT_EVENTS {
+                                if self.should_quit || started.elapsed() >= READY_INPUT_BUDGET {
+                                    break;
+                                }
+                                let Some(Some(event)) =
+                                    futures::FutureExt::now_or_never(event_stream.next())
+                                else {
+                                    break;
+                                };
+                                needs_redraw |= remote::handle_terminal_event(
+                                    &mut self,
+                                    &mut terminal,
+                                    &mut remote_conn,
+                                    Some(event),
+                                )
+                                .await?;
                             }
-                        } else if super::terminal_liveness::terminal_abandoned() {
-                            // Input EOF with the controlling terminal gone:
-                            // orphaned client (see local loop). Exit; the
-                            // server-side session keeps running and can be
-                            // reattached with --resume.
-                            crate::logging::warn(
-                                "Terminal input closed and controlling terminal is gone; exiting orphaned client",
-                            );
-                            self.should_quit = true;
                         } else {
-                            tokio::time::sleep(redraw_period).await;
+                            quit_if_terminal_abandoned(&mut self);
                         }
                     }
-                    _ = status_spinner_interval.tick(), if status_spinner_renderer.spinner_only_available(&self) => {
-                        if !status_spinner_renderer.draw_status_spinner_only(&self, &mut terminal)? {
+                    ShellEvent::Spinner => {
+                        if !status_spinner_renderer
+                            .draw_status_spinner_only(&self, &mut terminal)?
+                        {
                             needs_redraw = true;
                         }
                     }
-                    _ = redraw_interval.tick() => {
+                    ShellEvent::Redraw => {
+                        if event_stream.input_closed() && quit_if_terminal_abandoned(&mut self) {
+                            continue;
+                        }
                         needs_redraw |= remote::handle_tick(&mut self, &mut remote_conn).await;
                         // Refresh the health monitor's "tui_render" timestamp
                         // each redraw tick so a hung UI is visible.
                         crate::health::heartbeat("tui_render");
                     }
-                    event = remote_conn.next_event() => {
+                    ShellEvent::Server(event) => {
                         let (outcome, event_redraw) = remote::handle_remote_event(
                             &mut self,
                             &mut terminal,
@@ -1045,12 +1157,7 @@ impl App {
                             remote::RemoteEventOutcome::Quit => break 'outer,
                         }
                     }
-                    command = async {
-                        match handterm_native_scroll.as_mut() {
-                            Some(native) => native.recv().await,
-                            None => futures::future::pending::<Option<super::handterm_native_scroll::HostToApp>>().await,
-                        }
-                    } => {
+                    ShellEvent::NativeScroll(command) => {
                         if let Some(command) = command {
                             self.apply_handterm_native_scroll(command);
                             self.request_full_redraw();
@@ -1059,8 +1166,9 @@ impl App {
                             handterm_native_scroll = None;
                         }
                     }
-                    bus_event = bus_receiver_remote.recv() => {
-                        needs_redraw |= remote::handle_bus_event(&mut self, &mut remote_conn, bus_event).await;
+                    ShellEvent::Bus(bus_event) => {
+                        needs_redraw |=
+                            remote::handle_bus_event(&mut self, &mut remote_conn, bus_event).await;
                     }
                 }
             }
@@ -1186,6 +1294,62 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn continuous_input_leaves_a_turn_for_background_completions() {
+        let mut wake_order = ShellWakeOrder::default();
+        let mut redraw = redraw_timer(Duration::from_secs(60));
+        let (sender, mut bus) = broadcast::channel(1);
+        sender.send(BusEvent::MermaidRenderCompleted).unwrap();
+        let first = Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        ));
+        let second = Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ));
+        let mut input = futures::stream::iter([Ok(first.clone()), Ok(second.clone())]);
+
+        let event = wake_order
+            .next(
+                input.next(),
+                next_background_event(None, &mut redraw, None, &mut bus, None),
+            )
+            .await;
+        assert!(matches!(event, ShellEvent::Input(Some(Ok(event))) if event == first));
+
+        let event = wake_order
+            .next(
+                input.next(),
+                next_background_event(None, &mut redraw, None, &mut bus, None),
+            )
+            .await;
+        assert!(matches!(
+            event,
+            ShellEvent::Bus(Ok(BusEvent::MermaidRenderCompleted))
+        ));
+
+        let event = wake_order
+            .next(
+                input.next(),
+                next_background_event(None, &mut redraw, None, &mut bus, None),
+            )
+            .await;
+        assert!(matches!(event, ShellEvent::Input(Some(Ok(event))) if event == second));
+    }
+
+    #[test]
+    fn background_priority_never_waits_when_only_input_is_ready() {
+        let mut wake_order = ShellWakeOrder::default();
+        for code in [KeyCode::Char('a'), KeyCode::Enter] {
+            let key = Event::Key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE));
+            let event = futures::FutureExt::now_or_never(wake_order.next(
+                std::future::ready(Some(Ok(key.clone()))),
+                std::future::pending(),
+            ));
+            assert!(matches!(event, Some(ShellEvent::Input(Some(Ok(event)))) if event == key));
+        }
+    }
 
     /// The regression that made the animation lag: an idle screen almost always
     /// has some slow-moving chrome up (notification line, status notice, cache

@@ -114,6 +114,7 @@ impl TaskCoverage {
         self.in_flight_input_index.is_some()
             || self.successful_calls < self.inputs_planned
             || !self.failed_input_indices.is_empty()
+            || !self.deferred_input_indices.is_empty()
             || self.omitted_observation_lines > 0
             || self.aggregate_output_truncated
     }
@@ -335,6 +336,8 @@ pub struct BugBountyOrchestrator {
     pub services: Arc<RwLock<HashMap<String, String>>>,
     /// Each attempt is retained, including failed and interrupted fan-out.
     pub execution_coverage: Arc<RwLock<Vec<TaskCoverage>>>,
+    /// Cache for tool resolution results to avoid repeated `which` calls.
+    pub tool_resolution_cache: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl BugBountyOrchestrator {
@@ -353,6 +356,7 @@ impl BugBountyOrchestrator {
             ports: Arc::new(RwLock::new(HashSet::new())),
             services: Arc::new(RwLock::new(HashMap::new())),
             execution_coverage: Arc::new(RwLock::new(Vec::new())),
+            tool_resolution_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -406,40 +410,101 @@ impl BugBountyOrchestrator {
     /// Check if a tool is available and provide alternatives if not.
     ///
     /// Returns the tool to use (either the original or an alternative).
+    /// This function probes the toolchain via the bug bounty doctor to find
+    /// working alternatives when the preferred tool is missing.
+    /// Results are cached to avoid repeated `which` calls.
     pub async fn resolve_tool(&self, tool: &str) -> String {
         use crate::alphacode_app_core::bugbounty_doctor::ToolStatus;
         use crate::alphacode_app_core::bugbounty_doctor::which;
 
-        if let ToolStatus::Present { .. } = which(tool) {
-            return tool.to_string();
+        // Check cache first
+        {
+            let cache = self.tool_resolution_cache.read().await;
+            if let Some(cached) = cache.get(tool) {
+                tracing::debug!("Tool '{}' resolved from cache: {}", tool, cached);
+                return cached.clone();
+            }
         }
 
-        // Tool not found, try alternatives
+        // First, check if the requested tool is already available
+        if let ToolStatus::Present { path } = which(tool) {
+            tracing::debug!("Tool '{}' found at: {}", tool, path);
+            let result = tool.to_string();
+            // Cache the result
+            self.tool_resolution_cache
+                .write()
+                .await
+                .insert(tool.to_string(), result.clone());
+            return result;
+        }
+
+        // Tool not found, try alternatives based on known toolchain relationships
         let alternative = match tool {
+            // ProjectDiscovery toolkit alternates
             "gau" => "waybackurls",
             "waybackurls" => "gau",
-            "katana" => "gau",
+            "katana" => "gau", // fall back to URL collector
             "subfinder" => "assetfinder",
             "amass" => "subfinder",
             "assetfinder" => "subfinder",
             "dnsx" => "subfinder",
             "httpx" => "curl",
             "nuclei" => "httpx",
+            // Active probing tools
+            "dalfox" => "gf", // fallback to pattern matching
+            "corsy" => "gf",
+            "crlfuzz" => "gf",
+            "hakrawler" => "gospider",
+            "ffuf" => "gobuster",
+            // Additional tool alternatives
+            "feroxbuster" => "gobuster",
+            "gobuster" => "feroxbuster",
+            "nikto" => "nuclei",     // template scanner as fallback
+            "sqlmap" => "nuclei",    // template scanner as fallback
+            "naabu" => "nmap",       // port scanner fallback
+            "kxss" => "gf",          // XSS pattern matching fallback
+            "meg" => "httpx",        // HTTP probe fallback
+            "anew" => "sort",        // deduplication fallback
+            "qsreplace" => "gf",     // query param manipulation fallback
+            "unfurl" => "gf",        // URL analysis fallback
+            "cariddi" => "katana",   // crawler fallback
+            "puredns" => "dnsx",     // DNS resolver fallback
+            "shuffledns" => "dnsx",  // DNS resolver fallback
+            "alterx" => "subfinder", // subdomain permutation fallback
             _ => return tool.to_string(),
         };
 
-        if let ToolStatus::Present { .. } = which(alternative) {
+        // Verify the alternative is actually available before suggesting it
+        if let ToolStatus::Present { path } = which(alternative) {
             tracing::info!(
-                "Tool '{}' not found, using alternative '{}'",
+                "Tool '{}' not found, using alternative '{}' (found at: {})",
                 tool,
-                alternative
+                alternative,
+                path
             );
-            return alternative.to_string();
+            let result = alternative.to_string();
+            // Cache the result
+            self.tool_resolution_cache
+                .write()
+                .await
+                .insert(tool.to_string(), result.clone());
+            return result;
         }
 
-        // No alternative available, return original (will fail later)
-        tracing::warn!("Tool '{}' not found and no alternative available", tool);
-        tool.to_string()
+        // No alternative available - check if there are other tools in the
+        // toolchain that might serve a similar purpose
+        // Return original; caller will handle the failure gracefully
+        tracing::warn!(
+            "Tool '{}' not found and no suitable alternative available",
+            tool
+        );
+        let result = tool.to_string();
+        // Cache the result (even failure) to avoid repeated probing
+        self.tool_resolution_cache
+            .write()
+            .await
+            .insert(tool.to_string(), result.clone());
+        result
     }
 
     /// Ensure all required tools are installed, auto-installing if possible.

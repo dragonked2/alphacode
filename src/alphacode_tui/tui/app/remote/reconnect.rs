@@ -8,7 +8,6 @@ use crate::alphacode_tui::tui::backend::{RemoteConnection, RemoteDisconnectReaso
 use crate::alphacode_tui::tui::terminal_events::TerminalEventStream as EventStream;
 use anyhow::Result;
 
-use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};
 use tokio::time::MissedTickBehavior;
@@ -370,7 +369,7 @@ async fn wait_for_reload_handoff_before_reconnect(
                     _ = redraw.tick() => {
                         terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, app))?;
                     }
-                    event = event_stream.next() => {
+                    event = event_stream.next_live() => {
                         if handle_terminal_event_while_disconnected(app, terminal, event)? {
                             return Ok(Some(ConnectOutcome::Quit));
                         }
@@ -502,7 +501,7 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
             _ = redraw.tick() => {
                 terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, app))?;
             }
-            event = event_stream.next() => {
+            event = event_stream.next_live() => {
                 if handle_terminal_event_while_disconnected(app, terminal, event)? {
                     return Ok(ConnectOutcome::Quit);
                 }
@@ -677,7 +676,7 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
                                 _ = redraw.tick() => {
                                     terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, app))?;
                                 }
-                                event = event_stream.next() => {
+                                event = event_stream.next_live() => {
                                     if handle_terminal_event_while_disconnected(
                                         app,
                                         terminal,
@@ -773,7 +772,7 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
                     _ = redraw.tick() => {
                         terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, app))?;
                     }
-                    event = event_stream.next() => {
+                    event = event_stream.next_live() => {
                         if handle_terminal_event_while_disconnected(
                             app,
                             terminal,

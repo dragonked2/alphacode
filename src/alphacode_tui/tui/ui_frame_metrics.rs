@@ -140,11 +140,7 @@ static KEY_TO_PAINT_MS: Mutex<VecDeque<f64>> = Mutex::new(VecDeque::new());
 /// latency the user perceives, and it bounds the rest.
 static PENDING_KEY_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
-/// Record that a key event was just read from the terminal.
-pub(crate) fn note_key_event_read() {
-    note_key_event_read_at(std::time::Instant::now());
-}
-
+/// Record the reader timestamp when a key is delivered to the app.
 pub(crate) fn note_key_event_read_at(read_at: std::time::Instant) {
     let mut slot = PENDING_KEY_AT
         .lock()
@@ -154,8 +150,8 @@ pub(crate) fn note_key_event_read_at(read_at: std::time::Instant) {
     }
 }
 
-/// Record that a frame has been flushed, closing out any pending keystroke.
-pub(crate) fn note_frame_painted() {
+/// Record the backend flush time, closing out any pending keystroke.
+pub(crate) fn note_frame_painted(flushed_at: Instant) {
     let pending = {
         let mut slot = PENDING_KEY_AT
             .lock()
@@ -166,7 +162,8 @@ pub(crate) fn note_frame_painted() {
         let mut samples = KEY_TO_PAINT_MS
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        push_key_to_paint_sample(&mut samples, at.elapsed().as_secs_f64() * 1000.0);
+        let elapsed = flushed_at.saturating_duration_since(at);
+        push_key_to_paint_sample(&mut samples, elapsed.as_secs_f64() * 1000.0);
     }
 }
 

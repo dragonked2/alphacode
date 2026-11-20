@@ -246,7 +246,7 @@ fn read_tool_schema_advertises_only_canonical_public_fields() {
     assert!(properties.contains_key("file_path"));
     assert!(properties.contains_key("start_line"));
     assert!(properties.contains_key("limit"));
-    assert!(!properties.contains_key("end_line"));
+    assert!(properties.contains_key("end_line"));
     assert!(properties.contains_key("offset"));
 }
 

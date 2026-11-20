@@ -256,7 +256,6 @@ pub(super) async fn run_stream_with_retries(
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
     model: String,
 ) {
-    let mut last_error = None;
     let mut next_retry_delay = None;
 
     for attempt in 0..MAX_RETRIES {
@@ -351,25 +350,20 @@ pub(super) async fn run_stream_with_retries(
                     }
                     next_retry_delay =
                         crate::alphacode_provider_core::retry_after::retry_after_from_error(&e);
-                    last_error = Some(e);
                     continue;
                 }
 
+                let e = if attempt + 1 == MAX_RETRIES {
+                    crate::alphacode_provider_core::retry::stream_retry_limit_reached(e, MAX_RETRIES)
+                } else {
+                    e
+                };
                 let _ = tx.send(Err(e)).await;
                 return;
             }
         }
     }
 
-    if let Some(e) = last_error {
-        let _ = tx
-            .send(Err(anyhow::anyhow!(
-                "Failed after {} retries: {}",
-                MAX_RETRIES,
-                e
-            )))
-            .await;
-    }
 }
 
 #[expect(

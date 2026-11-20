@@ -324,7 +324,7 @@ Completed: 2 succeeded, 1 failed"
     assert!(
         rendered
             .iter()
-            .any(|line| line.contains("✗ alphagrep invalid input: missing mode")),
+            .any(|line| line.contains("✗ alphagrep · invalid input: missing mode")),
         "failed subcall should be attributed to alphagrep: {rendered:?}"
     );
     assert!(
@@ -372,7 +372,7 @@ fn test_render_tool_message_batch_all_failed_marks_all_children_failed() {
     );
     let failed_children = rendered
         .iter()
-        .filter(|line| line.contains("✗ alphagrep invalid input: missing mode"))
+        .filter(|line| line.contains("✗ alphagrep · invalid input: missing mode"))
         .count();
     assert_eq!(failed_children, 3, "rendered={rendered:?}");
     assert!(
@@ -717,9 +717,17 @@ fn test_render_batch_subcall_line_keeps_full_bash_summary_when_row_fits() {
         thought_signature: None,
     };
 
-    let line =
-        tools_ui::render_batch_subcall_line(&tool, "✓", rgb(100, 180, 100), 32, Some(160), None);
-    let rendered = extract_line_text(&line);
+    let mut lines = Vec::new();
+    tools_ui::push_batch_subcall_lines(
+        &mut lines,
+        &tool,
+        "✓",
+        rgb(100, 180, 100),
+        32,
+        Some(160),
+        None,
+    );
+    let rendered = extract_line_text(&lines[0]);
 
     assert!(
         rendered.contains("bash $ cargo test --package alphacode"),
@@ -740,9 +748,17 @@ fn test_render_batch_subcall_line_shows_model_provided_intent() {
         thought_signature: None,
     };
 
-    let line =
-        tools_ui::render_batch_subcall_line(&tool, "✓", rgb(100, 180, 100), 50, Some(120), None);
-    let rendered = extract_line_text(&line);
+    let mut lines = Vec::new();
+    tools_ui::push_batch_subcall_lines(
+        &mut lines,
+        &tool,
+        "✓",
+        rgb(100, 180, 100),
+        50,
+        Some(120),
+        None,
+    );
+    let rendered = extract_line_text(&lines[0]);
 
     assert!(
         rendered.contains("read · Inspect completed batch rendering ·"),
@@ -764,9 +780,17 @@ fn test_render_batch_subcall_line_hides_technical_detail_by_default() {
         thought_signature: None,
     };
 
-    let line =
-        tools_ui::render_batch_subcall_line(&tool, "✓", rgb(100, 180, 100), 50, Some(120), None);
-    let rendered = extract_line_text(&line);
+    let mut lines = Vec::new();
+    tools_ui::push_batch_subcall_lines(
+        &mut lines,
+        &tool,
+        "✓",
+        rgb(100, 180, 100),
+        50,
+        Some(120),
+        None,
+    );
+    let rendered = extract_line_text(&lines[0]);
 
     assert!(
         rendered.contains("read · Inspect completed batch rendering"),
@@ -809,7 +833,9 @@ fn test_render_batch_subcall_line_shows_first_subcall_token_badge() {
         thought_signature: None,
     };
 
-    let line = tools_ui::render_batch_subcall_line(
+    let mut lines = Vec::new();
+    tools_ui::push_batch_subcall_lines(
+        &mut lines,
         &tool,
         "✓",
         rgb(100, 180, 100),
@@ -817,7 +843,7 @@ fn test_render_batch_subcall_line_shows_first_subcall_token_badge() {
         Some(120),
         Some("query: pending_soft_interrupt\nmatches: 1 in 1 files\n"),
     );
-    let rendered = extract_line_text(&line);
+    let rendered = extract_line_text(&lines[0]);
 
     assert!(
         rendered.contains("alphagrep grep 'pending_soft_interrupt'"),
@@ -971,6 +997,26 @@ fn test_tool_summary_browser_open_shows_url() {
         summary,
         "open https://example.com/docs/reference/browser-tool"
     );
+}
+
+#[test]
+fn test_tool_summary_browser_content_aliases_show_effective_format() {
+    for (action, format) in [
+        ("get_content", "text"),
+        ("get_page_content", "text"),
+        ("getPageContent", "text"),
+        ("html", "html"),
+    ] {
+        let tool = ToolCall {
+            id: "browser-content".to_string(),
+            name: "browser".to_string(),
+            input: serde_json::json!({ "action": action, "selector": "main" }),
+            intent: None,
+            thought_signature: None,
+        };
+        let summary = tools_ui::get_tool_summary_with_budget(&tool, 50, Some(100));
+        assert_eq!(summary, format!("content {format} main"));
+    }
 }
 
 #[test]
@@ -1291,6 +1337,121 @@ fn test_tool_error_reason_outranks_long_intent_and_stays_visible() {
         !text.contains("Inspect shared checkout"),
         "intent displaced the error: {text}"
     );
+}
+
+#[test]
+fn browser_failure_recovery_is_visible_on_narrow_transcript_rows() {
+    const ERROR: &str = concat!(
+        "Error: [browser] Error: Unsupported browser action: 'get_page_content'. ",
+        "Did you mean 'get_content'? Valid actions: open, snapshot, get_content.",
+    );
+    let intent = "Read page text after checking the attached browser tab";
+    let browser = DisplayMessage::tool(
+        ERROR,
+        ToolCall {
+            id: "browser".to_string(),
+            name: "browser".to_string(),
+            input: serde_json::json!({"action": "get_page_content"}),
+            intent: Some(intent.to_string()),
+            thought_signature: None,
+        },
+    );
+    let batch = DisplayMessage::tool(
+        format!("--- [1] browser ---\n{ERROR}\n\nCompleted: 0 succeeded, 1 failed"),
+        ToolCall {
+            id: "batch".to_string(),
+            name: "batch".to_string(),
+            input: serde_json::json!({"tool_calls": [
+                {"tool": "browser", "intent": intent, "parameters": {"action": "get_page_content"}}
+            ]}),
+            intent: None,
+            thought_signature: None,
+        },
+    );
+    let search = DisplayMessage::tool(
+        format!("## Found 1 results for 'browser'\n\n```\n{ERROR}\n```"),
+        ToolCall {
+            id: "search".to_string(),
+            name: "session_search".to_string(),
+            input: serde_json::json!({"query": "browser"}),
+            intent: None,
+            thought_signature: None,
+        },
+    );
+
+    let width = 40;
+    let height = 14;
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| {
+            let lines = [&search, &browser, &batch]
+                .into_iter()
+                .flat_map(|msg| {
+                    render_tool_message(msg, width, crate::config::DiffDisplayMode::Off)
+                })
+                .collect::<Vec<_>>();
+            assert!(lines.iter().all(|line| line.width() <= width as usize));
+            frame.render_widget(ratatui::widgets::Paragraph::new(lines), frame.area());
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("✔ session_search"), "{text}");
+    assert!(text.contains("✖ browser"), "{text}");
+    assert!(text.contains("✗ browser"), "{text}");
+    assert_eq!(text.matches("'get_page_content'").count(), 2, "{text}");
+    assert_eq!(text.matches("'get_content'").count(), 2, "{text}");
+    assert!(!text.contains("Read page text"), "{text}");
+    assert!(!text.contains("Valid actions"), "{text}");
+}
+
+#[test]
+fn browser_failure_copy_badge_keeps_the_suggested_action_visible() {
+    let _lock = viewport_snapshot_test_lock();
+    crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
+    let state = TestState {
+        display_messages: vec![DisplayMessage::tool(
+            concat!(
+                "Error: [browser] Error: Unsupported browser action: 'get_page_content'. ",
+                "Did you mean 'get_content'?",
+            ),
+            ToolCall {
+                id: "browser-copy".to_string(),
+                name: "browser".to_string(),
+                input: serde_json::json!({"action": "get_page_content"}),
+                intent: None,
+                thought_signature: None,
+            },
+        )],
+        messages_version: 1,
+        suppress_info_widgets: true,
+        ..Default::default()
+    };
+    let width = 74;
+    let height = 24;
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| draw(frame, &state)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let text = (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("✖ browser"), "{text}");
+    assert!(text.contains("[S]"), "{text}");
+    assert!(text.contains("use 'get_content'"), "{text}");
 }
 
 #[test]

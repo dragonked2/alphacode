@@ -6,6 +6,18 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 impl App {
     pub(crate) fn model_picker_preview_filter(input: &str) -> Option<String> {
+        // Qualified IDs belong to the exact command path. A fuzzy preview
+        // may have a different route selected or no matching route loaded.
+        if let Some(model) = input.trim_start().strip_prefix("/model ") {
+            let model = model.trim();
+            if model
+                .split_once(':')
+                .is_some_and(|(provider, id)| !provider.is_empty() && !id.is_empty())
+                && !model.contains(char::is_whitespace)
+            {
+                return None;
+            }
+        }
         slash_command_preview_filter(input, &["/model", "/models"])
     }
 

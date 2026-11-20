@@ -9,51 +9,49 @@
 //! so nothing ever exited.
 //!
 //! This module answers one question cheaply: "did the controlling terminal
-//! this process started with go away?" On Linux it compares the `tty_nr`
-//! field of `/proc/self/stat` against the value captured at startup: when the
-//! controlling terminal is torn down the kernel resets `tty_nr` to 0 while
-//! the stale fd 0 still reports `isatty=true`, so this is a strictly stronger
-//! signal than `IsTerminal`. On other platforms it conservatively reports
-//! `false` and orphan exit relies on SIGHUP alone.
+//! this process started with go away?" On Linux the kernel resets `tty_nr`
+//! in `/proc/self/stat` to 0 even while a stale fd still reports `isatty=true`.
+//! On Windows the attached console answers `GetConsoleCP` independently of
+//! stdin redirection. Other platforms rely on the terminal hangup signal.
 
 use std::sync::OnceLock;
 
-/// tty_nr captured on first call. `None` until initialized, `Some(0)` when
-/// the process never had a controlling terminal (piped/headless usage), in
-/// which case abandonment is never reported.
-static INITIAL_TTY_NR: OnceLock<u64> = OnceLock::new();
+static INITIAL_TERMINAL_ATTACHED: OnceLock<bool> = OnceLock::new();
 
 /// Record the startup controlling terminal. Called implicitly by
 /// [`terminal_abandoned`], but callers may invoke it early (before any chance
 /// of the terminal dying) for a more faithful baseline.
-pub(crate) fn capture_initial_tty() {
-    let _ = INITIAL_TTY_NR.get_or_init(|| current_tty_nr().unwrap_or(0));
+pub(crate) fn capture_initial_terminal() {
+    let _ = INITIAL_TERMINAL_ATTACHED.get_or_init(|| terminal_attached().unwrap_or(false));
 }
 
 /// True when this process started with a controlling terminal that has since
-/// disappeared. Cheap (one small `/proc` read), safe to call from tick loops.
+/// disappeared. An unknown state leaves the client running.
 pub(crate) fn terminal_abandoned() -> bool {
-    capture_initial_tty();
-    let initial = INITIAL_TTY_NR.get().copied().unwrap_or(0);
-    if initial == 0 {
-        // Never had a controlling terminal: nothing to lose.
-        return false;
-    }
-    match current_tty_nr() {
-        Some(0) => true,
-        // Unreadable /proc or a live tty: assume alive.
-        _ => false,
-    }
+    capture_initial_terminal();
+    INITIAL_TERMINAL_ATTACHED.get() == Some(&true) && terminal_attached() == Some(false)
 }
 
 #[cfg(target_os = "linux")]
-fn current_tty_nr() -> Option<u64> {
+fn terminal_attached() -> Option<bool> {
     let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
-    parse_tty_nr(&stat)
+    parse_tty_nr(&stat).map(|tty_nr| tty_nr != 0)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn current_tty_nr() -> Option<u64> {
+#[cfg(windows)]
+fn terminal_attached() -> Option<bool> {
+    use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+    use windows_sys::Win32::System::Console::GetConsoleCP;
+
+    if unsafe { GetConsoleCP() } != 0 {
+        return Some(true);
+    }
+    (std::io::Error::last_os_error().raw_os_error() == Some(ERROR_INVALID_HANDLE as i32))
+        .then_some(false)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn terminal_attached() -> Option<bool> {
     None
 }
 

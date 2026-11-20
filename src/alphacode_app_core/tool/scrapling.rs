@@ -217,7 +217,7 @@ impl ScraplingTool {
     ) -> Result<ToolOutput> {
         // Try Scrapling Python first
         if let Ok(result) = self.try_scrapling_python(params, timeout).await {
-            return self.format_python_result(&result, &params.url, format);
+            return self.format_python_result(&result, params, format);
         }
 
         // Fallback: use the existing browser tool's get_content
@@ -737,27 +737,50 @@ except Exception as e:
     fn format_python_result(
         &self,
         result: &PythonScraplingResult,
-        url: &str,
+        params: &ScraplingInput,
         format: &str,
     ) -> Result<ToolOutput> {
         if let Some(err) = &result.error {
             return Err(anyhow::anyhow!("Scrapling error: {}", err));
         }
 
-        let body = match format {
-            "html" => result.html.as_deref().unwrap_or(""),
-            "text" => result.text.as_deref().unwrap_or(""),
-            "markdown" => result.text.as_deref().unwrap_or(""),
-            _ => result.text.as_deref().unwrap_or(""),
+        let html = result.html.as_deref().unwrap_or("");
+        let text = result.text.as_deref().unwrap_or("");
+
+        // Browser mode used to ignore `extract` completely: a caller that asked
+        // for `table` or `#scope` still received the whole rendered page, was
+        // truncated at the cap, and the selector it asked for was silently
+        // dropped. Repeated attempts to narrow the result could never succeed,
+        // which is what turned a single extraction into a long loop of retries.
+        // The selector is applied here against the rendered HTML so browser mode
+        // behaves like adaptive mode.
+        let selected = params.extract.as_deref().map(|selector| {
+            let document = Html::parse_document(html);
+            self.extract_by_selector(&document, selector, format)
+        });
+        let selected = match selected {
+            Some(Ok(value)) => Some(value),
+            Some(Err(error)) => return Err(error),
+            None => None,
         };
 
-        let (output, truncated) = truncate_output(body.to_string());
+        let body = match selected {
+            Some(value) => value,
+            None => match format {
+                "html" => html,
+                "text" | "markdown" => text,
+                _ => text,
+            }
+            .to_string(),
+        };
+
+        let (output, truncated) = truncate_output(body);
         let title = result.title.as_deref().unwrap_or("untitled");
         let note = if truncated { "\n\n[Truncated]" } else { "" };
 
         Ok(ToolOutput::new(format!(
             "Fetched {} (browser: Scrapling)\nTitle: {}\n\n{}{}",
-            url, title, output, note
+            params.url, title, output, note
         )))
     }
 
@@ -802,7 +825,8 @@ except Exception as e:
         command.arg("navigate").arg(&params_json);
         #[cfg(not(windows))]
         if std::env::var("BROWSER_SESSION").is_err()
-            && let Some(session_name) = crate::browser::ensure_browser_session(&_ctx.session_id)
+            && let Some(session_name) =
+                crate::browser::ensure_browser_session(&_ctx.session_id).await
         {
             command.env("BROWSER_SESSION", session_name);
         }
@@ -855,7 +879,19 @@ except Exception as e:
             .or_else(|| result["content"].as_str())
             .unwrap_or(&stdout);
 
-        let (output, truncated) = truncate_output(content.to_string());
+        // The fallback dropped `extract` as well, so a selector that adaptive
+        // mode honoured stopped working the moment the request escalated to the
+        // browser — the caller saw the full page, truncated, and could not tell
+        // why its selector had no effect. Apply it here too.
+        let content = match params.extract.as_deref() {
+            Some(selector) => {
+                let document = Html::parse_document(content);
+                self.extract_by_selector(&document, selector, format)?
+            }
+            None => content.to_string(),
+        };
+
+        let (output, truncated) = truncate_output(content);
         let note = if truncated { "\n\n[Truncated]" } else { "" };
 
         Ok(ToolOutput::new(format!(
@@ -924,6 +960,32 @@ mod tests {
         assert!(tool.detect_anti_bot("Ray ID: abc123"));
         assert!(!tool.detect_anti_bot("Hello world, this is normal content"));
         assert!(!tool.detect_anti_bot("<html><body>Normal page</body></html>"));
+    }
+
+    /// Regression: browser mode ignored `extract`.
+    ///
+    /// A caller asking for `#scope` received the whole rendered page, truncated,
+    /// with its selector silently dropped — so re-asking with a narrower
+    /// selector could never succeed and the turn looped. The selector must
+    /// narrow the body in browser mode exactly as it does in adaptive mode.
+    #[test]
+    fn browser_mode_applies_the_extract_selector() {
+        let tool = ScraplingTool::new();
+        let html = Html::parse_document(
+            "<html><body><div id=\"noise\">drop me</div>\
+             <section id=\"scope\"><p>api.example.com</p></section></body></html>",
+        );
+        let selected = tool
+            .extract_by_selector(&html, "#scope", "text")
+            .expect("selector must apply");
+        assert!(
+            selected.contains("api.example.com"),
+            "the selected content must be present: {selected}"
+        );
+        assert!(
+            !selected.contains("drop me"),
+            "content outside the selector must be excluded: {selected}"
+        );
     }
 
     #[test]

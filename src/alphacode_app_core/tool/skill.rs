@@ -23,17 +23,11 @@ impl SkillTool {
     /// dir (issue #457). The overlay is re-read whenever its sources change so
     /// edits are visible without daemon restarts and never enter the shared
     /// registry.
-    async fn effective_registry(
-        &self,
-        working_dir: Option<&std::path::Path>,
-    ) -> std::sync::Arc<SkillRegistry> {
-        let global = self.registry.read().await;
-        // Skill bodies are shared via `Arc`, so composing the effective set
-        // copies pointers instead of megabytes of `SKILL.md` text (audit M23).
-        std::sync::Arc::new(SkillRegistry::effective_for_working_dir(
-            &global,
-            working_dir,
-        ))
+    async fn effective_registry(&self, working_dir: Option<&std::path::Path>) -> SkillRegistry {
+        let mut effective = self.registry.read().await.clone();
+        let project = SkillRegistry::load_project_overlay_cached(working_dir);
+        effective.merge_overlay(project.as_ref().clone());
+        effective
     }
 }
 
@@ -113,7 +107,10 @@ impl Tool for SkillTool {
                     .await
             }
             "list" => self.list_skills(ctx.working_dir.as_deref()).await,
-            "reload" => self.reload_skill(params.name).await,
+            "reload" => {
+                self.reload_skill(params.name, ctx.working_dir.as_deref())
+                    .await
+            }
             "reload_all" => self.reload_all_skills(ctx.working_dir.as_deref()).await,
             "read" => {
                 self.read_skill(params.name, params.reference, ctx.working_dir.as_deref())
@@ -185,12 +182,7 @@ impl SkillTool {
         let matches: Vec<_> = registry
             .list()
             .into_iter()
-            .filter_map(|skill| {
-                skill
-                    .reference_files
-                    .get(&name)
-                    .map(|content| (skill, content))
-            })
+            .filter_map(|skill| skill.get_reference(&name).map(|content| (skill, content)))
             .collect();
         if let [(skill, reference_content)] = matches.as_slice() {
             return Ok(ToolOutput::new(format!(
@@ -261,8 +253,7 @@ impl SkillTool {
 
     async fn list_skills(&self, working_dir: Option<&std::path::Path>) -> Result<ToolOutput> {
         let registry = self.effective_registry(working_dir).await;
-        let mut skills = registry.list();
-        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        let skills = registry.list();
 
         let installed: std::collections::HashSet<&str> =
             skills.iter().map(|s| s.name.as_str()).collect();
@@ -295,8 +286,23 @@ impl SkillTool {
         Ok(ToolOutput::new(output).with_title("Skills: List"))
     }
 
-    async fn reload_skill(&self, name: Option<String>) -> Result<ToolOutput> {
+    async fn reload_skill(
+        &self,
+        name: Option<String>,
+        working_dir: Option<&std::path::Path>,
+    ) -> Result<ToolOutput> {
         let name = normalize_skill_name(name, "reload")?;
+
+        let project = SkillRegistry::refresh_project_overlay(working_dir);
+        if let Some(skill) = project.get(&name) {
+            return Ok(ToolOutput::new(format!(
+                "Reloaded project skill '{}'\n\nDescription: {}\nPath: {}",
+                name,
+                skill.description,
+                skill.path.display()
+            ))
+            .with_title(format!("Skills: Reloaded {}", name)));
+        }
 
         let mut registry = self.registry.write().await;
 
@@ -875,6 +881,82 @@ mod tests {
             format!("---\nname: {name}\ndescription: Project skill {name}\n---\n\nBody."),
         )
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn nested_project_references_refresh_without_reloading_the_skill() {
+        let tool = create_test_tool();
+        let repo = tempfile::tempdir().unwrap();
+        write_project_skill(repo.path(), "workflow");
+        let reference_dir = repo.path().join(".agents/skills/workflow/references/setup");
+        std::fs::create_dir_all(&reference_dir).unwrap();
+        let reference = reference_dir.join("requirements.md");
+        let list = || {
+            tool.execute(
+                json!({"action": "info", "name": "workflow"}),
+                context_with_working_dir(repo.path()),
+            )
+        };
+        let read = |path: &str| {
+            tool.execute(
+                json!({"action": "read", "name": "workflow", "reference": path}),
+                context_with_working_dir(repo.path()),
+            )
+        };
+        assert!(!list().await.unwrap().output.contains("requirements.md"));
+
+        std::fs::write(&reference, "Initial requirements.").unwrap();
+        let listed = list().await.unwrap();
+        assert!(listed.output.contains("references/setup/requirements.md"));
+        let updated = "Edited requirements and validation steps.";
+        std::fs::write(&reference, updated).unwrap();
+        for path in [
+            "references/setup/requirements.md",
+            r"references\setup\requirements.md",
+        ] {
+            assert!(read(path).await.unwrap().output.contains(updated));
+        }
+
+        std::fs::remove_file(&reference).unwrap();
+        assert!(!list().await.unwrap().output.contains("requirements.md"));
+    }
+
+    #[tokio::test]
+    async fn reload_uses_the_project_skill_that_shadows_a_global_skill() {
+        let global = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let name = "workflow";
+        write_project_skill(global.path(), name);
+        write_project_skill(repo.path(), name);
+        let registry = SkillRegistry::load_project_overlay(Some(global.path())).unwrap();
+        let tool = SkillTool::new(Arc::new(RwLock::new(registry)));
+
+        let path = repo.path().join(".agents/skills/workflow/SKILL.md");
+        std::fs::write(
+            &path,
+            "---\nname: workflow\ndescription: Updated project steps\n---\nBody.",
+        )
+        .unwrap();
+        let output = tool
+            .execute(
+                json!({"action": "reload", "name": name}),
+                context_with_working_dir(repo.path()),
+            )
+            .await
+            .unwrap();
+        assert!(output.output.contains("Reloaded project skill"));
+        assert!(output.output.contains("Updated project steps"));
+        let reported_path = output
+            .output
+            .lines()
+            .find_map(|line| line.strip_prefix("Path: "))
+            .expect("reload output should identify the skill file");
+        assert_eq!(std::path::Path::new(reported_path), path);
+        let shared = tool.registry.read().await;
+        assert_eq!(
+            shared.get(name).unwrap().description,
+            "Project skill workflow"
+        );
     }
 
     /// Issue #457: project-local skills must be session-scoped. Two contexts

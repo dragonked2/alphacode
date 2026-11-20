@@ -77,6 +77,13 @@ use crate::alphacode_provider_core::transport::{
 /// Maximum number of attempts (initial + retries) for a single request.
 pub const MAX_ATTEMPTS: u32 = 5;
 
+/// Stream runtimes attach this context when their attempt budget runs out.
+pub(crate) const STREAM_RETRY_LIMIT_PREFIX: &str = "Provider request retry limit reached";
+
+pub(crate) fn stream_retry_limit_reached(error: Error, attempts: u32) -> Error {
+    error.context(format!("{STREAM_RETRY_LIMIT_PREFIX} after {attempts} attempts"))
+}
+
 /// Hard cap on a server-supplied or backoff-derived retry delay. Anything
 /// larger is clamped down so a hostile upstream cannot stall a turn.
 pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(180);

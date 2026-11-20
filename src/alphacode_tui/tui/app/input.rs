@@ -739,6 +739,12 @@ pub(super) fn consume_paste_trailing_enter() -> bool {
 }
 
 pub(super) fn handle_paste(app: &mut App, text: String) {
+    if app.transcript_search_is_open() {
+        paste_guard::note_paste();
+        let query = crate::alphacode_tui_render::single_line_text(&text.replace("\r\n", "\n"));
+        app.insert_transcript_search_text(&query);
+        return;
+    }
     if app.help_scroll.is_some() {
         paste_guard::note_paste();
         app.paste_help_query(&text);

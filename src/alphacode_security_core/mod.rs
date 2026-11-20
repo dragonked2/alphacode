@@ -30,6 +30,7 @@ pub mod scope;
 pub mod scope_gate;
 pub mod severity;
 pub mod skill_router;
+pub mod source_integrity;
 pub mod state;
 pub mod trajectory;
 pub mod validation;
@@ -127,6 +128,10 @@ pub use severity::{
     SeverityAssessment, SeverityAssessmentInput, category_natural_severity, ceiling_for_evidence,
 };
 pub use skill_router::{SecuritySkillDescriptor, SkillFamily, SkillRoute, SkillRouter};
+pub use source_integrity::{
+    CloneHealth, EligibilityVerdict, NegativeControl, RepositoryEligibility, SourceChannel,
+    SourceEvidenceManifest, SourceObservation, SourceValidationState, ValidationMarker,
+};
 pub use state::{
     Assumption, Contradiction, Objective, Provenance, ResourceConsumption, StrategyRecord,
     Uncertainty, VerificationStatus, WorldState,

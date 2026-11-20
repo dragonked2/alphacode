@@ -268,3 +268,33 @@ fn test_model_picker_preview_enter_selects_model() {
 
     });
 }
+
+#[test]
+fn qualified_model_command_submits_exact_id_instead_of_fuzzy_selection() {
+    with_temp_alphacode_home(|| {
+        let (mut app, set_model_calls) = create_openrouter_spec_capture_test_app();
+        for key in "/model openai".chars() {
+            app.handle_key(KeyCode::Char(key), KeyModifiers::empty())
+                .unwrap();
+        }
+        assert!(
+            app.inline_interactive_state
+                .as_ref()
+                .is_some_and(|picker| picker.preview)
+        );
+
+        for key in ":gpt-5.4".chars() {
+            app.handle_key(KeyCode::Char(key), KeyModifiers::empty())
+                .unwrap();
+        }
+        assert!(app.inline_interactive_state.is_none());
+        assert_eq!(app.input(), "/model openai:gpt-5.4");
+
+        app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+            .unwrap();
+        assert_eq!(
+            set_model_calls.lock().unwrap().as_slice(),
+            ["openai:gpt-5.4"]
+        );
+    });
+}

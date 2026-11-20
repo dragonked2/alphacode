@@ -6,6 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.14] - Pending release
+
+### Added
+
+- Structured, recoverable error types for the bug bounty workflow
+  (`BountyError`), with transient/permanent classification and recovery hints.
+- Fail-closed source provenance for repository-derived findings
+  (`source_integrity`): two independent remote views, clone-health checks, and
+  a discriminating sibling-path control. Only a manifest whose observations
+  agree may produce a validation marker, and serialized state is never trusted.
+- Bug bounty workflow receipts (`workflow-status.json`) that record status,
+  last checkpoint, and pending tasks at every phase boundary and on error.
+- A named workflow disposition for bug bounty runs, surfaced in both JSON and
+  human-readable summaries.
+- Bug bounty tool resolution now caches `which` probes and expands the
+  alternative map (dalfox/corsy/crlfuzz → gf, hakrawler → gospider, ffuf →
+  gobuster, feroxbuster → gobuster, nikto/sqlmap → nuclei, naabu → nmap, and
+  more), verifying each alternative before switching.
+- A bounded "no actionable plan" nudge for security engagements: when a mission
+  ends with recommendations instead of execution, alphacode asks for a plan
+  once per unchanged session state instead of surrendering.
+
+### Changed
+
+- Bug bounty executor checkpoints scope/workflow fingerprints and refuses to
+  restore a state.json whose scope or version changed, preserving the old
+  directory for review instead.
+- Tool output capping slices on byte boundaries instead of re-collecting char
+  slices, and short-circuits when the limit is not exceeded.
+- The verification-loop prompt now asks whether read-only calls are still
+  producing evidence rather than demanding a state change.
+- Provider retry handling distinguishes stream-retry-limit errors from
+  throttling and stops replaying a throttled prompt after a single retry.
+- Compact TUI layout keeps the active picker selection and draft visible on
+  short terminals, and the tool display panel reclaims space for results.
+
 ## [1.1.13] - 2026-11-20
 
 ### Changed

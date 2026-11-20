@@ -92,6 +92,37 @@ undefined when there are no reproduced discoveries. Neither is a perfect score.
 
 ## Comparative claims
 
+For offline scoring of independently adjudicated reports, run
+`python scripts/bounty_review_eval.py path/to/reviewed-runs.json`. The input is
+an object with a `runs` array. Each run supplies `run_id`, `fixture_revision`,
+`revision`, `model`, `configuration`, a positive `budget_seconds`, `status`,
+`expected_root_causes`, and `claims`. Include failed, cancelled, timed-out and
+incomplete runs. Supply `seconds_to_reviewed_evidence` when observed.
+Supply `family` for per-family precision, recall and completion outcomes.
+Supply `participant` for a breakdown by system or human reviewer. Runs without
+a participant label appear under `unspecified`. Use matched fixtures and budgets
+when comparing the participant summaries.
+Timing summaries report the median among observed times and the number of runs
+with and without timing. Compare both when evaluating speed.
+
+Each claim supplies `claim_id`, `review_rationale` and `disposition`
+(`accepted`, `unsupported` or `uncertain`). An accepted claim also supplies a
+`root_cause_id` from the independent answer set and nonempty `evidence_refs`
+pointing to retained reviewed artifacts. The scorer retains supplied records,
+counts repeated accepted root causes separately, and counts uncertain claims
+in the precision denominator. `unique_accepted_per_claim` divides unique accepted
+root causes by all submitted claims, including duplicates. Register each
+referenced artifact in the run's `reviewed_evidence` array with its `ref` and
+`fixture_revision`. Unknown references fail validation. Evidence from a
+different fixture revision counts as stale and gives no recall credit. Keep
+the adjudication corpus and raw artifacts access-controlled. Use consistent
+redacted identifiers in any published output.
+
+For the phased CLI, `workflow-status.json` records the last checkpointed
+phase and outstanding task IDs. A receipt that still says `running` when the
+process is gone indicates an unrecorded terminal outcome. Per-call coverage
+journals can contain more recent information than the phase receipt.
+
 Specify the numerator: for example, ten times as many reproduced root causes
 within the same cost and time limits. Alternatively compare cost or time at
 matched recall and precision. Do not combine these into an unexplained rating.

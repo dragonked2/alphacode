@@ -6,6 +6,8 @@
 //! matches — so the highlight style stays visually consistent across the UI.
 
 use super::{accent_color, blend_color};
+use crate::alphacode_tui::tui::TranscriptSearchMatch;
+use crate::alphacode_tui_render::coalesce_line_graphemes;
 use crate::alphacode_tui_style::palette::{Role, role_color};
 use ratatui::prelude::*;
 use unicode_segmentation::UnicodeSegmentation;
@@ -71,7 +73,68 @@ pub(crate) fn highlight_line_range(
     if end_col <= start_col {
         return line.clone();
     }
+    highlight_line_cells(
+        line,
+        |start, end| usize::from(overlaps(start, end, start_col, end_col)),
+        |style| [*style, resolve(style)],
+    )
+}
 
+pub(super) fn highlight_search_hits(
+    line: &Line<'static>,
+    hits: &[TranscriptSearchMatch],
+    selected: Option<TranscriptSearchMatch>,
+) -> Line<'static> {
+    let mut hits = hits
+        .iter()
+        .filter(|hit| hit.start_col < hit.end_col)
+        .peekable();
+    highlight_line_cells(
+        line,
+        |start, end| {
+            if let Some(hit) = selected
+                && overlaps(start, end, hit.start_col, hit.end_col)
+            {
+                return 2;
+            }
+            while hits
+                .peek()
+                .is_some_and(|hit| hit.end_col < end && hit.end_col <= start)
+            {
+                hits.next();
+            }
+            usize::from(
+                hits.peek()
+                    .is_some_and(|hit| overlaps(start, end, hit.start_col, hit.end_col)),
+            )
+        },
+        |style| {
+            [
+                *style,
+                style.bg(search_hit_bg_for(style.bg)),
+                style
+                    .bg(search_current_hit_bg_for(style.bg))
+                    .add_modifier(Modifier::UNDERLINED),
+            ]
+        },
+    )
+}
+
+fn overlaps(start: usize, end: usize, range_start: usize, range_end: usize) -> bool {
+    range_start < range_end
+        && if start == end {
+            range_start < start && start <= range_end
+        } else {
+            start < range_end && end > range_start
+        }
+}
+
+fn highlight_line_cells<const N: usize>(
+    line: &Line<'static>,
+    mut style_index: impl FnMut(usize, usize) -> usize,
+    resolve: impl Fn(&Style) -> [Style; N],
+) -> Line<'static> {
+    let line = coalesce_line_graphemes(line);
     let mut rebuilt: Vec<Span<'static>> = Vec::new();
     let mut current_text = String::new();
     let mut current_style: Option<Style> = None;
@@ -88,20 +151,11 @@ pub(crate) fn highlight_line_range(
     };
 
     for span in &line.spans {
-        let highlighted_style = resolve(&span.style);
+        let styles = resolve(&span.style);
         for grapheme in span.content.graphemes(true) {
             let width = grapheme.width();
-            let selected = if width == 0 {
-                col > start_col && col <= end_col
-            } else {
-                col < end_col && col.saturating_add(width) > start_col
-            };
-
-            let style = if selected {
-                highlighted_style
-            } else {
-                span.style
-            };
+            let end = col.saturating_add(width);
+            let style = styles[style_index(col, end)];
 
             if current_style == Some(style) {
                 current_text.push_str(grapheme);
@@ -111,7 +165,7 @@ pub(crate) fn highlight_line_range(
                 current_style = Some(style);
             }
 
-            col = col.saturating_add(width);
+            col = end;
         }
     }
 

@@ -10,6 +10,7 @@ mod batch;
 mod bg;
 pub mod bounty_bridge;
 mod browser;
+pub(crate) use browser::normalize_action as normalize_browser_action;
 pub(crate) mod capabilities;
 mod cariddi;
 mod clipboard;
@@ -113,8 +114,7 @@ pub(crate) use session_search::spawn_recent_index_warmup;
 const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
 
 fn cap_tool_output(mut output: ToolOutput) -> ToolOutput {
-    let char_count = output.output.chars().count();
-    if char_count <= MAX_TOOL_OUTPUT_CHARS {
+    if output.output.chars().nth(MAX_TOOL_OUTPUT_CHARS).is_none() {
         return output;
     }
 
@@ -124,16 +124,19 @@ fn cap_tool_output(mut output: ToolOutput) -> ToolOutput {
     let keep = MAX_TOOL_OUTPUT_CHARS.saturating_sub(NOTICE.chars().count());
     let head_chars = keep.saturating_mul(4) / 5;
     let tail_chars = keep.saturating_sub(head_chars);
-    let head: String = output.output.chars().take(head_chars).collect();
-    let tail: String = output
+    let head_end = output
         .output
-        .chars()
+        .char_indices()
+        .nth(head_chars)
+        .map_or(output.output.len(), |(index, _)| index);
+    let tail_start = output
+        .output
+        .char_indices()
         .rev()
-        .take(tail_chars)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
+        .nth(tail_chars - 1)
+        .map_or(0, |(index, _)| index);
+    let head = &output.output[..head_end];
+    let tail = &output.output[tail_start..];
     output.output = format!("{head}{NOTICE}{tail}");
     output.title = Some(match output.title.take() {
         Some(title) => format!("{title} · output capped"),
@@ -1795,6 +1798,16 @@ impl Registry {
         // Drop the lock before executing
         drop(tools);
 
+        // Include the recovered action in the canonical payload before
+        // recording or looking up failures for this call.
+        if let Some(action) = resolved.action.as_deref()
+            && let Some(object) = input.as_object_mut()
+        {
+            object
+                .entry("action".to_string())
+                .or_insert_with(|| Value::String(action.to_string()));
+        }
+
         // Normalize before failure hashing, preflight, hooks and dispatch so
         // every consumer sees the same schema-backed scalar values.
         let parameter_schema = tool.parameters_schema();
@@ -1879,16 +1892,6 @@ impl Registry {
                 ctx.session_id
             ));
             return Err(anyhow::anyhow!(msg));
-        }
-
-        // The model named the action instead of the tool (`desktop_find`,
-        // `desktop.snapshot`). Inject it when the call does not carry one.
-        if let Some(action) = resolved.action.as_deref()
-            && let Some(object) = input.as_object_mut()
-        {
-            object
-                .entry("action".to_string())
-                .or_insert(Value::String(action.to_string()));
         }
 
         if let Err(reason) =
@@ -2044,7 +2047,7 @@ impl Registry {
                     return Err(anyhow::anyhow!(
                         "{}\n{}",
                         error,
-                        schema_call_hint(&tool.parameters_schema()).unwrap_or_else(|| {
+                        schema_call_hint(&parameter_schema).unwrap_or_else(|| {
                             format!(
                                 "Check the `{resolved_name}` schema for its required arguments."
                             )
@@ -2082,17 +2085,21 @@ impl Registry {
     /// Check if a tool output would overflow the context window and truncate if needed.
     /// Returns the (possibly truncated) output.
     async fn guard_context_overflow(&self, tool_name: &str, output: ToolOutput) -> ToolOutput {
-        let compaction = self.compaction.read().await;
-        let budget = compaction.token_budget();
+        let (budget, current_tokens) = {
+            let compaction = self.compaction.read().await;
+            (
+                compaction.token_budget(),
+                compaction.effective_token_count(),
+            )
+        };
         if budget == 0 {
             return output;
         }
 
-        let current_tokens = compaction.effective_token_count();
         let output_tokens = Self::estimate_tokens(&output.output);
 
         // Check 1: Would adding this output push us over the safety threshold?
-        let projected = current_tokens + output_tokens;
+        let projected = current_tokens.saturating_add(output_tokens);
         let threshold_tokens = (budget as f32 * Self::CONTEXT_GUARD_THRESHOLD) as usize;
 
         // Check 2: Is this single output unreasonably large relative to budget?
@@ -2114,7 +2121,7 @@ impl Registry {
         let max_tokens = remaining.min(single_max_tokens);
 
         // Convert token limit back to approximate character limit
-        let max_chars = max_tokens * 4;
+        let max_chars = max_tokens.saturating_mul(4);
 
         if output.output.len() <= max_chars {
             return output;

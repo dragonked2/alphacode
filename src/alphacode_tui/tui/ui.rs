@@ -338,14 +338,14 @@ impl ChatScrollbarGeometry {
     /// Scroll offset for a pointer row while dragging with `grab_rows` between
     /// the pointer and the thumb's top. Clamps to `[0, max_scroll]`.
     pub(crate) fn drag_scroll(&self, row: u16, grab_rows: u16) -> Option<usize> {
-        if self.max_scroll == 0 || self.rect.y >= row {
+        if self.max_scroll == 0 {
             return None;
         }
         let track_height = self.rect.height;
         if track_height == 0 {
             return None;
         }
-        let rel_row = (row - self.rect.y).min(track_height.saturating_sub(1)) as usize;
+        let rel_row = row.saturating_sub(self.rect.y).min(track_height - 1) as usize;
         let max_thumb_offset = track_height.saturating_sub(self.thumb_height) as usize;
         if max_thumb_offset == 0 {
             // Track fully covered by the thumb: every drag position means the
@@ -1574,8 +1574,6 @@ pub(crate) fn last_status_area() -> Option<Rect> {
     }
 }
 
-#[cfg(windows)]
-pub(crate) use frame_metrics::note_key_event_read_at;
 use frame_metrics::{
     ChatLayoutMetrics, FLICKER_NOTICE_COPY_KEY, FullPrepPhaseMetrics, ViewportMetrics,
     begin_frame_resource_sample, finalize_frame_metrics, note_body_built, note_body_cache_hit,
@@ -1587,8 +1585,8 @@ use frame_metrics::{
 };
 pub(crate) use frame_metrics::{
     DrawCallAttribution, FrameInputAttribution, frame_input_attribution_snapshot,
-    key_to_paint_debug_json, note_frame_painted, note_key_event_read, record_draw_call_attribution,
-    set_frame_input_attribution, wall_clock_ms,
+    key_to_paint_debug_json, note_frame_painted, note_key_event_read_at,
+    record_draw_call_attribution, set_frame_input_attribution, wall_clock_ms,
 };
 pub(crate) use frame_metrics::{
     debug_draw_call_history, debug_flicker_frame_history, debug_slow_frame_history,
@@ -2932,12 +2930,12 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // natively in all terminal emulators.
     clear_area(frame, area);
 
-    if area.width < 12 || area.height < 5 {
+    if area.width < 12 || area.height < 4 {
         // Mouse hit-testing must not keep using the previous larger layout.
         record_layout_snapshot(Rect::default(), None, None, None);
         record_status_area(Rect::default());
         frame.render_widget(
-            Paragraph::new("Resize terminal\nMinimum 12 × 5\nCtrl+C to exit")
+            Paragraph::new("Resize terminal\nMinimum 12 × 4\nCtrl+C to exit")
                 .wrap(ratatui::widgets::Wrap { trim: true })
                 .style(Style::default().fg(warning_color())),
             area,
@@ -3325,8 +3323,17 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Reserve transcript and status rows before assigning optional
     // chrome. On short terminals the composer scrolls internally instead of
     // displacing itself or the picker outside the available layout.
-    let transcript_reserve = if chat_area.height >= 12 { 3 } else { 1 };
-    let status_height = u16::from(requested_inline_height == 0 || chat_area.height >= 9);
+    let transcript_reserve = if requested_inline_height > 0 && chat_area.height == frame_rows + 2 {
+        // Keep the picker selection and one editable composer row available
+        // when the terminal only has room for those two controls.
+        0
+    } else if chat_area.height >= 12 {
+        3
+    } else {
+        1
+    };
+    let status_height =
+        u16::from(chat_area.height >= 9 || (requested_inline_height == 0 && chat_area.height >= 5));
     let essential_rows = status_height + transcript_reserve;
     let picker_reserve = requested_inline_height.min(4).min(
         chat_area

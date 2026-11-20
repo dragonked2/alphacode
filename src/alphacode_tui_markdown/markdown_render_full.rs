@@ -18,9 +18,15 @@ pub fn thread_render_count() -> u64 {
 
 pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<Line<'static>> {
     let render_start = Instant::now();
-    let text = crate::alphacode_render_core::normalize_latex_math(text);
-    let text = escape_currency_dollars(&text);
-    let text = preserve_line_oriented_softbreaks(&text);
+    // Plain prose has no math delimiters or fences. Borrow it through these
+    // passes instead of rescanning and allocating a copy for each transform.
+    let has_math_marker =
+        text.contains('$') || text.contains('\\') || text.contains('`') || text.contains('~');
+    let normalized_math =
+        has_math_marker.then(|| crate::alphacode_render_core::normalize_latex_math(text));
+    let text = normalized_math.as_deref().unwrap_or(text);
+    let escaped_currency = text.contains('$').then(|| escape_currency_dollars(text));
+    let text = preserve_line_oriented_softbreaks(escaped_currency.as_deref().unwrap_or(text));
     let text = text.as_str();
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();

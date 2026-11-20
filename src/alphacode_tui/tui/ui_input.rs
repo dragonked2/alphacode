@@ -1994,7 +1994,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
 /// The composer's caret, click hit-testing and copy-selection margins must all
 /// use ratatui's exact formula, otherwise they drift one cell away from the
 /// painted glyphs and a selection highlight lands on the wrong characters.
-fn centered_line_offset(area_width: u16, line_width: u16) -> u16 {
+pub(super) fn centered_line_offset(area_width: u16, line_width: u16) -> u16 {
     (area_width / 2).saturating_sub(line_width / 2)
 }
 

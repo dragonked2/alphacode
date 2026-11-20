@@ -672,14 +672,15 @@ fn prepare_active_batch_progress(
             }
         };
 
-        lines.push(tools_ui::render_batch_subcall_line(
+        tools_ui::push_batch_subcall_lines(
+            &mut lines,
             &subcall.tool_call,
             icon,
             icon_color,
             50,
             Some(row_width),
             None,
-        ));
+        );
     }
 
     if hidden_completed > 0 && progress.completed < progress.total {

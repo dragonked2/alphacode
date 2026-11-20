@@ -2404,18 +2404,47 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_provider_rate_limit_stops_after_three_recoveries() {
+    fn ordinary_provider_rate_limit_stops_after_one_recovery() {
         let provider = Arc::new(FailOnceProvider {
             calls: Arc::new(AtomicUsize::new(0)),
         });
         let mut agent = Agent::new(provider, crate::alphacode_app_core::tool::Registry::empty());
-        let mut attempts = 3;
+        let mut attempts = 0;
+        assert_eq!(
+            agent
+                .maybe_continue_after_provider_error(
+                    "status: 429 Too Many Requests \"retry_after_seconds\":2",
+                    &mut attempts
+                )
+                .unwrap(),
+            Some(2)
+        );
         assert_eq!(
             agent
                 .maybe_continue_after_provider_error("status: 429 Too Many Requests", &mut attempts)
                 .unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn exhausted_transport_does_not_restart_the_retry_budget() {
+        let provider = Arc::new(FailOnceProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(provider, crate::alphacode_app_core::tool::Registry::empty());
+        let error = crate::alphacode_provider_core::retry::stream_retry_limit_reached(
+            anyhow::anyhow!("status: 503 Service Unavailable"),
+            5,
+        );
+        let message = super::super::response_recovery::provider_error_text_for_recovery(&error);
+        let mut attempts = 0;
+        assert!(!Agent::is_transient_provider_error(&message));
+        assert_eq!(
+            agent.maybe_continue_after_provider_error(&message, &mut attempts).unwrap(),
+            None
+        );
+        assert_eq!(attempts, 0);
     }
 
     #[test]

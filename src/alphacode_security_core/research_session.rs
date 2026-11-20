@@ -37,6 +37,7 @@ use std::time::Duration;
 
 use super::finding::Finding;
 use super::investigation::InvestigationIntelligence;
+use super::source_integrity::{SourceEvidenceManifest, SourceValidationState};
 
 /// Schema version of the on-disk record. Bump when a change would make old
 /// records unreadable; loaders reject newer versions rather than guess.
@@ -257,6 +258,11 @@ pub struct ResearchSession {
     pub scope: Vec<String>,
     /// Repositories and pinned revisions under review.
     pub repos: Vec<ReviewedRepository>,
+    /// Source provenance keyed by finding ID.  Older checkpoints load with no
+    /// invented validation; repository-review findings therefore stay pending
+    /// until an explicit manifest passes consensus.
+    #[serde(default)]
+    pub source_manifests: BTreeMap<String, SourceEvidenceManifest>,
     /// Findings and their current validation states.
     pub findings: Vec<Finding>,
     /// Hypotheses investigated and not substantiated.
@@ -341,6 +347,7 @@ impl ResearchSession {
             objective: objective.into(),
             scope: Vec::new(),
             repos: Vec::new(),
+            source_manifests: BTreeMap::new(),
             findings: Vec::new(),
             rejected_hypotheses: Vec::new(),
             coverage: CoverageLedger::new(),
@@ -442,6 +449,19 @@ impl ResearchSession {
     ) {
         let repository = repository.into();
         let revision = revision.into();
+        for manifest in self.source_manifests.values_mut() {
+            if manifest.repository == repository
+                && manifest.revision != revision
+                && manifest.state == SourceValidationState::Validated
+            {
+                manifest.state = SourceValidationState::Stale;
+                manifest.marker = None;
+                manifest.defects.push(format!(
+                    "repository revision changed from {} to {revision}",
+                    manifest.revision
+                ));
+            }
+        }
         if let Some(existing) = self.repos.iter_mut().find(|r| r.repository == repository) {
             existing.revision = revision;
             existing.branch = branch;
@@ -483,6 +503,94 @@ impl ResearchSession {
 
     pub fn finding_mut(&mut self, id: &str) -> Option<&mut Finding> {
         self.findings.iter_mut().find(|f| f.id == id)
+    }
+
+    /// Record and independently recompute source consensus for a finding.
+    /// Serialized state/markers are never trusted.  A manifest for a repository
+    /// or revision not tracked by this session is retained as stale evidence,
+    /// but can never clear publication.
+    pub fn record_source_manifest(
+        &mut self,
+        mut manifest: SourceEvidenceManifest,
+        at: DateTime<Utc>,
+    ) -> Result<SourceValidationState, String> {
+        if !self
+            .findings
+            .iter()
+            .any(|finding| finding.id == manifest.finding_id)
+        {
+            return Err(format!(
+                "source manifest references unknown finding '{}'",
+                manifest.finding_id
+            ));
+        }
+        let tracked = self.tracks_source_revision(&manifest);
+        manifest.evaluate(at);
+        if !tracked {
+            manifest.state = SourceValidationState::Stale;
+            manifest.marker = None;
+            manifest.defects.push(
+                "manifest repository/revision is not the exact revision tracked by this session"
+                    .to_string(),
+            );
+        }
+        let state = manifest.state;
+        self.source_manifests
+            .insert(manifest.finding_id.clone(), manifest);
+        Ok(state)
+    }
+
+    /// External disagreement revokes publication clearance immediately.
+    pub fn record_source_contradiction(
+        &mut self,
+        finding_id: &str,
+        reason: impl Into<String>,
+    ) -> Result<(), String> {
+        let manifest = self
+            .source_manifests
+            .get_mut(finding_id)
+            .ok_or_else(|| format!("no source manifest for finding '{finding_id}'"))?;
+        manifest.record_external_contradiction(reason);
+        Ok(())
+    }
+
+    /// Whether a finding has the provenance needed for final/report output.
+    /// Web-only engagements with no tracked source repository retain their
+    /// existing proof gate.  Once a repository is tracked, local-only evidence
+    /// is never enough.
+    pub fn source_clearance(&self, finding_id: &str) -> bool {
+        self.source_publication_blocker(finding_id).is_none()
+    }
+
+    fn tracks_source_revision(&self, manifest: &SourceEvidenceManifest) -> bool {
+        let mut tracked = self
+            .repos
+            .iter()
+            .filter(|repository| repository.repository == manifest.repository);
+        tracked.next().is_some_and(|repository| {
+            repository.revision == manifest.revision
+                && !repository.revision.trim().is_empty()
+                && repository.revision != "unknown"
+        }) && tracked.next().is_none()
+    }
+
+    fn source_publication_blocker(&self, finding_id: &str) -> Option<String> {
+        let Some(manifest) = self.source_manifests.get(finding_id) else {
+            return (!self.repos.is_empty()).then(|| "source manifest missing".to_string());
+        };
+        if manifest.finding_id != finding_id {
+            return Some("source manifest belongs to another finding".to_string());
+        }
+        if !self.tracks_source_revision(manifest) {
+            return Some("source revision is stale or untracked".to_string());
+        }
+        if !manifest.state.permits_final_output() {
+            return Some(format!("source validation is {:?}", manifest.state));
+        }
+        if !manifest.permits_final_output() {
+            return Some("source validation marker is missing or invalid".to_string());
+        }
+        None
     }
 
     /// Record a rejected or unresolved hypothesis.
@@ -530,9 +638,33 @@ impl ResearchSession {
                 matches!(
                     f.stage,
                     FindingStage::ConfirmedFinding | FindingStage::Report
-                )
+                ) && self.source_clearance(&f.id)
             })
             .collect()
+    }
+
+    /// Reasons final publication is currently blocked.
+    pub fn publication_blockers(&self) -> Vec<String> {
+        use super::finding::FindingStage;
+        let mut blockers = Vec::new();
+        for finding in &self.findings {
+            if !matches!(
+                finding.stage,
+                FindingStage::ConfirmedFinding | FindingStage::Report
+            ) {
+                blockers.push(format!(
+                    "finding '{}' is still at {}",
+                    finding.id,
+                    finding.stage.as_str()
+                ));
+            } else if let Some(reason) = self.source_publication_blocker(&finding.id) {
+                blockers.push(format!("finding '{}': {reason}", finding.id));
+            }
+        }
+        if self.findings.is_empty() {
+            blockers.push("no validated findings exist".to_string());
+        }
+        blockers
     }
 
     /// A concise re-entry summary after compaction or restart: enough to
@@ -648,6 +780,26 @@ impl ResearchSession {
         }
         out.push('\n');
 
+        let withheld = self.findings.iter().filter_map(|finding| {
+            if matches!(
+                finding.stage,
+                FindingStage::ConfirmedFinding | FindingStage::Report
+            ) {
+                self.source_publication_blocker(&finding.id)
+                    .map(|reason| (&finding.id, reason))
+            } else {
+                None
+            }
+        });
+        let mut withheld = withheld.peekable();
+        if withheld.peek().is_some() {
+            out.push_str("## Awaiting source verification\n\n");
+            for (id, reason) in withheld {
+                out.push_str(&format!("- **{id}** — {reason}\n"));
+            }
+            out.push('\n');
+        }
+
         out.push_str("## Rejected / unresolved hypotheses\n\n");
         if self.rejected_hypotheses.is_empty() {
             out.push_str("_None recorded._\n\n");
@@ -746,6 +898,10 @@ impl std::error::Error for SessionLoadError {}
 mod tests {
     use super::*;
     use crate::alphacode_security_core::finding::VulnerabilityClass;
+    use crate::alphacode_security_core::source_integrity::{
+        CloneHealth, EligibilityVerdict, NegativeControl, RepositoryEligibility, SourceChannel,
+        SourceObservation,
+    };
 
     fn temp_root() -> PathBuf {
         let dir = tempfile::Builder::new()
@@ -927,6 +1083,119 @@ mod tests {
         let candidate_pos = ledger.find("f-candidate").expect("listed");
         assert!(candidate_pos > candidates_header);
         assert!(ledger.contains("do not report as confirmed"));
+    }
+
+    fn reviewed_source(at: DateTime<Utc>) -> (ResearchSession, SourceEvidenceManifest) {
+        let mut session = ResearchSession::new("review", "Review local source evidence");
+        session.track_repository("repo", "rev1", None);
+        let mut finding = sample_finding("f1");
+        finding.stage = super::super::finding::FindingStage::ConfirmedFinding;
+        session.add_finding(finding);
+
+        let observation = |channel, source: &str| SourceObservation {
+            channel,
+            source: source.into(),
+            revision: "rev1".into(),
+            file_path: "src/lib.rs".into(),
+            object_id: Some("blob-id".into()),
+            content_sha256: "a".repeat(64),
+            collected_at: at,
+            excerpt: String::new(),
+        };
+        let manifest = SourceEvidenceManifest {
+            finding_id: "f1".into(),
+            repository: "repo".into(),
+            revision: "rev1".into(),
+            file_path: "src/lib.rs".into(),
+            line_start: None,
+            line_end: None,
+            eligibility: RepositoryEligibility {
+                verdict: EligibilityVerdict::Eligible,
+                security_policy_url: Some("https://example.com/policy".into()),
+                active_program_url: Some("https://example.com/program".into()),
+                repository_archived: Some(false),
+                repository_deprecated: Some(false),
+                checked_at: Some(at),
+                rationale: "Reviewed policy".into(),
+            },
+            clone_health: CloneHealth {
+                fsck_passed: true,
+                revision: "rev1".into(),
+                commit_object_id: "rev1".into(),
+                checked_at: Some(at),
+                ..CloneHealth::default()
+            },
+            local: observation(SourceChannel::LocalGitObject, "local"),
+            remotes: vec![
+                observation(SourceChannel::RemoteRaw, "raw"),
+                observation(SourceChannel::RemoteApi, "api"),
+            ],
+            negative_controls: vec![NegativeControl {
+                sibling_path: "sibling".into(),
+                expected_enforcement: "blocked".into(),
+                observed_enforcement: "blocked".into(),
+                evidence_id: "control-1".into(),
+                passed: true,
+            }],
+            state: SourceValidationState::Pending,
+            defects: Vec::new(),
+            marker: None,
+        };
+        (session, manifest)
+    }
+
+    #[test]
+    fn revision_change_revokes_source_clearance_even_after_rollback() {
+        let at = Utc::now();
+        let (mut session, manifest) = reviewed_source(at);
+        assert_eq!(
+            session.record_source_manifest(manifest, at).unwrap(),
+            SourceValidationState::Validated
+        );
+        assert_eq!(session.confirmed_findings().len(), 1);
+
+        session.track_repository("repo", "rev2", None);
+        assert!(!session.source_clearance("f1"));
+        session.track_repository("repo", "rev1", None);
+        let saved = serde_json::to_vec(&session).unwrap();
+        let loaded: ResearchSession = serde_json::from_slice(&saved).unwrap();
+
+        assert!(loaded.confirmed_findings().is_empty());
+        assert!(loaded.source_manifests["f1"].marker.is_none());
+        let ledger = loaded.render_findings_ledger();
+        assert!(ledger.contains("## Awaiting source verification"));
+        assert!(ledger.contains("**f1** — source validation is Stale"));
+    }
+
+    #[test]
+    fn source_manifest_cannot_clear_another_finding_or_ambiguous_revision() {
+        let at = Utc::now();
+        let (mut session, manifest) = reviewed_source(at);
+        session.record_source_manifest(manifest, at).unwrap();
+        session
+            .source_manifests
+            .insert("f2".into(), session.source_manifests["f1"].clone());
+        assert!(!session.source_clearance("f2"));
+
+        let mut duplicate_repo = session.repos[0].clone();
+        duplicate_repo.revision = "rev2".into();
+        session.repos.push(duplicate_repo);
+        assert!(!session.source_clearance("f1"));
+        session.repos.clear();
+        assert!(!session.source_clearance("f1"));
+    }
+
+    #[test]
+    fn source_review_requires_distinct_raw_and_api_endpoints() {
+        let at = Utc::now();
+        let (_, mut manifest) = reviewed_source(at);
+        manifest.remotes[1].source = " raw ".into();
+        let mut extra = manifest.local.clone();
+        extra.source = "unrelated endpoint".into();
+        manifest.remotes.push(extra);
+
+        assert_eq!(manifest.evaluate(at), SourceValidationState::Pending);
+        assert!(!manifest.permits_final_output());
     }
 
     #[test]

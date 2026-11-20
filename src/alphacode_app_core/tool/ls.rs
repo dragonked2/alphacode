@@ -1,5 +1,5 @@
 use super::{Tool, ToolContext, ToolOutput};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -79,17 +79,9 @@ impl Tool for LsTool {
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: LsInput = serde_json::from_value(input)?;
 
-        let base_path = params.path.clone().unwrap_or_else(|| ".".to_string());
+        let base_path = params.path.unwrap_or_else(|| ".".to_string());
         let base = ctx.resolve_path_for_read(Path::new(&base_path));
-        let ignore_extra = params.ignore.clone();
-
-        if !base.exists() {
-            return Err(anyhow::anyhow!("Directory not found: {}", base_path));
-        }
-
-        if !base.is_dir() {
-            return Err(anyhow::anyhow!("Not a directory: {}", base_path));
-        }
+        let ignore_extra = params.ignore;
 
         let entries = tokio::task::spawn_blocking(move || {
             let mut ignore_patterns: Vec<String> =
@@ -104,18 +96,30 @@ impl Tool for LsTool {
             collect_entries(&base, 0, &ignore_patterns, &mut entries, MAX_ENTRIES + 1)?;
             Ok::<_, anyhow::Error>(entries)
         })
-        .await??;
+        .await?
+        .with_context(|| format!("Cannot list directory {base_path}"))?;
 
         let truncated = entries.len() > MAX_ENTRIES;
-        let entries: Vec<_> = entries.into_iter().take(MAX_ENTRIES).collect();
+        let entries = &entries[..entries.len().min(MAX_ENTRIES)];
 
         let mut output = String::new();
         output.push_str(&format!("{}/\n", base_path));
 
-        for entry in &entries {
-            let indent = "  ".repeat(entry.depth);
-            let suffix = if entry.is_dir { "/" } else { "" };
-            output.push_str(&format!("{}{}{}\n", indent, entry.name, suffix));
+        for entry in entries {
+            for _ in 0..entry.depth {
+                output.push_str("  ");
+            }
+            for ch in entry.name.chars() {
+                if ch.is_control() {
+                    output.extend(ch.escape_default());
+                } else {
+                    output.push(ch);
+                }
+            }
+            if entry.is_dir {
+                output.push('/');
+            }
+            output.push('\n');
         }
 
         if truncated {
@@ -205,10 +209,8 @@ fn collect_entries(
             break;
         }
 
-        let name = name.to_string_lossy().to_string();
-
         entries.push(DirEntry {
-            name: name.clone(),
+            name: name.to_string_lossy().into_owned(),
             is_dir,
             depth: depth + 1,
         });

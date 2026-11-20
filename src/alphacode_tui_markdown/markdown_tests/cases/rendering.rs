@@ -72,6 +72,8 @@ fn test_common_latex_containers_render_as_terminal_math() {
         r"Inline \(\alpha_2 + x^2\).",
         r"\[\frac{x+1}{y}\]",
         "```math\n\\frac{x+1}{y}\n```",
+        "```math\nx^2 + y_1\n```",
+        "~~~math\nx^2 + y_1\n~~~",
         "```latex\n\\begin{bmatrix}a & b \\\\ c & d\\end{bmatrix}\n```",
         r"\begin{align*}x &= 1 \\ y &= 2\end{align*}",
     ];

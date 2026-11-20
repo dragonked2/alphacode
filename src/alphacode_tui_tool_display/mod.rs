@@ -1,4 +1,5 @@
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// Map provider-side tool names to the canonical lowercase name used across
 /// the TUI. This mirrors `alphacode_tool_types::resolve_tool_name` (plus the
@@ -43,27 +44,6 @@ pub fn is_edit_tool_name(name: &str) -> bool {
     )
 }
 
-fn parse_nonzero_exit_code_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    if let Some(rest) = trimmed.strip_prefix("Exit code:") {
-        return rest
-            .trim()
-            .parse::<i32>()
-            .map(|code| code != 0)
-            .unwrap_or(false);
-    }
-    if let Some(rest) = trimmed.strip_prefix("--- Command finished with exit code:") {
-        return rest
-            .trim()
-            .trim_end_matches('-')
-            .trim()
-            .parse::<i32>()
-            .map(|code| code != 0)
-            .unwrap_or(false);
-    }
-    false
-}
-
 fn display_prefix_by_width(s: &str, max_width: usize) -> &str {
     if max_width == 0 {
         return "";
@@ -75,13 +55,13 @@ fn display_prefix_by_width(s: &str, max_width: usize) -> &str {
     }
     let mut used = 0usize;
     let mut end = 0usize;
-    for (idx, ch) in s.char_indices() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (idx, grapheme) in s.grapheme_indices(true) {
+        let cw = grapheme.width();
         if used + cw > max_width {
             break;
         }
         used += cw;
-        end = idx + ch.len_utf8();
+        end = idx + grapheme.len();
     }
     &s[..end]
 }
@@ -97,8 +77,8 @@ fn display_suffix_by_width(s: &str, max_width: usize) -> &str {
     }
     let mut used = 0usize;
     let mut start = s.len();
-    for (idx, ch) in s.char_indices().rev() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (idx, grapheme) in s.grapheme_indices(true).rev() {
+        let cw = grapheme.width();
         if used + cw > max_width {
             break;
         }
@@ -158,137 +138,169 @@ fn normalize_backticked_identifier(text: &str) -> String {
     text.replace('`', "").trim().to_string()
 }
 
-/// Drop a leading `[label] ` prefix from a tool result body.
-fn strip_leading_tool_label(content: &str) -> &str {
-    let trimmed = content.trim_start();
-    trimmed
-        .strip_prefix('[')
+fn strip_leading_tool_label(line: &str) -> Option<&str> {
+    line.strip_prefix('[')
         .and_then(|rest| rest.split_once("] "))
-        .filter(|(label, _)| !label.is_empty() && !label.contains(['\n', '\r']))
+        .filter(|(label, _)| !label.is_empty())
         .map(|(_, rest)| rest)
-        .unwrap_or(trimmed)
 }
 
-pub fn concise_tool_error_summary(content: &str) -> Option<String> {
-    let content = strip_leading_tool_label(content);
+fn strip_error_prefix(line: &str) -> Option<&str> {
+    ["Error:", "Failed:"].into_iter().find_map(|prefix| {
+        let head = line.get(..prefix.len())?;
+        head.eq_ignore_ascii_case(prefix)
+            .then(|| line[prefix.len()..].trim())
+    })
+}
+
+enum ToolError<'a> {
+    Message(&'a str),
+    Status(&'a str),
+    ExitCode(i32),
+}
+
+fn tool_error(content: &str) -> Option<ToolError<'_>> {
+    let mut first_line = content.trim_start().lines().next().unwrap_or_default();
+    while let Some(rest) = strip_leading_tool_label(first_line) {
+        first_line = rest.trim_start();
+    }
+    // Session search embeds verbatim tool results in its report. A historical
+    // error inside a matched snippet is neither an error nor an exit status
+    // from the current search.
+    if first_line
+        .strip_prefix("## Found ")
+        .and_then(|rest| rest.split_once(" results for '"))
+        .is_some_and(|(count, _)| count.parse::<usize>().is_ok())
+        || first_line.starts_with("No results found for '")
+    {
+        return None;
+    }
+
     for raw_line in content.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() {
-            continue;
+        let mut line = raw_line.trim();
+        // Tool timing and tool identity may both wrap the same error, and the
+        // remote transport can add an Error prefix around that wrapped line.
+        let mut detail = None;
+        loop {
+            if let Some(rest) = strip_error_prefix(line) {
+                line = rest;
+                detail = Some(rest);
+            } else if let Some(rest) = strip_leading_tool_label(line) {
+                line = rest.trim_start();
+            } else {
+                break;
+            }
         }
-
-        let detail = line
-            .strip_prefix("Error:")
-            .or_else(|| line.strip_prefix("error:"))
-            .or_else(|| line.strip_prefix("Failed:"))
-            .map(str::trim);
         if let Some(detail) = detail {
-            // Put the actionable browser exception before the width limit;
-            // the repeated bridge wrapper used to consume the whole row.
-            if let Some(rest) = detail.strip_prefix("Browser bridge action '")
-                && let Some((action, cause)) = rest.split_once("' failed: ")
-            {
-                let cause = cause.strip_prefix("Error: ").unwrap_or(cause);
-                let cause = cause.strip_prefix("Evaluate error: ").unwrap_or(cause);
-                return Some(format!("{}: {}", action, truncate_tail_display(cause, 80)));
-            }
-            if let Some(field) = detail.strip_prefix("missing field ") {
-                return Some(format!(
-                    "invalid input: missing {}",
-                    normalize_backticked_identifier(field)
-                ));
-            }
-            if detail.starts_with("invalid type") || detail.starts_with("unknown variant") {
-                return Some(format!("invalid input: {}", detail));
-            }
-            if detail.contains("source metadata") && detail.contains("was for") {
-                return Some("build source changed before reload".to_string());
-            }
-            if detail.starts_with("Refusing to publish") {
-                return Some("reload refused: rebuild against current source".to_string());
-            }
-            // Unknown-tool errors: show the mistaken name and best fix.
-            if let Some(rest) = detail.strip_prefix("Unknown tool:") {
-                let (name, suggestion) = match rest.split_once("Did you mean:") {
-                    Some((name, suggestion)) => (name, Some(suggestion)),
-                    None => (rest, None),
-                };
-                let name = name.trim().trim_end_matches('.').trim();
-                let first_suggestion = suggestion
-                    .and_then(|s| s.split(" Available tools").next())
-                    .and_then(|s| s.split(',').next())
-                    .map(|s| s.trim().trim_end_matches('?').trim())
-                    .filter(|s| !s.is_empty());
-                return Some(match first_suggestion {
-                    Some(first) => format!("unknown tool '{name}' — did you mean '{first}'?"),
-                    None => format!("unknown tool '{name}'"),
-                });
-            }
-            // Repeat-failure refusals: show the tool name and count.
-            if detail.starts_with("Refusing to run") {
-                let tool_name = detail.split('`').nth(1).unwrap_or("");
-                let attempts = detail
-                    .split_once("already failed")
-                    .and_then(|(_, rest)| rest.split_whitespace().next())
-                    .filter(|count| count.chars().all(|c| c.is_ascii_digit()));
-                return Some(match (tool_name, attempts) {
-                    ("", Some(count)) => format!("refused: identical call failed {count}×"),
-                    (name, Some(count)) => format!("refused: '{name}' failed {count}×"),
-                    (_, None) => "refused: identical call already failed".to_string(),
-                });
-            }
-            return Some(format!("error: {}", truncate_tail_display(detail, 80)));
+            return Some(ToolError::Message(detail));
         }
-
-        if line.contains("Compile terminated by signal") {
-            return Some(line.to_string());
+        if let Some(rest) = line.strip_prefix('✗') {
+            return Some(ToolError::Message(rest.trim()));
         }
-        if let Some(rest) = line.strip_prefix("Exit code:")
-            && let Ok(code) = rest.trim().parse::<i32>()
-            && code != 0
-        {
-            return Some(format!("exit {}", code));
-        }
-        if let Some(rest) = line.strip_prefix("--- Command finished with exit code:") {
-            let code = rest.trim().trim_end_matches('-').trim();
-            if code != "0" && !code.is_empty() {
-                return Some(format!("exit {}", code));
-            }
-        }
-    }
-
-    None
-}
-
-pub fn tool_output_looks_failed(content: &str) -> bool {
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    if trimmed.starts_with('✗')
-        || trimmed.starts_with("Error:")
-        || trimmed.starts_with("error:")
-        || trimmed.starts_with("Failed:")
-    {
-        return true;
-    }
-    let normalized = strip_leading_tool_label(trimmed);
-    let lower = normalized.to_ascii_lowercase();
-    if concise_tool_error_summary(normalized).is_some()
-        || lower.starts_with("error:")
-        || lower.starts_with("failed:")
-        || normalized.starts_with('✗')
-    {
-        return true;
-    }
-
-    normalized.lines().any(|line| {
-        let line = line.trim();
-        parse_nonzero_exit_code_line(line)
+        if line.contains("Compile terminated by signal")
             || line.eq_ignore_ascii_case("Status: failed")
             || line.eq_ignore_ascii_case("failed to start")
             || line.eq_ignore_ascii_case("terminated")
-    })
+        {
+            return Some(ToolError::Status(line));
+        }
+        let exit_code = line.strip_prefix("Exit code:").or_else(|| {
+            line.strip_prefix("--- Command finished with exit code:")
+                .and_then(|rest| rest.strip_suffix(" ---"))
+        });
+        if let Some(exit_code) = exit_code
+            && let Ok(code) = exit_code.trim().parse::<i32>()
+            && code != 0
+        {
+            return Some(ToolError::ExitCode(code));
+        }
+    }
+    None
+}
+
+pub fn concise_tool_error_summary(content: &str) -> Option<String> {
+    let detail = match tool_error(content)? {
+        ToolError::Message(detail) => detail,
+        ToolError::Status(status) => return Some(truncate_tail_display(status, 80)),
+        ToolError::ExitCode(code) => return Some(format!("exit {code}")),
+    };
+    if detail.is_empty() {
+        return Some("failed".to_string());
+    }
+    if let Some(rest) = detail.strip_prefix("Browser bridge action '")
+        && let Some((action, cause)) = rest.split_once("' failed: ")
+    {
+        let cause = cause.strip_prefix("Error: ").unwrap_or(cause);
+        let cause = cause.strip_prefix("Evaluate error: ").unwrap_or(cause);
+        return Some(format!("{}: {}", action, truncate_tail_display(cause, 80)));
+    }
+    if let Some(rest) = detail.strip_prefix("Unsupported browser action: ") {
+        let rest = rest.split(" Valid actions:").next().unwrap_or(rest);
+        if let Some((action, suggestions)) = rest.split_once(". Did you mean ")
+            && let Some(suggestion) = suggestions.split([',', '?']).next()
+            && !suggestion.is_empty()
+        {
+            return Some(truncate_tail_display(
+                &format!("unsupported action {action} · use {suggestion}"),
+                120,
+            ));
+        }
+        return Some(truncate_tail_display(
+            &format!("unsupported action {rest}"),
+            120,
+        ));
+    }
+    if let Some(field) = detail.strip_prefix("missing field ") {
+        return Some(format!(
+            "invalid input: missing {}",
+            normalize_backticked_identifier(field)
+        ));
+    }
+    if detail.starts_with("invalid type") || detail.starts_with("unknown variant") {
+        return Some(format!(
+            "invalid input: {}",
+            truncate_tail_display(detail, 80)
+        ));
+    }
+    if detail.contains("source metadata") && detail.contains("was for") {
+        return Some("build source changed before reload".to_string());
+    }
+    if detail.starts_with("Refusing to publish") {
+        return Some("reload refused: rebuild against current source".to_string());
+    }
+    if let Some(rest) = detail.strip_prefix("Unknown tool:") {
+        let (name, suggestion) = match rest.split_once("Did you mean:") {
+            Some((name, suggestion)) => (name, Some(suggestion)),
+            None => (rest, None),
+        };
+        let name = name.trim().trim_end_matches('.').trim();
+        let first_suggestion = suggestion
+            .and_then(|s| s.split(" Available tools").next())
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().trim_end_matches('?').trim())
+            .filter(|s| !s.is_empty());
+        return Some(match first_suggestion {
+            Some(first) => format!("unknown tool '{name}' — did you mean '{first}'?"),
+            None => format!("unknown tool '{name}'"),
+        });
+    }
+    if detail.starts_with("Refusing to run") {
+        let tool_name = detail.split('`').nth(1).unwrap_or("");
+        let attempts = detail
+            .split_once("already failed")
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .filter(|count| count.chars().all(|c| c.is_ascii_digit()));
+        return Some(match (tool_name, attempts) {
+            ("", Some(count)) => format!("refused: identical call failed {count}×"),
+            (name, Some(count)) => format!("refused: '{name}' failed {count}×"),
+            (_, None) => "refused: identical call already failed".to_string(),
+        });
+    }
+    Some(format!("error: {}", truncate_tail_display(detail, 80)))
+}
+
+pub fn tool_output_looks_failed(content: &str) -> bool {
+    tool_error(content).is_some()
 }
 
 #[cfg(test)]
@@ -367,6 +379,38 @@ mod tests {
             "[browser] Error: Browser bridge action 'evaluate' failed: Error: Evaluate error: TypeError: /api is not a valid URL."
         ).unwrap();
         assert_eq!(summary, "evaluate: TypeError: /api is not a valid URL.");
+    }
+
+    #[test]
+    fn browser_error_summary_keeps_the_suggestion_through_transport_wrappers() {
+        let summary = concise_tool_error_summary(concat!(
+            "Error: [tool timing: 4ms] [browser] Error: Unsupported browser action: ",
+            "'get_page_content'. Did you mean 'get_content', 'open'? Valid actions: ...",
+        ));
+        assert_eq!(
+            summary.as_deref(),
+            Some("unsupported action 'get_page_content' · use 'get_content'")
+        );
+    }
+
+    #[test]
+    fn session_search_report_does_not_inherit_quoted_failure_status() {
+        let report = concat!(
+            "[tool timing: 12ms] ## Found 1 results for 'browser'\n\n",
+            "### Result 1 - Browser interaction\n\n",
+            "```\nError: [browser] Error: Bridge disconnected\nExit code: 1\n```",
+        );
+        assert!(!tool_output_looks_failed(report));
+        assert_eq!(concise_tool_error_summary(report), None);
+        assert!(tool_output_looks_failed(
+            "Error: session index is unavailable"
+        ));
+    }
+
+    #[test]
+    fn truncation_keeps_emoji_and_wide_characters_whole() {
+        assert_eq!(truncate_tail_display("👩‍💻中文", 4), "👩‍💻…");
+        assert_eq!(truncate_head_display("中文👩‍💻", 4), "…👩‍💻");
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::{platform, storage};
+use crate::storage;
 
 const GITHUB_API_LATEST: &str =
     "https://api.github.com/repos/1jehuang/firefox-agent-bridge/releases/latest";
@@ -40,42 +40,29 @@ pub struct BrowserStatus {
     pub ready: bool,
 }
 
-/// Every bridge wire action the tool can emit, paired with params chosen to
-/// prove the action exists WITHOUT side effects: unknown ids/empty objects
-/// make the bridge fail validation (proving the action is implemented)
-/// instead of acting.
-///
-/// Deliberately skipped: `newSession`/`createTab` (opens a tab), `reload`/
-/// `back`/`forward` (act on the active tab), and `screenshot` (heavy). Those
-/// are long-standing core actions; probing them would disturb the user's
-/// session.
-const REQUIRED_BRIDGE_ACTION_PROBES: &[(&str, &str)] = &[
-    (
-        "evaluate",
-        r#"{"script":"return await Promise.resolve(1)"}"#,
-    ),
-    ("listTabs", "{}"),
-    ("getActiveTab", "{}"),
-    ("setActiveTab", r#"{"tabId":-1}"#),
-    ("closeTab", r#"{"tabId":-1}"#),
-    ("listFrames", "{}"),
-    ("navigate", "{}"),
-    ("getContent", "{}"),
-    ("getInteractables", "{}"),
-    ("click", "{}"),
-    ("hover", "{}"),
-    ("type", "{}"),
-    ("fillForm", "{}"),
-    ("drag", "{}"),
-    ("waitFor", r#"{"timeoutMs":100}"#),
-    ("scroll", r#"{"position":"top"}"#),
-    (
-        "uploadFile",
-        r#"{"selector":"input[type=file]","filePath":"/tmp/alphacode-browser-capability-probe"}"#,
-    ),
-    ("listCookies", r#"{"url":"https://example.invalid"}"#),
-    ("setCookie", "{}"),
-    ("removeCookie", "{}"),
+/// These actions can validate a request without touching the active tab.
+/// Tab creation is omitted because it accepts empty parameters.
+const TAB_ACTION_PROBES: &[&str] = &[
+    "evaluate",
+    "getActiveTab",
+    "setActiveTab",
+    "closeTab",
+    "listFrames",
+    "navigate",
+    "reload",
+    "back",
+    "forward",
+    "getContent",
+    "getInteractables",
+    "click",
+    "hover",
+    "type",
+    "fillForm",
+    "drag",
+    "waitFor",
+    "scroll",
+    "uploadFile",
+    "screenshot",
 ];
 
 fn alphacode_dir() -> PathBuf {
@@ -122,32 +109,44 @@ fn setup_marker_path() -> PathBuf {
     browser_dir().join(".setup-complete")
 }
 
-fn runtime_dir() -> PathBuf {
-    storage::runtime_dir()
-}
-
-fn session_socket_path(name: &str) -> PathBuf {
-    runtime_dir().join(format!("browser-session-{}.sock", name))
-}
-
-fn session_pid_path(name: &str) -> PathBuf {
-    runtime_dir().join(format!("browser-session-{}.pid", name))
-}
-
+#[cfg(unix)]
 fn is_session_alive(name: &str) -> bool {
-    let pid_path = session_pid_path(name);
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
-        && let Ok(pid) = pid_str.trim().parse::<u32>()
-        && platform::is_process_running(pid)
-    {
-        return session_socket_path(name).exists();
-    }
-    false
+    use std::os::unix::fs::FileTypeExt;
+
+    // These paths belong to the browser CLI. It uses XDG_RUNTIME_DIR or /tmp,
+    // independently of the Alphacode daemon's runtime or storage directory.
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let pid_path = dir.join(format!("browser-session-{name}.pid"));
+    let socket_path = dir.join(format!("browser-session-{name}.sock"));
+    std::fs::read_to_string(pid_path)
+        .ok()
+        .and_then(|pid| pid.trim().parse().ok())
+        .is_some_and(crate::platform::is_process_running)
+        && std::fs::symlink_metadata(socket_path)
+            .is_ok_and(|metadata| metadata.file_type().is_socket())
 }
 
-pub fn ensure_browser_session(session_id: &str) -> Option<String> {
-    let session_name = sanitize_session_name(session_id);
+#[cfg(not(unix))]
+pub async fn ensure_browser_session(_session_id: &str) -> Option<String> {
+    // The browser CLI uses Unix sockets for session routing.
+    None
+}
 
+#[cfg(unix)]
+pub async fn ensure_browser_session(session_id: &str) -> Option<String> {
+    static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let session_name = sanitize_session_name(session_id);
+    if session_name.is_empty() {
+        return None;
+    }
+
+    if is_session_alive(&session_name) {
+        return Some(session_name);
+    }
+
+    let _guard = START_LOCK.lock().await;
     if is_session_alive(&session_name) {
         return Some(session_name);
     }
@@ -161,27 +160,28 @@ pub fn ensure_browser_session(session_id: &str) -> Option<String> {
     // bridge supports it. Older bridge CLIs reject --bind-window, so probe the
     // command surface instead of paying for a known-failing process launch on
     // every browser action.
-    if browser_supports_bind_window(&bin)
-        && let Some(name) = spawn_browser_session(&bin, &session_name, true)
+    if browser_supports_bind_window(&bin).await
+        && let Some(name) = spawn_browser_session(&bin, &session_name, true).await
     {
         return Some(name);
     }
-    spawn_browser_session(&bin, &session_name, false)
+    spawn_browser_session(&bin, &session_name, false).await
 }
 
-fn browser_supports_bind_window(bin: &std::path::Path) -> bool {
-    crate::alphacode_base::platform::helper_command(bin)
-        .args(["session", "start", "--help"])
-        .stdin(std::process::Stdio::null())
-        .output()
+#[cfg(unix)]
+async fn browser_supports_bind_window(bin: &std::path::Path) -> bool {
+    run_browser_cli_capped(bin, &["session", "start", "--help"], Duration::from_secs(2))
+        .await
         .ok()
+        .flatten()
         .is_some_and(|output| {
             String::from_utf8_lossy(&output.stdout).contains("--bind-window")
                 || String::from_utf8_lossy(&output.stderr).contains("--bind-window")
         })
 }
 
-fn spawn_browser_session(
+#[cfg(unix)]
+async fn spawn_browser_session(
     bin: &std::path::Path,
     session_name: &str,
     bind_window: bool,
@@ -190,58 +190,49 @@ fn spawn_browser_session(
     if bind_window {
         args.push("--bind-window");
     }
-    let result = crate::alphacode_base::platform::helper_command(bin)
-        .args(&args)
+    let mut child = tokio::process::Command::new(bin)
+        .args(args)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .kill_on_drop(true)
+        .spawn()
+        .inspect_err(|error| {
+            tracing::debug!(session_name, %error, "Could not start browser session");
+        })
+        .ok()?;
 
-    match result {
-        Ok(mut child) => {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while std::time::Instant::now() < deadline {
-                if session_socket_path(session_name).exists() && is_session_alive(session_name) {
-                    let _ = child.stdout.take();
-                    return Some(session_name.to_string());
-                }
-                if let Ok(Some(status)) = child.try_wait() {
-                    eprintln!(
-                        "[browser] session '{}' exited before startup with status {}{}",
-                        session_name,
-                        status,
-                        if bind_window {
-                            " (retrying without --bind-window)"
-                        } else {
-                            ""
-                        }
-                    );
-                    return None;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+    let ready = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if is_session_alive(session_name) {
+                return Ok(true);
             }
-            eprintln!(
-                "[browser] session '{}' did not start within 10s",
-                session_name
-            );
-            let _ = child.kill();
-            let _ = child.wait();
-            None
+            if let Some(status) = child.try_wait()? {
+                tracing::debug!(session_name, %status, "Browser session process exited");
+                return Ok::<_, std::io::Error>(false);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        Err(e) => {
-            eprintln!(
-                "[browser] Failed to start browser session '{}': {}",
-                session_name, e
-            );
-            None
-        }
+    })
+    .await;
+    if matches!(ready, Ok(Ok(true))) {
+        // Reap the helper after a Firefox disconnect, and kill it if the
+        // owning async runtime shuts down first.
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+        });
+        return Some(session_name.to_string());
     }
+    tracing::debug!(session_name, ?ready, "Browser session did not become ready");
+    let _ = child.kill().await;
+    None
 }
 
+#[cfg(unix)]
 fn sanitize_session_name(session_id: &str) -> String {
     session_id
         .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .take(64)
         .collect()
 }
@@ -278,12 +269,14 @@ pub fn rewrite_command_with_full_path(command: &str) -> String {
 }
 
 pub async fn ensure_browser_setup() -> Result<String> {
+    static SETUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = SETUP_LOCK.lock().await;
     let mut log = String::new();
 
     std::fs::create_dir_all(browser_dir())?;
 
-    let initial_status = ensure_browser_ready_noninteractive().await?;
-    if initial_status.ready {
+    let initial_status = inspect_browser_status().await?;
+    if initial_status.ready && initial_status.setup_complete {
         log.push_str("Browser bridge is already set up and responding.\n");
         log.push_str("No setup action was needed.\n");
         return Ok(log);
@@ -308,10 +301,7 @@ pub async fn ensure_browser_setup() -> Result<String> {
     // Step 1: Check/download native CLI + host binaries. Firefox installs the
     // signed extension directly from AMO; Alphacode never sideloads or opens a
     // bundled XPI.
-    if !browser_binary_path().exists()
-        || !host_binary_path().exists()
-        || (initial_status.responding && !initial_status.compatible)
-    {
+    if !browser_binary_path().exists() || !host_binary_path().exists() {
         log.push_str("[1/3] Downloading browser bridge binaries... ");
         match download_browser_binary().await {
             Ok(()) => log.push_str("done\n"),
@@ -342,60 +332,52 @@ pub async fn ensure_browser_setup() -> Result<String> {
 
     // Step 3: Check extension connectivity
     log.push_str("[3/3] Checking Firefox extension... ");
-    match check_browser_ping().await {
-        Ok(true) => {
-            log.push_str("connected!\n");
-            if initial_status.responding && !initial_status.compatible {
-                log.push_str("       Existing extension is missing required actions. Opening its Firefox Add-ons page...\n");
-                match open_browser_addon_page().await {
-                    Ok(msg) => {
-                        log.push_str(&msg);
-                        log.push_str(
+    let final_status = inspect_browser_status().await?;
+    if final_status.responding {
+        log.push_str("connected!\n");
+        if !final_status.compatible {
+            log.push_str("       Existing extension is missing required actions. Opening its Firefox Add-ons page...\n");
+            match open_browser_addon_page().await {
+                Ok(msg) => {
+                    log.push_str(&msg);
+                    log.push_str(
                             "       Update or add the extension in Firefox, then rerun `alphacode browser status`.\n",
                         );
-                    }
-                    Err(e) => {
-                        log.push_str(&format!("       Could not open Firefox Add-ons: {}\n", e));
-                    }
                 }
-            } else {
-                mark_setup_complete().ok();
+                Err(e) => {
+                    log.push_str(&format!("       Could not open Firefox Add-ons: {}\n", e));
+                }
             }
         }
-        Ok(false) => {
-            log.push_str("not connected\n");
-            if should_prompt_extension_install(&initial_status) {
-                log.push_str("       Firefox extension needs to be installed.\n");
+    } else {
+        log.push_str("not connected\n");
+        if should_prompt_extension_install(&initial_status) {
+            log.push_str("       Firefox extension needs to be installed.\n");
 
-                match open_browser_addon_page().await {
-                    Ok(msg) => {
-                        log.push_str(&msg);
-                        log.push_str(
+            match open_browser_addon_page().await {
+                Ok(msg) => {
+                    log.push_str(&msg);
+                    log.push_str(
                             "       After adding the extension, run `alphacode browser status` to verify the connection.\n",
                         );
-                    }
-                    Err(e) => {
-                        log.push_str(&format!("       Could not open Firefox Add-ons: {}\n", e));
-                        log.push_str(&format!(
-                            "       Open this page in Firefox and select Add to Firefox: {}\n",
-                            FIREFOX_ADDON_PAGE_URL
-                        ));
-                    }
                 }
-            } else {
-                log.push_str(
+                Err(e) => {
+                    log.push_str(&format!("       Could not open Firefox Add-ons: {}\n", e));
+                    log.push_str(&format!(
+                        "       Open this page in Firefox and select Add to Firefox: {}\n",
+                        FIREFOX_ADDON_PAGE_URL
+                    ));
+                }
+            }
+        } else {
+            log.push_str(
                     "       Firefox is not responding. Start Firefox with the AlphaCode Browser Agent enabled, then rerun `alphacode browser status`.\n",
                 );
-            }
-        }
-        Err(e) => {
-            log.push_str(&format!("error: {}\n", e));
-            log.push_str("       Make sure Firefox is running.\n");
         }
     }
 
-    let final_status = ensure_browser_ready_noninteractive().await?;
     if final_status.ready {
+        mark_setup_complete().context("Failed to record browser setup completion")?;
         log.push_str("\nSetup complete. Browser bridge is ready.\n");
     } else if final_status.responding && !final_status.compatible {
         log.push_str("\nSetup is not complete yet. The Firefox extension is connected, but it is still missing required actions for this alphacode build.\n");
@@ -420,11 +402,21 @@ pub async fn ensure_browser_setup() -> Result<String> {
 }
 
 async fn download_browser_binary() -> Result<()> {
-    let asset_name = get_platform_asset_name();
+    let missing: Vec<_> = [
+        (get_host_asset_name(), host_binary_path()),
+        (get_platform_asset_name(), browser_binary_path()),
+    ]
+    .into_iter()
+    .filter(|(_, path)| !path.exists())
+    .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
     let client = crate::alphacode_provider_core::shared_http_client();
 
     let mut request = client
         .get(GITHUB_API_LATEST)
+        .timeout(Duration::from_secs(30))
         .header(reqwest::header::ACCEPT, "application/vnd.github+json");
     // Avoid the shared unauthenticated 60 req/h per-IP GitHub bucket when a
     // token is available (see crate::github).
@@ -463,82 +455,59 @@ async fn download_browser_binary() -> Result<()> {
             .join(", ")
     };
 
-    // Find the browser CLI binary
-    let browser_asset = assets
-        .iter()
-        .find(|a| a["name"].as_str() == Some(&asset_name));
-    let browser_missing = browser_asset.is_none();
-
-    // Find the host binary
-    let host_asset_name = get_host_asset_name();
-    let host_asset = assets
-        .iter()
-        .find(|a| a["name"].as_str() == Some(&host_asset_name));
-    let host_missing = host_asset.is_none();
-
-    // Fail with the exact missing native assets. The extension is installed
-    // separately by the user from the signed Firefox Add-ons listing.
-    if browser_missing || host_missing {
-        let mut missing = Vec::new();
-        if browser_missing {
-            missing.push(format!("browser CLI '{}'", asset_name));
+    // Repair just the missing components. An existing native host can be
+    // running and locked against replacement by Windows.
+    let downloads = missing.iter().map(|(name, _)| {
+        let client = &client;
+        let available_assets = &available_assets;
+        async move {
+            let url = assets
+                .iter()
+                .find(|asset| asset["name"].as_str() == Some(name.as_str()))
+                .and_then(|asset| asset["browser_download_url"].as_str())
+                .with_context(|| {
+                    format!(
+                        "Browser bridge release has no download for '{name}'. Available assets: {}. \
+                         Copy a compatible binary into {} and rerun `alphacode browser setup`.",
+                        available_assets(),
+                        browser_dir().display(),
+                    )
+                })?;
+            download_bridge_asset(client, url, name).await
         }
-        if host_missing {
-            missing.push(format!("native host '{}'", host_asset_name));
+    });
+    // Validate every download before installing anything.
+    let files = futures::future::try_join_all(downloads).await?;
+    for ((_, path), bytes) in missing.iter().zip(files) {
+        if !path.exists() {
+            write_file_atomically(path, &bytes, true)?;
         }
-        anyhow::bail!(
-            "Browser bridge has no {} for this platform ({}-{}). Expected release \
-             asset(s): {}. Available release assets: {}. Install the signed Firefox extension from {}. \
-             For missing CLI/native host binaries, build them from source or copy compatible binaries into {} \
-             and rerun `alphacode browser setup`.",
-            missing.join(" and "),
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            missing.join(", "),
-            available_assets(),
-            FIREFOX_ADDON_PAGE_URL,
-            browser_dir().display()
-        );
     }
 
-    let download_url = browser_asset
-        .and_then(|a| a["browser_download_url"].as_str())
-        .with_context(|| {
-            format!(
-                "Release asset '{}' has no download URL. Available assets: {}",
-                asset_name,
-                available_assets()
-            )
-        })?;
-
-    // Download browser CLI
-    let browser_bytes = client
-        .get(download_url)
-        .send()
-        .await?
-        .bytes()
-        .await
-        .context("Failed to download browser binary")?;
-
-    let bin_path = browser_binary_path();
-    write_file_atomically(&bin_path, &browser_bytes, true)?;
-
-    // Download host binary
-    let host_url = host_asset
-        .and_then(|a| a["browser_download_url"].as_str())
-        .context("No host download URL")?;
-    let host_bytes = client
-        .get(host_url)
-        .send()
-        .await?
-        .bytes()
-        .await
-        .context("Failed to download host binary")?;
-
-    let host_path = host_binary_path();
-    write_file_atomically(&host_path, &host_bytes, true)?;
-
     Ok(())
+}
+
+async fn download_bridge_asset(
+    client: &reqwest::Client,
+    url: &str,
+    asset_name: &str,
+) -> Result<bytes::Bytes> {
+    let response = client
+        .get(url)
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .with_context(|| format!("Failed to download browser bridge asset '{asset_name}'"))?;
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("Failed to read browser bridge asset '{asset_name}'"))?;
+    anyhow::ensure!(
+        !bytes.is_empty(),
+        "Browser bridge asset '{asset_name}' is empty"
+    );
+    Ok(bytes)
 }
 
 /// `fs::rename` with a bounded retry on Windows transient sharing failures.
@@ -576,47 +545,33 @@ fn rename_with_retry(from: &std::path::Path, to: &std::path::Path) -> std::io::R
 
 #[allow(unused_variables)]
 fn write_file_atomically(path: &std::path::Path, bytes: &[u8], executable: bool) -> Result<()> {
+    use std::io::Write;
+
     let parent = path
         .parent()
         .context("Target file has no parent directory")?;
     std::fs::create_dir_all(parent)?;
 
-    let ts = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
-    let pid = std::process::id();
-    let tmp_path = parent.join(format!(
-        ".{}.tmp-{}-{}",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("download"),
-        pid,
-        ts
-    ));
-
-    // Every failure path from here on must remove the scratch file. The old
-    // `?` chain leaked a `.<name>.tmp-<pid>-<nanos>` into the browser dir on
-    // every failure, and `browser setup` runs repeatedly, so those accumulate.
-    if let Err(error) = std::fs::write(&tmp_path, bytes) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(error).context("Failed to write temporary file");
-    }
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .context("Failed to create temporary browser bridge file")?;
+    temporary
+        .write_all(bytes)
+        .context("Failed to write temporary browser bridge file")?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = if executable { 0o755 } else { 0o644 };
-        if let Err(error) =
-            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(mode))
-        {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(error).context("Failed to set permissions on temporary file");
+        if executable {
+            temporary
+                .as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o755))
+                .context("Failed to make browser bridge file executable")?;
         }
     }
 
-    if let Err(error) = rename_with_retry(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(error).with_context(|| format!("Failed to move {} into place", path.display()));
-    }
-    Ok(())
+    let temporary = temporary.into_temp_path();
+    rename_with_retry(&temporary, path)
+        .with_context(|| format!("Failed to move {} into place", path.display()))
 }
 
 fn get_platform_asset_name() -> String {
@@ -710,7 +665,11 @@ fn install_single_host_manifest(
         ]
     });
 
-    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+    write_file_atomically(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest)?.as_bytes(),
+        false,
+    )?;
 
     #[cfg(target_os = "windows")]
     register_windows_native_host_manifest(&manifest_path, host_name)?;
@@ -834,7 +793,9 @@ async fn run_browser_cli_capped(
 ) -> Result<Option<std::process::Output>> {
     let mut cmd = tokio::process::Command::new(bin);
     crate::alphacode_base::platform::hide_helper_console(cmd.as_std_mut());
-    cmd.args(args).kill_on_drop(true);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
 
     match tokio::time::timeout(timeout, cmd.output()).await {
         Ok(output) => Ok(Some(output?)),
@@ -856,60 +817,98 @@ async fn check_browser_ping() -> Result<bool> {
     }
 
     match run_browser_cli_capped(&bin, &["ping"], BRIDGE_PING_TIMEOUT).await? {
-        Some(output) if output.status.success() => {
-            Ok(String::from_utf8_lossy(&output.stdout).contains("pong"))
-        }
+        Some(output) if output.status.success() => Ok(is_pong(&output.stdout)),
         _ => Ok(false),
     }
 }
 
+fn is_pong(stdout: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(stdout)
+        .is_ok_and(|value| value.get("pong").and_then(serde_json::Value::as_bool) == Some(true))
+        || std::str::from_utf8(stdout).is_ok_and(|text| text.trim() == "pong")
+}
+
 /// Fast liveness check for a browser action.
 ///
-/// Full compatibility inspection deliberately probes every required wire
-/// action and is appropriate for the explicit `status` command. Running that
-/// suite before *every* browser action adds one CLI process per capability
-/// (and serializes all of them), even though the action itself will report if
-/// its specific wire action is unsupported. Keep normal interaction to one
-/// bounded ping; reserve the full probe for diagnostics.
+/// Keep normal interaction to one bounded ping and reserve compatibility
+/// probes for diagnostics.
 pub async fn browser_bridge_responding() -> Result<bool> {
     check_browser_ping().await
 }
 
-async fn probe_bridge_action_support(action: &str, params_json: &str) -> Result<bool> {
-    let bin = browser_binary_path();
-    if !bin.exists() {
-        return Ok(false);
-    }
+fn bridge_action_probes() -> Vec<(&'static str, serde_json::Value)> {
+    use serde_json::json;
 
-    let Some(output) =
-        run_browser_cli_capped(&bin, &[action, params_json], BRIDGE_PING_TIMEOUT).await?
-    else {
-        // A dead bridge cannot tell us whether the action exists; report it as
-        // unsupported rather than hanging the caller (#602).
-        return Ok(false);
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = if stderr.trim().is_empty() {
-        stdout.trim().to_string()
-    } else if stdout.trim().is_empty() {
-        stderr.trim().to_string()
-    } else {
-        format!("{}\n{}", stderr.trim(), stdout.trim())
-    };
-
-    Ok(!combined.contains(&format!("Unknown action: {}", action)))
+    TAB_ACTION_PROBES
+        .iter()
+        .map(|&action| (action, json!({ "tabId": -1 })))
+        .chain([
+            ("listTabs", json!({ "windowId": -1 })),
+            ("listCookies", json!({ "url": "https://example.invalid" })),
+            ("setCookie", json!({})),
+            ("removeCookie", json!({})),
+        ])
+        .collect()
 }
 
-async fn probe_bridge_missing_actions() -> Result<Vec<String>> {
+fn parse_bridge_probe_results(
+    stdout: &[u8],
+    actions: &[(&str, serde_json::Value)],
+) -> Result<Vec<String>> {
+    let response: serde_json::Value =
+        serde_json::from_slice(stdout).context("Invalid browser bridge capability response")?;
+    let results = response["results"]
+        .as_array()
+        .filter(|results| results.len() == actions.len())
+        .context("Incomplete browser bridge capability response")?;
+
     let mut missing = Vec::new();
-    for (action, params_json) in REQUIRED_BRIDGE_ACTION_PROBES {
-        if !probe_bridge_action_support(action, params_json).await? {
-            missing.push((*action).to_string());
+    for (result, (action, _)) in results.iter().zip(actions) {
+        anyhow::ensure!(
+            result["action"].as_str() == Some(action),
+            "Unexpected browser bridge capability result for '{action}'"
+        );
+        match result["ok"].as_bool() {
+            Some(true) => {}
+            Some(false) => {
+                let error = result["error"]
+                    .as_str()
+                    .filter(|error| !error.trim().is_empty())
+                    .with_context(|| format!("Browser bridge gave no diagnostic for '{action}'"))?;
+                if error
+                    .trim()
+                    .eq_ignore_ascii_case(&format!("Unknown action: {action}"))
+                {
+                    missing.push(action.to_string());
+                }
+            }
+            None => anyhow::bail!("Browser bridge gave no capability result for '{action}'"),
         }
     }
     Ok(missing)
+}
+
+async fn probe_bridge_missing_actions() -> Result<Vec<String>> {
+    let actions = bridge_action_probes();
+    let commands: Vec<_> = actions
+        .iter()
+        .map(|(action, params)| serde_json::json!({ "action": action, "params": params }))
+        .collect();
+    let payload = serde_json::json!({ "commands": commands, "stopOnError": false }).to_string();
+    let output = run_browser_cli_capped(
+        &browser_binary_path(),
+        &["batch", &payload],
+        BRIDGE_PING_TIMEOUT,
+    )
+    .await?
+    .context("Browser bridge capability check timed out")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Browser bridge capability check failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim(),
+    );
+    parse_bridge_probe_results(&output.stdout, &actions)
 }
 
 pub async fn inspect_browser_status() -> Result<BrowserStatus> {
@@ -921,7 +920,7 @@ pub async fn inspect_browser_status() -> Result<BrowserStatus> {
         false
     };
     let missing_actions = if responding {
-        probe_bridge_missing_actions().await.unwrap_or_default()
+        probe_bridge_missing_actions().await?
     } else {
         Vec::new()
     };
@@ -986,30 +985,19 @@ fn should_prompt_extension_install(status: &BrowserStatus) -> bool {
     status.binary_installed && !status.responding
 }
 
-/// Common Firefox install roots used to launch the Add-ons page directly.
-/// Keep this to well-known locations only; missing directories are skipped.
+/// Common Firefox locations, including the Microsoft Store execution alias.
 #[cfg(target_os = "windows")]
-fn firefox_install_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    for candidate in [
-        std::env::var("ProgramFiles")
-            .ok()
-            .map(|p| PathBuf::from(p).join("Mozilla Firefox")),
-        std::env::var("ProgramFiles(x86)")
-            .ok()
-            .map(|p| PathBuf::from(p).join("Mozilla Firefox")),
-        std::env::var("LOCALAPPDATA")
-            .ok()
-            .map(|p| PathBuf::from(p).join("Mozilla Firefox")),
+fn windows_firefox_paths() -> impl Iterator<Item = PathBuf> {
+    [
+        ("ProgramFiles", "Mozilla Firefox"),
+        ("ProgramFiles(x86)", "Mozilla Firefox"),
+        ("LOCALAPPDATA", "Mozilla Firefox"),
+        ("LOCALAPPDATA", "Microsoft/WindowsApps"),
     ]
     .into_iter()
-    .flatten()
-    {
-        if candidate.is_dir() {
-            dirs.push(candidate);
-        }
-    }
-    dirs
+    .filter_map(|(root, directory)| {
+        std::env::var_os(root).map(|path| PathBuf::from(path).join(directory).join("firefox.exe"))
+    })
 }
 
 /// Open the supported Firefox Add-ons listing, rate-limited so repeated tool
@@ -1052,8 +1040,7 @@ async fn open_firefox_addon_page_unthrottled() -> Result<String> {
     }
     #[cfg(target_os = "windows")]
     {
-        for root in firefox_install_dirs() {
-            let firefox = root.join("firefox.exe");
+        for firefox in windows_firefox_paths() {
             if firefox.is_file()
                 && tokio::process::Command::new(&firefox)
                     .arg(FIREFOX_ADDON_PAGE_URL)
@@ -1122,4 +1109,55 @@ pub async fn run_setup_command() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bridge_action_probes, is_pong, parse_bridge_probe_results};
+    use serde_json::json;
+
+    #[test]
+    fn bridge_ping_requires_a_positive_acknowledgment() {
+        assert!(is_pong(br#"{ "pong": true, "version": "1.3.0" }"#));
+        assert!(is_pong(b"pong\n"));
+        assert!(!is_pong(br#"{ "pong": false }"#));
+        assert!(!is_pong(b"ping failed: missing pong"));
+    }
+
+    #[test]
+    fn bridge_status_does_not_target_the_active_tab() {
+        let actions = bridge_action_probes();
+        for action in ["scroll", "getContent", "screenshot", "evaluate", "closeTab"] {
+            let (_, params) = actions.iter().find(|(name, _)| *name == action).unwrap();
+            assert_eq!(*params, json!({ "tabId": -1 }));
+        }
+    }
+
+    #[test]
+    fn bridge_status_distinguishes_unsupported_actions_and_invalid_targets() {
+        let actions = [
+            ("scroll", json!({ "tabId": -1 })),
+            ("drag", json!({ "tabId": -1 })),
+        ];
+        let response = br#"{ "results": [
+            { "action": "scroll", "ok": false, "error": "tabId must be a non-negative integer" },
+            { "action": "drag", "ok": false, "error": "Unknown action: drag" }
+        ] }"#;
+        assert_eq!(
+            parse_bridge_probe_results(response, &actions).unwrap(),
+            ["drag"]
+        );
+    }
+
+    #[test]
+    fn bridge_status_rejects_incomplete_and_uninformative_responses() {
+        let actions = [("scroll", json!({ "tabId": -1 }))];
+        for response in [
+            br#"{ "results": [] }"#.as_slice(),
+            br#"{ "results": [{ "action": "drag", "ok": true }] }"#,
+            br#"{ "results": [{ "action": "scroll", "ok": false }] }"#,
+        ] {
+            assert!(parse_bridge_probe_results(response, &actions).is_err());
+        }
+    }
 }

@@ -26,7 +26,7 @@ pub const DIFF_MAX_INPUT_BYTES: usize = 1024 * 1024;
 /// worthwhile. Checks metadata so the content is never read just to measure it.
 pub async fn file_within_diff_size_limit(path: &std::path::Path) -> bool {
     match tokio::fs::metadata(path).await {
-        Ok(metadata) => metadata.len() as usize <= DIFF_MAX_INPUT_BYTES,
+        Ok(metadata) => metadata.is_file() && metadata.len() <= DIFF_MAX_INPUT_BYTES as u64,
         // If the size cannot be determined, do not read the file: the fallback
         // (no diff) is strictly safer than an unbounded allocation.
         Err(_) => false,
@@ -46,6 +46,9 @@ const TOUCH_PREVIEW_MAX_BYTES: usize = 240;
 /// At most [`DIFF_MAX_LINES`] non-empty change lines are included; the output
 /// is truncated with `...` when the limit is reached.
 pub fn generate_diff_summary(old: &str, new: &str) -> String {
+    if old == new {
+        return String::new();
+    }
     let diff = TextDiff::from_lines(old, new);
     let mut output = String::new();
     let mut lines_shown = 0usize;
@@ -99,6 +102,9 @@ pub fn generate_diff_summary(old: &str, new: &str) -> String {
 /// This variant is used by `edit` and `patch` where the diff should show the
 /// line numbers as they appear in the file rather than from line 1.
 pub fn generate_diff_with_start(old: &str, new: &str, start_line: usize) -> String {
+    if old == new {
+        return String::new();
+    }
     let diff = TextDiff::from_lines(old, new);
     let mut output = String::new();
     let mut line_count = 0usize;

@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::alphacode_app_core::bugbounty_orchestrator::{
-    BountyPhase, BountyTask, BugBountyOrchestrator, TaskCoverage,
+    BountyPhase, BountyTask, BugBountyOrchestrator, StopReason, TaskCoverage,
 };
 use crate::alphacode_app_core::tool::bounty_bridge::run_task_tool;
 use crate::alphacode_tool_core::{ToolContext, ToolExecutionMode};
@@ -223,6 +223,8 @@ pub const PARAM_WORDLIST: &[&str] = &[
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorSnapshot {
     #[serde(default)]
+    pub context_fingerprint: Option<String>,
+    #[serde(default)]
     pub intelligence: crate::alphacode_security_core::investigation::InvestigationIntelligence,
     pub target: String,
     pub current_phase: BountyPhase,
@@ -237,6 +239,24 @@ pub struct OrchestratorSnapshot {
 }
 
 const STATE_FILE: &str = "state.json";
+
+fn workflow_scope(target: &str) -> crate::alphacode_security_core::ScopePolicy {
+    crate::alphacode_security_core::ScopePolicy::from_lists(
+        &[target.to_owned()],
+        &[],
+        true,
+        &[],
+        0,
+        6,
+    )
+}
+
+fn workflow_context_fingerprint(target: &str) -> Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let context = serde_json::to_vec(&(env!("CARGO_PKG_VERSION"), workflow_scope(target)))?;
+    Ok(format!("{:x}", Sha256::digest(context)))
+}
 
 /// Atomically write `bytes` to `path` (temp file + rename) so a crash cannot
 /// leave a truncated `state.json` behind.
@@ -264,6 +284,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 /// Serialize the orchestrator's accumulators and task graph to `dir/state.json`.
 pub async fn save_state(orchestrator: &BugBountyOrchestrator, dir: &Path) -> Result<()> {
     let snapshot = OrchestratorSnapshot {
+        context_fingerprint: Some(workflow_context_fingerprint(&orchestrator.target)?),
         intelligence: orchestrator.intelligence.read().await.clone(),
         target: orchestrator.target.clone(),
         current_phase: orchestrator.get_current_phase().await,
@@ -322,6 +343,13 @@ pub async fn load_state(orchestrator: &BugBountyOrchestrator, dir: &Path) -> Res
             "state file belongs to target `{}`, not `{}`",
             snapshot.target,
             orchestrator.target
+        ));
+    }
+    if let Some(fingerprint) = &snapshot.context_fingerprint
+        && fingerprint != &workflow_context_fingerprint(&orchestrator.target)?
+    {
+        return Err(anyhow!(
+            "checkpoint scope or workflow version changed; preserve the old directory for review and start in a fresh directory"
         ));
     }
 
@@ -1135,6 +1163,13 @@ pub async fn run_workflow(
     std::fs::create_dir_all(dir)
         .map_err(|e| anyhow!("failed to create output directory {}: {e}", dir.display()))?;
 
+    if !resume && (dir.join(STATE_FILE).try_exists()? || dir.join("coverage").try_exists()?) {
+        return Err(anyhow!(
+            "output directory {} contains prior assessment state; use --resume or choose a fresh directory",
+            dir.display()
+        ));
+    }
+
     if resume {
         match load_state(orchestrator, dir).await {
             Ok(true) => {}
@@ -1152,6 +1187,31 @@ pub async fn run_workflow(
         orchestrator.initialize().await?;
     };
     restore_execution_audits(orchestrator, dir).await?;
+    write_workflow_receipt(orchestrator, dir, "running", None).await?;
+    let result = execute_workflow(orchestrator, dir).await;
+    match result {
+        Ok(outcomes) => {
+            let disposition = workflow_disposition(orchestrator).await;
+            write_workflow_receipt(orchestrator, dir, disposition, None).await?;
+            Ok(outcomes)
+        }
+        Err(error) => {
+            if let Err(receipt_error) =
+                write_workflow_receipt(orchestrator, dir, "workflow_error", None).await
+            {
+                return Err(error.context(format!(
+                    "also failed to record workflow status: {receipt_error}"
+                )));
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn execute_workflow(
+    orchestrator: &BugBountyOrchestrator,
+    dir: &Path,
+) -> Result<Vec<TaskOutcome>> {
     // Every later phase re-reads live state; a restored run simply sees most
     // tasks already completed and executes only what remains.
 
@@ -1168,14 +1228,7 @@ pub async fn run_workflow(
         &session_id,
         &format!("Assess {}", orchestrator.target),
     )?;
-    let policy = crate::alphacode_security_core::ScopePolicy::from_lists(
-        std::slice::from_ref(&orchestrator.target),
-        &[],
-        true,
-        &[],
-        0,
-        6,
-    );
+    let policy = workflow_scope(&orchestrator.target);
     crate::engagement_runtime::update(&session_id, |state| {
         state.policy = Some(policy.clone());
         state.research.scope = vec![orchestrator.target.clone()];
@@ -1242,6 +1295,7 @@ pub async fn run_workflow(
 
         orchestrator.advance_phase().await?;
         save_state(orchestrator, dir).await?;
+        write_workflow_receipt(orchestrator, dir, "running", Some(phase)).await?;
     }
 
     write_report(orchestrator, dir, &outcomes).await?;
@@ -1253,6 +1307,51 @@ pub async fn run_workflow(
     }
     save_state(orchestrator, dir).await?;
     Ok(outcomes)
+}
+
+async fn write_workflow_receipt(
+    orchestrator: &BugBountyOrchestrator,
+    dir: &Path,
+    status: &str,
+    checkpointed_phase: Option<BountyPhase>,
+) -> Result<()> {
+    let mut pending_tasks: Vec<_> = orchestrator
+        .tasks
+        .read()
+        .await
+        .values()
+        .filter(|task| !task.completed)
+        .map(|task| task.id.clone())
+        .collect();
+    pending_tasks.sort();
+    let path = dir.join("workflow-status.json");
+    let last_checkpoint = match checkpointed_phase {
+        Some(phase) => serde_json::json!({
+            "phase": phase,
+            "at": chrono::Utc::now(),
+        }),
+        None if status != "running" => {
+            let prior: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+            prior["last_checkpoint"].clone()
+        }
+        None => Value::Null,
+    };
+    let receipt = serde_json::json!({
+        "status": status,
+        "updated_at": chrono::Utc::now(),
+        "last_checkpoint": last_checkpoint,
+        "pending_tasks": pending_tasks,
+    });
+    atomic_write(&path, &serde_json::to_vec_pretty(&receipt)?)
+}
+
+/// Describe unresolved work after the executor returns without changing dispatch.
+pub(crate) async fn workflow_disposition(orchestrator: &BugBountyOrchestrator) -> &'static str {
+    match orchestrator.stop_decision(0).await {
+        StopReason::Continue => "tasks_remaining",
+        StopReason::SurfaceExhausted => "task_queue_completed",
+        reason => reason.as_str(),
+    }
 }
 
 /// Write a concise `report.md` next to the raw outputs.
@@ -1268,6 +1367,11 @@ async fn write_report(
     let summary = orchestrator.get_summary().await;
     let mut md = String::from("# Bug bounty run report\n\n");
     md.push_str(&format!("Target: {}\n", orchestrator.target));
+    md.push_str(&format!(
+        "Workflow disposition: {} · Pending tasks: {}\n",
+        workflow_disposition(orchestrator).await,
+        summary.pending_tasks,
+    ));
     md.push_str(&format!(
         "Subdomains: {} · URLs: {} · Ports: {} · Services: {} · Candidates (unverified): {} · Verified findings: {}\n\n",
         summary.subdomains_found,
@@ -1296,6 +1400,14 @@ async fn write_report(
 
     md.push_str("\n## Coverage and unresolved execution\n\n");
     md.push_str("Task completion means usable tool output was returned. It does not establish complete asset, authorization, or vulnerability coverage. Hydration caps, tool-internal limits and untested business flows still apply. Full discovered inventories remain in `state.json`.\n\n");
+    {
+        let tasks = orchestrator.tasks.read().await;
+        let mut pending: Vec<_> = tasks.values().filter(|task| !task.completed).collect();
+        pending.sort_by(|left, right| left.id.cmp(&right.id));
+        for task in pending {
+            md.push_str(&format!("- Pending task `{}`\n", task.id));
+        }
+    }
     let mut coverage = orchestrator.execution_coverage.read().await.clone();
     coverage.sort_by(|a, b| {
         a.task_id

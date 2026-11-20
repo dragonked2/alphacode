@@ -5,9 +5,7 @@
 //! never reflows the transcript, it floats over it.
 //!
 //! The bar shows the query, the hit counter, and the keys that drive it. It
-//! is deliberately two rows tall: the query row carries the state, the hint
-//! row carries the instructions, and neither has to share space with the
-//! other.
+//! uses a second row for shortcuts when there is room.
 
 use ratatui::{prelude::*, widgets::Paragraph};
 
@@ -16,10 +14,8 @@ use super::super::brand_ux::BrandTheme;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-/// Only the test-only `counter_text` helper below needs the view type, so the
-/// import is gated to avoid an unused-import warning in normal builds.
-#[cfg(test)]
 use crate::alphacode_tui::tui::transcript_search::TranscriptSearchView;
+use crate::alphacode_tui_tool_display::{truncate_head_display, truncate_tail_display};
 
 /// Rows the overlay occupies.
 const OVERLAY_HEIGHT: u16 = 2;
@@ -47,15 +43,8 @@ pub(super) fn draw_transcript_search_overlay(
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(OVERLAY_HEIGHT as usize);
 
-    let counter = if view.match_count == 0 {
-        if view.query.is_empty() {
-            "type to search".to_string()
-        } else {
-            "no matches".to_string()
-        }
-    } else {
-        format!("{}/{}", view.selected + 1, view.match_count)
-    };
+    let width = usize::from(rect.width);
+    let counter = truncate_tail_display(&counter_text(&view), width.saturating_sub(1));
     let counter_style = if view.match_count == 0 && !view.query.is_empty() {
         Style::default().fg(BrandTheme::warning())
     } else {
@@ -64,7 +53,6 @@ pub(super) fn draw_transcript_search_overlay(
 
     // Reserve space for the result count first; narrow terminals should still
     // explain whether the search found anything, even for a long query.
-    let width = rect.width as usize;
     let label = if width >= counter.width() + 7 {
         "Find "
     } else {
@@ -80,13 +68,16 @@ pub(super) fn draw_transcript_search_overlay(
     } else {
         ""
     };
-    let reserved = label.len() + case_marker.len() + 1 + separator.len() + counter.width();
+    let reserved = label.len() + case_marker.len() + separator.len() + counter.width();
     let query_width = width.saturating_sub(reserved);
+    let cursor = app.transcript_search_cursor().unwrap_or(view.query.len());
+    let (before, after) = fit_query_at_cursor(&view.query, cursor, query_width);
+    let cursor_col = label.len() + before.width();
     let mut query_line = Line::from(vec![
         Span::styled(label, accent),
-        Span::styled(fit_query_end(&view.query, query_width), Style::default()),
+        Span::raw(before),
+        Span::raw(after),
         Span::styled(case_marker, Style::default().fg(BrandTheme::warning())),
-        Span::styled("█", accent),
     ]);
     let centered = app.centered_mode();
     let used = query_line.width();
@@ -97,6 +88,15 @@ pub(super) fn draw_transcript_search_overlay(
         query_line.spans.push(Span::styled(separator, dim));
     }
     query_line.spans.push(Span::styled(counter, counter_style));
+    let cursor_col = if centered {
+        cursor_col
+            + usize::from(super::input_ui::centered_line_offset(
+                rect.width,
+                query_line.width() as u16,
+            ))
+    } else {
+        cursor_col
+    };
     lines.push(query_line);
 
     // Row 2: the keys that drive the overlay.
@@ -139,27 +139,27 @@ pub(super) fn draw_transcript_search_overlay(
 
     frame.render_widget(ratatui::widgets::Clear, rect);
     frame.render_widget(Paragraph::new(lines), rect);
+    frame.set_cursor_position(Position::new(
+        rect.x + cursor_col.min(width - 1) as u16,
+        rect.y,
+    ));
 }
 
-fn fit_query_end(query: &str, width: usize) -> String {
-    if query.width() <= width {
-        return query.to_owned();
+fn fit_query_at_cursor(query: &str, cursor: usize, width: usize) -> (String, String) {
+    let cursor = super::super::core::ceil_char_boundary(query, cursor);
+    let (before, after) = query.split_at(cursor);
+    let mut graphemes = after.graphemes(true);
+    let next_width = graphemes.next().map_or(0, UnicodeWidthStr::width);
+    let right_reserve = next_width + usize::from(graphemes.next().is_some());
+    let text_width = width.saturating_sub(1);
+    let before = truncate_head_display(before, text_width.saturating_sub(right_reserve));
+    let mut after = truncate_tail_display(after, text_width - before.width());
+    // Keep the end-of-query caret cell reserved while the caret moves, so
+    // centered mode does not shift the rest of the overlay by a column.
+    if width > 0 {
+        after.push(' ');
     }
-    if width == 0 {
-        return String::new();
-    }
-    let mut parts = Vec::new();
-    let mut used = 1;
-    for grapheme in query.graphemes(true).rev() {
-        let next = grapheme.width();
-        if used + next > width {
-            break;
-        }
-        used += next;
-        parts.push(grapheme);
-    }
-    parts.reverse();
-    format!("…{}", parts.concat())
+    (before, after)
 }
 
 /// Place the overlay next to the composer.
@@ -190,12 +190,21 @@ fn overlay_rect(input_area: Rect, frame_area: Rect) -> Option<Rect> {
             OVERLAY_HEIGHT,
         ));
     }
-    None
+    if space_above > 0 {
+        Some(Rect::new(
+            input_area.x,
+            input_area.y - 1,
+            input_area.width,
+            1,
+        ))
+    } else if space_below > 0 {
+        Some(Rect::new(input_area.x, below_start, input_area.width, 1))
+    } else {
+        None
+    }
 }
 
-/// Render-friendly helper used by the tests: the counter text for a view.
-#[cfg(test)]
-pub(super) fn counter_text(view: &TranscriptSearchView) -> String {
+fn counter_text(view: &TranscriptSearchView) -> String {
     if view.match_count == 0 {
         if view.query.is_empty() {
             "type to search".to_string()
@@ -210,7 +219,6 @@ pub(super) fn counter_text(view: &TranscriptSearchView) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::alphacode_tui::tui::transcript_search::TranscriptSearchView;
     fn view(query: &str, matches: usize, selected: usize) -> TranscriptSearchView {
         TranscriptSearchView {
             query: query.to_string(),
@@ -223,8 +231,15 @@ mod tests {
 
     #[test]
     fn long_query_keeps_whole_graphemes_and_tail() {
-        assert_eq!(fit_query_end("abc界e\u{301}", 4), "…界e\u{301}");
-        assert_eq!(fit_query_end("anything", 0), "");
+        let query = "abc界e\u{301}";
+        assert_eq!(
+            fit_query_at_cursor(query, query.len(), 5),
+            ("…界e\u{301}".to_owned(), " ".to_owned())
+        );
+        assert_eq!(
+            fit_query_at_cursor("abcdefgh界xy", 8, 7),
+            ("…gh".to_owned(), "界… ".to_owned())
+        );
     }
 
     #[test]
@@ -260,5 +275,15 @@ mod tests {
         let frame_area = Rect::new(0, 0, 80, 3);
         let input_area = Rect::new(0, 0, 80, 3);
         assert!(overlay_rect(input_area, frame_area).is_none());
+    }
+
+    #[test]
+    fn overlay_keeps_query_when_only_one_row_is_available() {
+        let frame_area = Rect::new(0, 0, 24, 4);
+        let input_area = Rect::new(0, 1, 24, 2);
+        assert_eq!(
+            overlay_rect(input_area, frame_area),
+            Some(Rect::new(0, 0, 24, 1))
+        );
     }
 }

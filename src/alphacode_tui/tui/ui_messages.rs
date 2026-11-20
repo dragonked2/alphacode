@@ -1477,7 +1477,7 @@ fn render_todo_goal_header(
     todo_card_line(spans, base_indent, inner_width)
 }
 
-fn wrap_todo_detail(value: &str, width: usize) -> Vec<String> {
+fn wrap_detail_text(value: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut chunks = Vec::new();
     let mut current = String::new();
@@ -1526,7 +1526,7 @@ fn push_todo_wrapped_detail(
     let prefix = format!("  {} · ", label);
     let prefix_width = prefix.width();
     let available = inner_width.saturating_sub(prefix_width).max(1);
-    for (index, chunk) in wrap_todo_detail(value, available).into_iter().enumerate() {
+    for (index, chunk) in wrap_detail_text(value, available).into_iter().enumerate() {
         lines.push(todo_card_line(
             vec![
                 Span::styled(
@@ -1731,7 +1731,7 @@ fn push_todo_text_update(
     let prefix_width = prefix.width();
     let available = inner_width.saturating_sub(prefix_width).max(1);
     let chunks = value
-        .map(|value| wrap_todo_detail(value, available))
+        .map(|value| wrap_detail_text(value, available))
         .filter(|chunks| !chunks.is_empty())
         .unwrap_or_else(|| vec!["cleared".to_string()]);
     for (index, chunk) in chunks.into_iter().enumerate() {
@@ -3707,19 +3707,49 @@ fn render_discovery_card(
 /// Preview rows used to be hard-cut at the row edge, which made a truncated
 /// line read like the end of the output.
 fn clip_preview_line(line: &str, budget: usize) -> String {
-    let total = line.chars().count();
-    if total <= budget {
-        return line.to_string();
+    crate::alphacode_tui_tool_display::truncate_tail_display(line, budget)
+}
+
+pub(super) fn push_tool_failure_lines(
+    lines: &mut Vec<Line<'static>>,
+    mut header: Line<'static>,
+    reason: Span<'static>,
+    token_suffix: &Line<'static>,
+    width: usize,
+    indent: &'static str,
+) {
+    let reason_text = crate::alphacode_tui_render::single_line_text(&reason.content);
+    // The viewport adds the raw-output copy shortcut after layout. Leave room
+    // on the header so it cannot clip a reason or remove a suggested action.
+    let header_width = width.saturating_sub(super::viewport::copy_badge_shortcut_width());
+    let inline = header.width() + " · ".width() + reason_text.width() <= header_width;
+    let style = reason.style;
+    if inline {
+        header
+            .spans
+            .push(Span::styled(" · ", Style::default().fg(dim_color())));
+        header.spans.push(Span::styled(reason_text.clone(), style));
     }
-    if budget == 0 {
-        return String::new();
+    if header.width() + token_suffix.width() <= header_width {
+        header.spans.extend(token_suffix.spans.iter().cloned());
     }
-    if budget == 1 {
-        return "\u{2026}".to_string();
+    lines.push(super::truncate_line_with_ellipsis_to_width(&header, width));
+
+    if inline || reason_text.is_empty() || width <= indent.width() {
+        return;
     }
-    let mut clipped: String = line.chars().take(budget - 1).collect();
-    clipped.push('\u{2026}');
-    clipped
+    const MAX_REASON_ROWS: usize = 4;
+    let detail = wrap_detail_text(&reason_text, width - indent.width());
+    let clipped = detail.len() > MAX_REASON_ROWS;
+    for (index, mut chunk) in detail.into_iter().take(MAX_REASON_ROWS).enumerate() {
+        if clipped && index == MAX_REASON_ROWS - 1 {
+            chunk.push('…');
+        }
+        lines.push(super::truncate_line_with_ellipsis_to_width(
+            &Line::from(vec![Span::raw(indent), Span::styled(chunk, style)]),
+            width,
+        ));
+    }
 }
 
 pub(crate) fn render_tool_message(
@@ -3853,10 +3883,14 @@ pub(crate) fn render_tool_message(
     } else {
         None
     };
+    let error_summary = batch_counts
+        .is_none()
+        .then(|| tools_ui::concise_tool_error_summary(&msg.content))
+        .flatten();
     let is_error = if let Some(counts) = batch_counts {
         counts.failed > 0 && counts.succeeded == 0
     } else {
-        tools_ui::tool_output_looks_failed(&msg.content)
+        error_summary.is_some()
     };
     let is_partial_batch = batch_counts
         .map(|counts| counts.failed > 0 && counts.succeeded > 0)
@@ -3872,7 +3906,7 @@ pub(crate) fn render_tool_message(
     };
 
     let is_edit_tool = tools_ui::is_edit_tool_name(&tc.name);
-    let (additions, deletions) = if is_edit_tool {
+    let (additions, deletions) = if is_edit_tool && !is_error {
         diff_change_counts_for_tool(tc, &msg.content)
     } else {
         (0, 0)
@@ -3928,7 +3962,7 @@ pub(crate) fn render_tool_message(
         } else {
             format!("{} calls", counts.total())
         }
-    } else if let Some(error_summary) = tools_ui::concise_tool_error_summary(&msg.content) {
+    } else if let Some(error_summary) = error_summary {
         error_summary
     } else if tools_ui::skill_name_for_tool(tc).is_some() {
         tools_ui::skill_result_summary(tc, is_error)
@@ -3970,64 +4004,64 @@ pub(crate) fn render_tool_message(
             Style::default().fg(crate::alphacode_tui_style::theme::accent_color()),
         ));
     }
-    // On failure, the reason is more useful than an optional intent label.
-    // Put it first so narrow terminals cannot hide it behind long prose.
-    if is_error || is_partial_batch {
-        if !summary.is_empty() {
-            tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
-            tool_line.push(Span::styled(summary, Style::default().fg(icon_color)));
-        }
-    } else if tools_ui::skill_name_for_tool(tc).is_some() {
-        if !summary.is_empty() {
-            tool_line.push(Span::styled(
-                format!(" · {summary}"),
-                Style::default().fg(dim_color()),
-            ));
-        }
-    } else if let Some(intent) = intent {
-        tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
-        tool_line.push(Span::styled(
-            intent.to_string(),
-            Style::default().fg(tool_color()),
-        ));
-        // Error summaries always render so failures stay diagnosable even
-        // when technical details are hidden.
-        let show_detail = tools_ui::show_tool_call_details() || is_error || is_partial_batch;
-        if show_detail && !summary.is_empty() && summary != intent {
-            tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
-            tool_line.push(Span::styled(summary, Style::default().fg(dim_color())));
-        }
-    } else if !summary.is_empty() {
-        tool_line.push(Span::styled(
-            format!(" {}", summary),
-            Style::default().fg(dim_color()),
-        ));
-    }
-    if is_edit_tool && has_diff_changes {
-        tool_line.push(Span::styled(" (", Style::default().fg(dim_color())));
-        tool_line.push(Span::styled(
-            format!("+{}", additions),
-            Style::default().fg(diff_add_color()),
-        ));
-        tool_line.push(Span::styled(" ", Style::default().fg(dim_color())));
-        tool_line.push(Span::styled(
-            format!("-{}", deletions),
-            Style::default().fg(diff_del_color()),
-        ));
-        tool_line.push(Span::styled(")", Style::default().fg(dim_color())));
-    }
     let token_suffix = Line::from(vec![
         Span::styled(" · ", Style::default().fg(dim_color())),
         Span::styled(token_badge.label, Style::default().fg(token_badge.color)),
     ]);
 
-    let rendered_tool_line = super::truncate_line_preserving_suffix_to_width(
-        &Line::from(tool_line),
-        &token_suffix,
-        row_width,
-    );
-    let rendered_tool_line_text = super::line_plain_text(&rendered_tool_line);
-    lines.push(rendered_tool_line);
+    if is_error || is_partial_batch {
+        push_tool_failure_lines(
+            &mut lines,
+            Line::from(tool_line),
+            Span::styled(summary, Style::default().fg(icon_color)),
+            &token_suffix,
+            row_width,
+            "    ",
+        );
+    } else {
+        if tools_ui::skill_name_for_tool(tc).is_some() {
+            if !summary.is_empty() {
+                tool_line.push(Span::styled(
+                    format!(" · {summary}"),
+                    Style::default().fg(dim_color()),
+                ));
+            }
+        } else if let Some(intent) = intent {
+            tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
+            tool_line.push(Span::styled(
+                intent.to_string(),
+                Style::default().fg(tool_color()),
+            ));
+            if tools_ui::show_tool_call_details() && !summary.is_empty() && summary != intent {
+                tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
+                tool_line.push(Span::styled(summary, Style::default().fg(dim_color())));
+            }
+        } else if !summary.is_empty() {
+            tool_line.push(Span::styled(
+                format!(" {summary}"),
+                Style::default().fg(dim_color()),
+            ));
+        }
+        if is_edit_tool && has_diff_changes {
+            tool_line.push(Span::styled(" (", Style::default().fg(dim_color())));
+            tool_line.push(Span::styled(
+                format!("+{}", additions),
+                Style::default().fg(diff_add_color()),
+            ));
+            tool_line.push(Span::styled(" ", Style::default().fg(dim_color())));
+            tool_line.push(Span::styled(
+                format!("-{}", deletions),
+                Style::default().fg(diff_del_color()),
+            ));
+            tool_line.push(Span::styled(")", Style::default().fg(dim_color())));
+        }
+        lines.push(super::truncate_line_preserving_suffix_to_width(
+            &Line::from(tool_line),
+            &token_suffix,
+            row_width,
+        ));
+    }
+    let rendered_tool_line_text = super::line_plain_text(&lines[0]);
     // A long name may not fit alongside the tool label and token badge. Keep
     // the exact target available in cell-width-safe continuation lines.
     if let Some(name) = tools_ui::skill_name_for_tool(tc) {
@@ -4038,29 +4072,6 @@ pub(crate) fn render_tool_message(
                     Span::raw("    "),
                     Span::styled(part, Style::default().fg(super::accent_color())),
                 ]));
-            }
-        }
-    }
-    // Always preserve a readable failure reason, even with technical details
-    // collapsed. This is a bounded preview, not an unbounded raw log dump.
-    if is_error
-        && row_width > 4
-        && let Some(reason) = tools_ui::concise_tool_error_summary(&msg.content)
-    {
-        let reason = crate::alphacode_tui_render::single_line_text(&reason);
-        if !rendered_tool_line_text.contains(&reason) {
-            let parts = split_by_display_width(&reason, row_width - 4);
-            for part in parts.iter().take(3) {
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(part.clone(), Style::default().fg(icon_color)),
-                ]));
-            }
-            if parts.len() > 3 {
-                lines.push(super::truncate_line_with_ellipsis_to_width(
-                    &Line::from("    More details: /tool-call-details on"),
-                    row_width,
-                ));
             }
         }
     }
@@ -4248,14 +4259,15 @@ pub(crate) fn render_tool_message(
                 ("✓", rgb(100, 180, 100))
             };
 
-            lines.push(tools_ui::render_batch_subcall_line(
+            tools_ui::push_batch_subcall_lines(
+                &mut lines,
                 &sub_tc,
                 sub_icon,
                 sub_icon_color,
                 50,
                 Some(row_width),
                 sub_result.map(|result| result.content.as_str()),
-            ));
+            );
 
             if let Some(result) = sub_result
                 && let Some(mut draft_lines) = render_gmail_draft_card(
@@ -4311,6 +4323,7 @@ pub(crate) fn render_tool_message(
 
     if diff_mode.is_inline()
         && is_edit_tool
+        && !is_error
         && let Some(change_lines) = edit_tool_inline_diff_lines(tc, &msg.content)
     {
         let full_inline = diff_mode.is_full_inline();

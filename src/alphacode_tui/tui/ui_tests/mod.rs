@@ -183,12 +183,12 @@ fn chat_scrollbar_geometry_hit_tests_and_drags() {
     // 17 scrollable positions, mapping linearly into max_scroll.
     let max_thumb_offset = (20 - 3) as usize;
     assert_eq!(geometry.drag_scroll(7, 2), Some(3 * 300 / max_thumb_offset));
-    // Pointer reabsorbed at the very top of the drag → clamped to 0… but
-    // a drag row AT the track origin is not a drag at all.
-    assert_eq!(geometry.drag_scroll(2, 2), None);
+    // A captured pointer can drag to and past either edge of the track.
+    assert_eq!(geometry.drag_scroll(1, 2), Some(0));
+    assert_eq!(geometry.drag_scroll(2, 2), Some(0));
     assert_eq!(geometry.drag_scroll(3, 5), Some(0));
-    // dragged flat along the tail clamps to exactly max_scroll.
     assert_eq!(geometry.drag_scroll(21, 2), Some(300));
+    assert_eq!(geometry.drag_scroll(22, 2), Some(300));
 
     // A fully-covered track reports the pinned tail rather than pretending
     // the pointer left the scrollbar.

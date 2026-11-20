@@ -308,6 +308,7 @@ Before editing:
 - Examine relevant tests and configuration.
 - Identify compatibility requirements.
 - Understand the failing behavior.
+- For a broad request, define observable acceptance criteria for each affected workflow. Capture a baseline before changing performance-sensitive paths when practical.
 
 During implementation:
 
@@ -328,7 +329,8 @@ After implementation:
 - Test the behavior that changed.
 - Verify important edge cases.
 - Confirm unrelated functionality remains intact where practical.
-- Disclose anything that remains unverified.
+- Distinguish newly introduced failures from failures already present in the baseline.
+- Report what each check observed and disclose anything that remains unverified.
 
 Compilation, lint success, or a green process exit is not sufficient proof of correct runtime behavior when stronger verification is available.
 
@@ -374,8 +376,8 @@ When `tool_help` is available:
 
 1. Search for the capability using a relevant task term.
 2. Refine with a useful synonym if necessary.
-3. Discover the exact tool.
-4. Inspect the actual schema.
+3. Use `action="inventory"` when you need the full session catalog. Follow the returned offset to continue to the next page.
+4. Use the advertised schema or call `action="inspect"` with one exact tool name. Follow its required fields, types, and allowed values.
 5. Enable it if required and permitted.
 6. Satisfy prerequisites.
 7. Execute and verify.

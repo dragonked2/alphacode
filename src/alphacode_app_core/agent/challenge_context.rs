@@ -119,11 +119,20 @@ impl super::Agent {
             return Ok(false);
         }
         let Ok(todos) = crate::todo::load_todos(&self.session.id) else {
-            return Ok(false);
+            // No readable todo list is not evidence the work is finished. For a
+            // security engagement it usually means no plan was ever written —
+            // exactly when the turn ended with "recommended next steps" instead
+            // of execution. Fall through to the bounded no-plan nudge below.
+            return self.nudge_missing_plan(kind, attempted);
         };
         if !has_actionable_todo(&todos) {
-            return Ok(false);
+            // Every todo completed (or none exist) while the mission is still
+            // open. That is the surrender path: the model reports a summary and
+            // stops even though nothing was verified. Nudge once to either
+            // record real remaining work or state a concrete blocker.
+            return self.nudge_missing_plan(kind, attempted);
         }
+
         let mut progress = std::collections::hash_map::DefaultHasher::new();
         for todo in &todos {
             (&todo.id, &todo.content, &todo.status, &todo.blocked_by).hash(&mut progress);
@@ -152,6 +161,69 @@ impl super::Agent {
         Ok(true)
     }
 
+    /// Emit a single bounded reminder when an open mission has no actionable
+    /// todo.
+    ///
+    /// A security engagement that produced no plan is the state where alphacode
+    /// historically gave up: the turn ended with "recommended next steps",
+    /// nothing was tested, and no further call was made because
+    /// `has_actionable_todo` was false and the continuation returned silently.
+    /// This asks for a plan instead of ending the mission.
+    ///
+    /// Bounded exactly once per session state: the key hashes the (empty or
+    /// fully-completed) todo set plus the ledger, so an unchanged state can
+    /// never produce a second nudge. Only applies to security work; a challenge
+    /// keeps its previous behavior so CTF solves are not disturbed.
+    fn nudge_missing_plan(
+        &mut self,
+        kind: MissionKind,
+        attempted: &mut std::collections::HashSet<u64>,
+    ) -> anyhow::Result<bool> {
+        use std::hash::{Hash, Hasher};
+
+        if kind != MissionKind::Security || self.is_graceful_shutdown() {
+            return Ok(false);
+        }
+        if self
+            .goal_contract
+            .as_ref()
+            .is_some_and(|contract| contract.is_terminal())
+        {
+            return Ok(false);
+        }
+
+        let mut progress = std::collections::hash_map::DefaultHasher::new();
+        // A distinct salt keeps this separate from the actionable-todo path, so
+        // the two can never be mistaken for the same attempt.
+        "no_actionable_plan".hash(&mut progress);
+        if let Ok(todos) = crate::todo::load_todos(&self.session.id) {
+            for todo in &todos {
+                (&todo.id, &todo.status).hash(&mut progress);
+            }
+        }
+        if !attempted.insert(progress.finish()) {
+            return Ok(false);
+        }
+
+        self.add_message(
+            super::Role::User,
+            vec![super::ContentBlock::Text {
+                text: "<system-reminder>This authorized security engagement has no actionable \
+                       todo, so the previous turn ended without executing anything. Do not answer \
+                       with recommendations or next steps. Create a todo plan for the remaining \
+                       work and start the first item in this same turn: record the installed scope \
+                       and authorization, then run the smallest permitted passive or read-only \
+                       step that produces evidence. If a prerequisite genuinely blocks every \
+                       remaining step, record exactly which step it blocks and what would unblock \
+                       it, then complete every independent step that does not need it. \
+                       Never report a vulnerability you have not reproduced.</system-reminder>"
+                    .to_string(),
+                cache_control: None,
+            }],
+        );
+        self.session.save()?;
+        Ok(true)
+    }
     /// Reminder text for the open mission, annotated with the on-disk solve
     /// state for challenges.
     ///
@@ -257,6 +329,88 @@ fn research_ledger_context(directory: &Path, filename: &str, label: &str) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for "wasted 8 minutes then showed recommended next steps".
+    ///
+    /// `continue_open_mission` returned `Ok(false)` whenever no actionable todo
+    /// existed, so a security engagement whose turn ended in prose (a scope
+    /// summary, a blocker list, "recommended next steps") was treated as
+    /// finished and the mission stopped silently. An open security mission with
+    /// no plan must be nudged exactly once to produce a plan and execute, and
+    /// never nudged twice for the same unchanged state.
+    #[tokio::test]
+    async fn open_security_mission_without_a_plan_is_nudged_once_not_abandoned() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
+
+        struct Provider;
+        #[async_trait::async_trait]
+        impl crate::alphacode_app_core::provider::Provider for Provider {
+            async fn complete(
+                &self,
+                _messages: &[crate::alphacode_app_core::message::Message],
+                _tools: &[crate::alphacode_message_types::ToolDefinition],
+                _system: &str,
+                _resume_session_id: Option<&str>,
+            ) -> anyhow::Result<crate::alphacode_app_core::provider::EventStream> {
+                Ok(Box::pin(tokio_stream::iter(Vec::new())))
+            }
+            fn name(&self) -> &str {
+                "no-plan-test"
+            }
+            fn fork(&self) -> std::sync::Arc<dyn crate::alphacode_app_core::provider::Provider> {
+                std::sync::Arc::new(Provider)
+            }
+        }
+
+        let result = {
+            let mut agent = super::super::Agent::new(
+                std::sync::Arc::new(Provider),
+                crate::tool::Registry::empty(),
+            );
+            // A security skill marks this as an active security mission.
+            agent.active_skill = Some("bugbounty".to_string());
+
+            let mut attempted = std::collections::HashSet::new();
+            let first = agent
+                .continue_open_mission(MissionKind::Security, &mut attempted)
+                .expect("continuation must not error");
+            let nudged =
+                agent
+                    .session
+                    .messages
+                    .iter()
+                    .filter_map(|message| {
+                        message.content.iter().find_map(|block| match block {
+                            crate::alphacode_app_core::message::ContentBlock::Text {
+                                text, ..
+                            } if text.contains("has no actionable") => Some(text.clone()),
+                            _ => None,
+                        })
+                    })
+                    .count();
+            let second = agent
+                .continue_open_mission(MissionKind::Security, &mut attempted)
+                .expect("continuation must not error");
+            (first, nudged, second)
+        };
+
+        if let Some(previous) = previous_home {
+            crate::alphacode_core::env::set_var("ALPHACODE_HOME", previous);
+        } else {
+            crate::alphacode_core::env::remove_var("ALPHACODE_HOME");
+        }
+
+        let (first, nudged, second) = result;
+        assert!(
+            first,
+            "an open security mission with no todo must be nudged, not abandoned"
+        );
+        assert_eq!(nudged, 1, "exactly one plan nudge");
+        assert!(!second, "an unchanged no-plan state must not nudge again");
+    }
 
     #[test]
     fn only_actionable_challenge_tasks_trigger_continuation() {

@@ -1896,7 +1896,8 @@ impl Tool for BashTool {
             // multi-agent conflicts when using the browser bridge.
             if !cfg!(windows)
                 && std::env::var("BROWSER_SESSION").is_err()
-                && let Some(session_name) = crate::browser::ensure_browser_session(&ctx.session_id)
+                && let Some(session_name) =
+                    crate::browser::ensure_browser_session(&ctx.session_id).await
             {
                 params.command = format!("BROWSER_SESSION={} {}", session_name, params.command);
             }

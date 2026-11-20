@@ -885,6 +885,12 @@ impl crate::alphacode_tui::tui::TuiState for App {
         self.transcript_search_view()
     }
 
+    fn transcript_search_cursor(&self) -> Option<usize> {
+        self.transcript_search
+            .as_ref()
+            .map(|state| state.query_cursor)
+    }
+
     fn transcript_search_index(
         &self,
     ) -> Option<&std::cell::RefCell<crate::alphacode_tui::tui::TranscriptSearchIndex>> {

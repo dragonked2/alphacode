@@ -8,7 +8,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::path::Path;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub struct WriteTool;
 
@@ -248,8 +248,24 @@ impl Tool for WriteTool {
         // the file is past the point where the diff would be truncated anyway.
         // The size is checked from metadata first, so the content is never
         // loaded in the first place.
-        let old_content = if !params.append && existed && file_within_diff_size_limit(&path).await {
-            tokio::fs::read_to_string(&path).await.ok()
+        let new_content_fits = content_within_diff_size_limit(&params.content);
+        let old_content = if !params.append
+            && new_content_fits
+            && existed
+            && file_within_diff_size_limit(&path).await
+        {
+            match tokio::fs::File::open(&path).await {
+                Ok(file) => {
+                    let mut snapshot = String::new();
+                    file.take(DIFF_MAX_INPUT_BYTES as u64 + 1)
+                        .read_to_string(&mut snapshot)
+                        .await
+                        .ok()
+                        .filter(|&bytes| bytes <= DIFF_MAX_INPUT_BYTES)
+                        .map(|_| snapshot)
+                }
+                Err(_) => None,
+            }
         } else {
             None
         };
@@ -275,15 +291,19 @@ impl Tool for WriteTool {
             tokio::fs::write(&path, &params.content).await?;
         }
 
-        let _new_len = params.content.len();
         let line_count = params.content.lines().count();
         // Skip the diff when it was skipped above, and also when the *new*
         // content alone is too large to diff against nothing.
-        let diff = if diff_skipped || !content_within_diff_size_limit(&params.content) {
+        let diff = if params.append {
+            String::new()
+        } else if !new_content_fits {
             format!(
                 "(diff skipped: file exceeds the {} KB diff limit; use read to inspect changes)",
                 DIFF_MAX_INPUT_BYTES / 1024
             )
+        } else if diff_skipped {
+            "(diff skipped: previous file content unavailable for diff; use read to inspect changes)"
+                .to_string()
         } else if let Some(old) = old_content.as_deref() {
             generate_diff_summary(old, &params.content)
         } else {
@@ -336,15 +356,6 @@ impl Tool for WriteTool {
             ))
             .with_title(params.file_path.clone()))
         } else {
-            // For new files, show all lines as additions
-            let diff = if content_within_diff_size_limit(&params.content) {
-                generate_diff_summary("", &params.content)
-            } else {
-                format!(
-                    "(diff skipped: file exceeds the {} KB diff limit; use read to inspect it)",
-                    DIFF_MAX_INPUT_BYTES / 1024
-                )
-            };
             Ok(ToolOutput::new(format!(
                 "Created {} ({} lines):\n{}",
                 params.file_path, line_count, diff

@@ -6,11 +6,12 @@
 #[cfg(not(windows))]
 use crossterm::event::EventStream;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt, stream::Fuse};
 use std::{
     io,
     pin::Pin,
     task::{Context, Poll},
+    time::Instant,
 };
 
 #[cfg(not(windows))]
@@ -19,8 +20,33 @@ pub(super) type TerminalEventStream = ImmediateEvents<EventStream>;
 pub(super) type TerminalEventStream = ImmediateEvents<WindowsInput>;
 
 pub(super) struct ImmediateEvents<S> {
-    source: S,
-    buffered: Option<io::Result<Event>>,
+    source: Fuse<S>,
+    buffered: Option<ReadEvent>,
+    eof_reported: bool,
+}
+
+pub(super) struct ReadEvent {
+    read_at: Instant,
+    event: io::Result<Event>,
+}
+
+impl From<io::Result<Event>> for ReadEvent {
+    fn from(event: io::Result<Event>) -> Self {
+        Self {
+            read_at: Instant::now(),
+            event,
+        }
+    }
+}
+
+impl ReadEvent {
+    fn dispatch(self) -> io::Result<Event> {
+        if matches!(&self.event, Ok(Event::Key(key)) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat))
+        {
+            super::ui::note_key_event_read_at(self.read_at);
+        }
+        self.event
+    }
 }
 
 impl TerminalEventStream {
@@ -35,16 +61,18 @@ impl TerminalEventStream {
 
 #[cfg(windows)]
 pub(super) struct WindowsInput {
-    events: tokio::sync::mpsc::Receiver<(std::time::Instant, io::Result<Event>)>,
+    events: tokio::sync::mpsc::Receiver<ReadEvent>,
     reader: Option<std::thread::JoinHandle<()>>,
 }
 
 #[cfg(windows)]
 impl WindowsInput {
     fn new() -> Self {
+        use super::app::terminal_liveness;
         use crossterm::event;
-        use std::time::{Duration, Instant};
+        use std::time::Duration;
 
+        terminal_liveness::capture_initial_terminal();
         // Keep reading while the UI paints or handles a daemon event. A
         // bounded queue preserves ordering and caps memory during key bursts.
         let (sender, events) = tokio::sync::mpsc::channel(128);
@@ -57,7 +85,12 @@ impl WindowsInput {
                     Err(error) => Err(error),
                 };
                 let failed = event.is_err();
-                if sender.blocking_send((Instant::now(), event)).is_err() {
+                if failed && terminal_liveness::terminal_abandoned() {
+                    // Drop the sender after queued inputs are delivered. It
+                    // reports EOF once instead of waking the UI with retries.
+                    break;
+                }
+                if sender.blocking_send(ReadEvent::from(event)).is_err() {
                     break;
                 }
                 if failed {
@@ -74,20 +107,10 @@ impl WindowsInput {
 
 #[cfg(windows)]
 impl Stream for WindowsInput {
-    type Item = io::Result<Event>;
+    type Item = ReadEvent;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.events.poll_recv(cx) {
-            Poll::Ready(Some((read_at, event))) => {
-                if matches!(&event, Ok(Event::Key(key)) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat))
-                {
-                    super::ui::note_key_event_read_at(read_at);
-                }
-                Poll::Ready(Some(event))
-            }
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
+        self.events.poll_recv(cx)
     }
 }
 
@@ -107,11 +130,12 @@ impl Default for TerminalEventStream {
     }
 }
 
-impl<S> ImmediateEvents<S> {
+impl<S: Stream> ImmediateEvents<S> {
     pub(super) fn from_source(source: S) -> Self {
         Self {
-            source,
+            source: source.fuse(),
             buffered: None,
+            eof_reported: false,
         }
     }
 }
@@ -122,34 +146,64 @@ pub(super) fn is_plain_text_key(key: KeyEvent) -> bool {
         && (key.modifiers - KeyModifiers::SHIFT).is_empty()
 }
 
-impl<S: Stream<Item = io::Result<Event>> + Unpin> ImmediateEvents<S> {
+impl<S: Stream + Unpin> ImmediateEvents<S>
+where
+    S::Item: Into<ReadEvent>,
+{
+    /// Deliver EOF once. Keeping it ready would starve the other branches in
+    /// input-first select loops after the reader has stopped.
+    pub(super) async fn next_live(&mut self) -> Option<io::Result<Event>> {
+        if self.eof_reported {
+            return std::future::pending().await;
+        }
+        let event = self.next().await;
+        self.eof_reported = event.is_none();
+        event
+    }
+
+    pub(super) fn input_closed(&self) -> bool {
+        self.eof_reported
+    }
+
+    fn poll_read_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<ReadEvent>> {
+        if let Some(event) = self.buffered.take() {
+            return Poll::Ready(Some(event));
+        }
+        Pin::new(&mut self.source)
+            .poll_next(cx)
+            .map(|event| event.map(Into::into))
+    }
+
     /// Read only an already-ready printable key or character release. Leave
     /// other events in order for the caller's regular dispatch path.
     pub(super) fn next_ready_text_key(&mut self) -> Option<KeyEvent> {
-        match self.next().now_or_never()?? {
+        let event = std::future::poll_fn(|cx| self.poll_read_event(cx)).now_or_never()??;
+        match &event.event {
             Ok(Event::Key(key))
-                if is_plain_text_key(key)
+                if is_plain_text_key(*key)
                     || (key.kind == KeyEventKind::Release
                         && matches!(key.code, KeyCode::Char(_))) =>
             {
+                let key = *key;
+                let _ = event.dispatch();
                 Some(key)
             }
-            other => {
-                self.buffered = Some(other);
+            _ => {
+                self.buffered = Some(event);
                 None
             }
         }
     }
 }
 
-impl<S: Stream<Item = io::Result<Event>> + Unpin> Stream for ImmediateEvents<S> {
+impl<S: Stream + Unpin> Stream for ImmediateEvents<S>
+where
+    S::Item: Into<ReadEvent>,
+{
     type Item = io::Result<Event>;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let stream = self.get_mut();
-        if let Some(event) = stream.buffered.take() {
-            return Poll::Ready(Some(event));
-        }
-        Pin::new(&mut stream.source).poll_next(cx)
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.poll_read_event(cx)
+            .map(|event| event.map(ReadEvent::dispatch))
     }
 }
 
@@ -185,6 +239,32 @@ mod tests {
             let mut stream = ImmediateEvents::from_source(source);
             assert_eq!(stream.next().await.unwrap().unwrap(), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn closed_input_cannot_starve_other_work_after_burst_lookahead() {
+        let mut stream =
+            ImmediateEvents::from_source(futures::stream::empty::<io::Result<Event>>());
+        assert_eq!(stream.next_ready_text_key(), None);
+        assert!(stream.next_live().await.is_none());
+        tokio::select! {
+            biased;
+            _ = stream.next_live() => panic!("EOF must only be reported once"),
+            _ = std::future::ready(()) => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn lookahead_preserves_the_reader_timestamp_for_buffered_keys() {
+        let read_at = Instant::now();
+        let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let mut stream = ImmediateEvents::from_source(futures::stream::iter([ReadEvent {
+            read_at,
+            event: Ok(enter.clone()),
+        }]));
+        assert_eq!(stream.next_ready_text_key(), None);
+        assert_eq!(stream.buffered.as_ref().unwrap().read_at, read_at);
+        assert_eq!(stream.next_live().await.unwrap().unwrap(), enter);
     }
 
     #[tokio::test]

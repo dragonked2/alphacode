@@ -3,7 +3,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
-use std::hash::Hasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(not(test))]
@@ -313,7 +313,10 @@ impl SkillRegistry {
     pub fn load_global() -> Result<Self> {
         // First-run import from Claude Code / Codex CLI
         Self::import_from_external();
+        Ok(Self::load_global_sources())
+    }
 
+    fn load_global_sources() -> Self {
         let mut registry = Self::default();
 
         // Load skills provided by Claude Code plugins/marketplace installs
@@ -351,7 +354,7 @@ impl SkillRegistry {
         // available regardless of cwd, $HOME, or any on-disk install.
         Self::load_bundled_skills(&mut registry);
 
-        Ok(registry)
+        registry
     }
 
     /// Load only the project-local skill overlay for a workspace root:
@@ -436,13 +439,16 @@ impl SkillRegistry {
         overlay
     }
 
+    pub(crate) fn refresh_project_overlay(working_dir: Option<&Path>) -> Arc<Self> {
+        overlay_cache().remove(&working_dir.map(Path::to_path_buf));
+        Self::load_project_overlay_cached(working_dir)
+    }
+
     /// Fingerprint of the project-local skill sources for `working_dir`.
     ///
-    /// Combines each project-local skill root's own modification time — which
-    /// changes when a skill directory is added or removed — with the
-    /// modification time and size of every `SKILL.md` it contains, which
-    /// change when a skill is edited. A different fingerprint means the cached
-    /// overlay no longer matches the files on disk.
+    /// Combines the paths, modification times and sizes of the skill entries
+    /// and their Markdown references. Only a changed fingerprint requires
+    /// re-reading and parsing the files.
     fn project_overlay_fingerprint(working_dir: Option<&Path>) -> u64 {
         let mut hasher = DefaultHasher::new();
         for root in PROJECT_LOCAL_ROOTS {
@@ -461,30 +467,26 @@ impl SkillRegistry {
                 }
             }
 
-            let mut files: Vec<(PathBuf, std::time::SystemTime, u64)> = Vec::new();
+            let mut files = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if !path.is_dir() {
-                        continue;
-                    }
                     let skill_file = path.join("SKILL.md");
                     let Ok(meta) = std::fs::metadata(&skill_file) else {
                         continue;
                     };
-                    files.push((
-                        skill_file,
-                        meta.modified().unwrap_or(std::time::UNIX_EPOCH),
-                        meta.len(),
-                    ));
+                    if !meta.is_file() {
+                        continue;
+                    }
+                    files.push((skill_file, file_stamp(&meta), meta.len()));
+                    files.extend(Self::reference_paths(&path).filter_map(|file| {
+                        let meta = std::fs::metadata(&file).ok()?;
+                        Some((file, file_stamp(&meta), meta.len()))
+                    }));
                 }
             }
-            files.sort_by(|a, b| a.0.cmp(&b.0));
-            for (path, modified, len) in files {
-                hasher.write(path.to_string_lossy().as_bytes());
-                hasher.write_u64(system_time_stamp(modified));
-                hasher.write_u64(len);
-            }
+            files.sort_unstable();
+            files.hash(&mut hasher);
         }
         hasher.finish()
     }
@@ -537,7 +539,7 @@ impl SkillRegistry {
     fn load_plugin_skills_from_root(&mut self, plugins_root: &Path) -> usize {
         let mut count = 0;
         for dir in Self::plugin_skill_dirs_under(plugins_root) {
-            count += self.load_from_dir_count(&dir).unwrap_or(0);
+            count += self.load_from_dir(&dir).unwrap_or(0);
         }
         count
     }
@@ -651,12 +653,13 @@ impl SkillRegistry {
         })
     }
 
-    /// Load skills from a directory
-    fn load_from_dir(&mut self, dir: &Path) -> Result<()> {
+    /// Load skills from a directory and return the number parsed.
+    fn load_from_dir(&mut self, dir: &Path) -> Result<usize> {
         if !dir.is_dir() {
-            return Ok(());
+            return Ok(0);
         }
 
+        let mut count = 0;
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -667,11 +670,12 @@ impl SkillRegistry {
                     && let Ok(skill) = Self::parse_skill(&skill_file)
                 {
                     self.skills.insert(skill.name.clone(), Arc::new(skill));
+                    count += 1;
                 }
             }
         }
 
-        Ok(())
+        Ok(count)
     }
 
     /// Parse a SKILL.md file
@@ -816,7 +820,7 @@ impl SkillRegistry {
             description,
             allowed_tools,
             content: body,
-            path: PathBuf::from(format!("<embedded:{name}>")),
+            path: Self::embedded_skill_path(name),
             search_text,
             auto_invoke: auto_invoke.unwrap_or(false),
             aliases: normalize_aliases(aliases),
@@ -825,69 +829,69 @@ impl SkillRegistry {
         })
     }
 
+    fn embedded_skill_path(name: &str) -> PathBuf {
+        PathBuf::from(format!("<embedded:{name}>"))
+    }
+
     /// Load reference files from a skill directory. Scans `references/` and
     /// any `*.md` files in the skill root (excluding SKILL.md itself).
     /// Returns a map of relative path -> file content.
     fn load_reference_files(skill_dir: &Path) -> HashMap<String, String> {
-        let mut refs = HashMap::new();
-
-        // Load files from references/ subdirectory
-        let references_dir = skill_dir.join("references");
-        if references_dir.is_dir() {
-            Self::collect_md_files(&references_dir, skill_dir, &mut refs);
-        }
-
-        // Load .md files from skill root (not SKILL.md itself)
-        if let Ok(entries) = std::fs::read_dir(skill_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file()
-                    && path.extension().is_some_and(|e| e == "md")
-                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
-                    && name != "SKILL.md"
-                    && let Ok(content) = std::fs::read_to_string(&path)
-                {
-                    refs.insert(name.to_string(), content);
-                }
-            }
-        }
-
-        refs
+        Self::reference_paths(skill_dir)
+            .filter_map(|path| {
+                let key = path
+                    .strip_prefix(skill_dir)
+                    .ok()?
+                    .iter()
+                    .map(std::ffi::OsStr::to_str)
+                    .collect::<Option<Vec<_>>>()?
+                    .join("/");
+                let content = std::fs::read_to_string(path).ok()?;
+                Some((key, content))
+            })
+            .collect()
     }
 
-    /// Recursively collect .md files from a directory
-    fn collect_md_files(dir: &Path, base: &Path, out: &mut HashMap<String, String>) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    Self::collect_md_files(&path, base, out);
-                } else if path.extension().is_some_and(|e| e == "md")
-                    && let Ok(content) = std::fs::read_to_string(&path)
-                    && let Ok(relative) = path.strip_prefix(base)
-                    && let Some(key) = relative.to_str()
-                {
-                    out.insert(key.to_string(), content);
-                }
-            }
-        }
+    /// Enumerate root Markdown files and nested references using the same
+    /// rules for loading and cache validation. WalkDir detects linked cycles.
+    fn reference_paths(skill_dir: &Path) -> impl Iterator<Item = PathBuf> {
+        let root_files = std::fs::read_dir(skill_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_name() != "SKILL.md")
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "md") && path.is_file());
+        let nested_files = walkdir::WalkDir::new(skill_dir.join("references"))
+            .min_depth(1)
+            .follow_links(true)
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .map(walkdir::DirEntry::into_path)
+            .filter(|path| path.extension().is_some_and(|ext| ext == "md"));
+        root_files.chain(nested_files)
     }
 
     /// Parse YAML frontmatter from markdown
     fn parse_frontmatter(content: &str) -> Result<(SkillFrontmatter, String)> {
-        let content = content.trim();
-
-        if !content.starts_with("---") {
-            anyhow::bail!("Missing YAML frontmatter");
-        }
-
-        let rest = &content[3..];
+        let content = content.trim_start_matches('\u{feff}').trim();
+        let (_, rest) = content
+            .split_once('\n')
+            .filter(|(opening, _)| opening.trim_end() == "---")
+            .ok_or_else(|| anyhow::anyhow!("Missing YAML frontmatter"))?;
         let end = rest
-            .find("---")
-            .ok_or_else(|| anyhow::anyhow!("Unclosed frontmatter"))?;
-
-        let yaml = &rest[..end];
-        let body = rest[end + 3..].trim().to_string();
+            .split_inclusive('\n')
+            .take_while(|line| line.trim_end() != "---")
+            .map(str::len)
+            .sum::<usize>();
+        anyhow::ensure!(end < rest.len(), "Unclosed frontmatter");
+        let (yaml, delimiter_and_body) = rest.split_at(end);
+        let body = delimiter_and_body
+            .split_once('\n')
+            .map_or("", |(_, body)| body)
+            .trim()
+            .to_owned();
 
         // Normalize CRLF → LF so serde_yaml never chokes on \r inside
         // quoted YAML values (e.g. the bundled bugbounty SKILL.md which
@@ -983,8 +987,12 @@ impl SkillRegistry {
         let path = self.skills.get(name).map(|s| s.path.clone());
 
         if let Some(path) = path {
+            if path == Self::embedded_skill_path(name) {
+                return Ok(true);
+            }
             if path.exists() {
                 let skill = Self::parse_skill(&path)?;
+                self.skills.remove(name);
                 self.skills.insert(skill.name.clone(), Arc::new(skill));
                 Ok(true)
             } else {
@@ -1018,66 +1026,8 @@ impl SkillRegistry {
             "skill reload",
             "reloaded all skills; the skills list in the system prompt may have changed",
         );
-        self.skills.clear();
-
-        let mut count = 0;
-
-        // Load skills provided by Claude Code plugins/marketplace installs
-        // first, so explicit alphacode/agents skills with the same name win below.
-        if let Some(plugins_root) = Self::claude_plugins_root() {
-            count += self.load_plugin_skills_from_root(&plugins_root);
-        }
-
-        // Load from ~/.alphacode/skills/ (alphacode's own global skills)
-        if let Ok(alphacode_dir) = crate::storage::alphacode_dir() {
-            let alphacode_skills = alphacode_dir.join("skills");
-            if alphacode_skills.exists() {
-                count += self.load_from_dir_count(&alphacode_skills)?;
-            }
-        }
-
-        // Load from ~/.agents/skills/ (shared cross-tool `.agents` convention)
-        if let Ok(agents_skills) = crate::storage::user_home_path(".agents/skills")
-            && agents_skills.exists()
-        {
-            count += self.load_from_dir_count(&agents_skills)?;
-        }
-
-        // Load skills from installed plugins (~/.alphacode/plugins/*/skills/)
-        Self::load_plugin_skills_from_plugins_dir(self);
-
-        // Reload bundled skills embedded at compile time so they are always
-        // available after a reload — without this, any skill reload clears
-        // bundled skills (e.g. /bugbounty) because they were only loaded
-        // during the initial `load_global()` call at startup.
-        Self::load_bundled_skills(self);
-
-        Ok(count)
-    }
-
-    /// Load skills from a directory and return count
-    fn load_from_dir_count(&mut self, dir: &Path) -> Result<usize> {
-        if !dir.is_dir() {
-            return Ok(0);
-        }
-
-        let mut count = 0;
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                let skill_file = path.join("SKILL.md");
-                if skill_file.exists()
-                    && let Ok(skill) = Self::parse_skill(&skill_file)
-                {
-                    self.skills.insert(skill.name.clone(), Arc::new(skill));
-                    count += 1;
-                }
-            }
-        }
-
-        Ok(count)
+        *self = Self::load_global_sources();
+        Ok(self.skills.len())
     }
 
     /// Parse `/skill-name` and `/skill-name prompt...` invocations.
@@ -1469,7 +1419,16 @@ impl Skill {
 
     /// Get the content of a reference file by name
     pub fn get_reference(&self, name: &str) -> Option<&str> {
-        self.reference_files.get(name).map(|s| s.as_str())
+        if let Some(content) = self.reference_files.get(name) {
+            return Some(content);
+        }
+        if name.contains('\\') {
+            return self
+                .reference_files
+                .get(&name.replace('\\', "/"))
+                .map(String::as_str);
+        }
+        None
     }
 
     /// List all available reference file names
@@ -1482,8 +1441,8 @@ impl Skill {
     /// Load additional files from the skill directory
     pub fn load_file(&self, filename: &str) -> Result<String> {
         // Check reference files first
-        if let Some(content) = self.reference_files.get(filename) {
-            return Ok(content.clone());
+        if let Some(content) = self.get_reference(filename) {
+            return Ok(content.to_owned());
         }
         // Fall back to filesystem
         let skill_dir = self
@@ -2117,7 +2076,8 @@ mod tests {
         // Second reload must still have bundled skills. Assert subset (not
         // exact equality): user-level skills from ~/.alphacode/skills may
         // legitimately appear between reloads and must not fail this test.
-        registry.reload_global().expect("second reload");
+        let count = registry.reload_global().expect("second reload");
+        assert_eq!(count, registry.list().len());
         let names_after: std::collections::BTreeSet<_> = registry
             .list()
             .into_iter()
@@ -2133,6 +2093,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reload_one_keeps_bundled_skills_available() {
+        use crate::alphacode_base::bundled_skills::BUNDLED_SKILLS;
+        let mut registry = SkillRegistry::default();
+        SkillRegistry::load_bundled_skills(&mut registry);
+        let bundled = &BUNDLED_SKILLS[0];
+        assert!(registry.reload(bundled.name).unwrap());
+        assert!(registry.get(bundled.name).is_some());
+    }
+
     /// Regression test: CRLF line endings in YAML frontmatter must not
     /// break serde_yaml parsing. The bundled bugbounty SKILL.md historically
     /// shipped with Windows-style `\r\n` endings via `include_str!`, causing
@@ -2146,6 +2116,19 @@ mod tests {
         assert_eq!(fm.name, "test-skill");
         assert_eq!(fm.description, "A test skill with colon inside");
         assert_eq!(body, "Body here.");
+    }
+
+    #[test]
+    fn parse_frontmatter_accepts_bom_and_delimiter_text_in_yaml() {
+        let content = "\u{feff}---\r\nname: formatting\r\ndescription: |\r\n  A --- separator\r\n  ---\r\n---\r\n\r\nSkill body.\r\n---\r\nAfter the divider.";
+        let (frontmatter, body) = SkillRegistry::parse_frontmatter(content).unwrap();
+        assert_eq!(frontmatter.name, "formatting");
+        assert_eq!(frontmatter.description.trim(), "A --- separator\n---");
+        assert_eq!(body, "Skill body.\r\n---\r\nAfter the divider.");
+        assert!(
+            SkillRegistry::parse_frontmatter("---\nname: formatting\ndescription: A --- separator")
+                .is_err()
+        );
     }
 
     #[test]

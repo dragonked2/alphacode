@@ -454,6 +454,11 @@ Browser automation helps with:
 - Browser-based testing, QA, and web application debugging
 - Security testing of systems you own or are explicitly authorized to assess
 
+Use the browser tool's `open` action to navigate, `snapshot` for page structure, and
+`get_content` for text or HTML. `get_page_content` is accepted as an alias. Use the
+selector returned by `interactables` when clicking or typing. If Firefox reports a
+failed load, the working tab stays available for inspection or reload.
+
 Example instruction:
 
 ```text

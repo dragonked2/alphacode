@@ -1742,6 +1742,13 @@ async fn run_stream_with_retries(
                         )))
                         .await;
                 } else {
+                    let e = if attempt + 1 == MAX_RETRIES {
+                        crate::alphacode_provider_core::retry::stream_retry_limit_reached(
+                            e, MAX_RETRIES,
+                        )
+                    } else {
+                        e
+                    };
                     if let Err(send_err) = tx.send(Err(e)).await {
                         tracing::debug!("Failed to send error event: {}", send_err);
                     }
@@ -1754,10 +1761,8 @@ async fn run_stream_with_retries(
     // All retries exhausted
     if let Some(e) = last_error {
         let _ = tx
-            .send(Err(anyhow::anyhow!(
-                "Failed after {} retries: {}",
-                MAX_RETRIES,
-                e
+            .send(Err(crate::alphacode_provider_core::retry::stream_retry_limit_reached(
+                e, MAX_RETRIES,
             )))
             .await;
     }
@@ -1916,15 +1921,8 @@ async fn stream_response(
         let retry_after =
             crate::alphacode_provider_core::retry_after::retry_after(response.headers());
         let error_text = crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
-        // Tag the error so the outer retry loop can recognize rate-limit 429s,
-        // overloaded 529s, and 5xx the same way every other provider does.
-        let body_lower = error_text.to_ascii_lowercase();
         let classification = if status.as_u16() == 429 {
-            if crate::alphacode_provider_core::retry::is_retryable_message(&body_lower) {
-                "rate-limited (will retry with backoff)"
-            } else {
-                "rate-limit 429 without rate-limit vocabulary (likely moderation, will not retry)"
-            }
+            "rate limit reported to turn recovery"
         } else if status.is_server_error() {
             "server error (will retry)"
         } else {
@@ -1936,7 +1934,7 @@ async fn stream_response(
         ));
         return Err(
             crate::alphacode_provider_core::retry_after::error_with_retry_after(
-                format!("Anthropic API error ({}): {}", status, error_text),
+                format!("Anthropic API error (status: {}): {}", status, error_text),
                 retry_after,
             ),
         );
@@ -2026,6 +2024,11 @@ async fn stream_response(
 /// behaviour.
 fn is_retryable_error(error_str: &str) -> bool {
     let lower = error_str.to_ascii_lowercase();
+    if crate::alphacode_provider_core::retry::embedded_http_status(&lower) == Some(429)
+        || lower.contains("rate_limit_error")
+    {
+        return false;
+    }
     if crate::alphacode_provider_core::retry::is_retryable_message(&lower) {
         return true;
     }

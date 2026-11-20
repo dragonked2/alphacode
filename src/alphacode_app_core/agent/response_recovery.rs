@@ -286,6 +286,9 @@ impl Agent {
     /// - "Empty response" / "guardrail" / "refusal": those are handled by
     ///   the other `maybe_continue_*` helpers, not by retrying the call.
     pub(crate) fn is_transient_provider_error(error: &str) -> bool {
+        if error.starts_with(crate::alphacode_provider_core::retry::STREAM_RETRY_LIMIT_PREFIX) {
+            return false;
+        }
         let lower = error.to_ascii_lowercase();
 
         // An explicit non-retryable 4xx status means the server
@@ -444,6 +447,9 @@ impl Agent {
             is_alphax_free_bad_request, is_context_limit_error,
         };
 
+        if error.starts_with(crate::alphacode_provider_core::retry::STREAM_RETRY_LIMIT_PREFIX) {
+            return Ok(None);
+        }
         if is_alphax_free_bad_request(error) && !is_context_limit_error(error) {
             // The gateway redacts its upstream reason. Try a different free
             // route once before giving up. Keep the same rejected route out of
@@ -512,12 +518,6 @@ impl Agent {
             || lower.contains("rate-limited")
             || lower.contains("too many requests")
             || lower.contains("throttl");
-        // A 429 is account/provider pressure; repeatedly replaying the full
-        // context can prolong it. Bound this separately from transport errors.
-        if is_rate_limit && attempt > 3 {
-            logging::warn("Provider rate-limit retry budget exhausted");
-            return Ok(None);
-        }
         if extract_retry_after_secs(error).is_some_and(|seconds| seconds > 180) {
             logging::warn(
                 "Provider retry-after exceeds the automatic wait limit; stopping instead of retrying early",
@@ -552,6 +552,11 @@ impl Agent {
                 );
                 return Ok(None);
             }
+        }
+        // Replaying a throttled prompt repeatedly can prolong account pressure.
+        if is_rate_limit && attempt > 1 {
+            logging::warn("Provider rate-limit retry budget exhausted");
+            return Ok(None);
         }
 
         // Free-pool rotation, before the sleep. For a rate-limited free model

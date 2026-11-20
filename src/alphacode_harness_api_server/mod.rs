@@ -86,11 +86,12 @@ async fn connect_legacy_with_retry(legacy_socket: &PathBuf) -> Result<UnixStream
 
 async fn handle_api_client(stream: UnixStream, legacy_socket: PathBuf) -> Result<()> {
     let (read_half, mut write_half) = stream.into_split();
-    let mut reader = BufReader::new(read_half);
-    let mut line = String::new();
+    let mut reader = BufReader::new(read_half).lines();
 
     // 1. Handshake: first frame must be hello with a compatible version.
-    reader.read_line(&mut line).await?;
+    let Some(line) = reader.next_line().await? else {
+        return Ok(());
+    };
     let hello: Value = serde_json::from_str(line.trim()).context("parse hello")?;
     let reply_to = hello["id"].as_u64().unwrap_or(0);
     let compatible = hello["req"] == "hello"
@@ -120,18 +121,17 @@ async fn handle_api_client(stream: UnixStream, legacy_socket: PathBuf) -> Result
     // 2. Dial the legacy daemon for this client with retry logic.
     let legacy = connect_legacy_with_retry(&legacy_socket).await?;
     let (legacy_read, mut legacy_write) = legacy.into_split();
-    let mut legacy_reader = BufReader::new(legacy_read);
+    let mut legacy_reader = BufReader::new(legacy_read).lines();
 
     let mut state = translate::BridgeState::default();
 
     // 3. Pump both directions in one select loop so translation state stays
-    //    single-threaded.
-    let mut api_line = String::new();
-    let mut legacy_line = String::new();
+    //    single-threaded. `Lines::next_line` retains partial frames when the
+    //    opposite direction wins the select.
     loop {
         tokio::select! {
-            n = reader.read_line({ api_line.clear(); &mut api_line }) => {
-                if n? == 0 { return Ok(()); }
+            line = reader.next_line() => {
+                let Some(api_line) = line? else { return Ok(()); };
                 if api_line.trim().is_empty() { continue; }
                 let request: Value = match serde_json::from_str(api_line.trim()) {
                     Ok(value) => value,
@@ -155,15 +155,15 @@ async fn handle_api_client(stream: UnixStream, legacy_socket: PathBuf) -> Result
                     }
                 }
             }
-            n = legacy_reader.read_line({ legacy_line.clear(); &mut legacy_line }) => {
-                if n? == 0 {
+            line = legacy_reader.next_line() => {
+                let Some(legacy_line) = line? else {
                     let frame = ServerFrame::event(ApiEvent::Error {
                         code: ErrorCode::Internal,
                         message: "daemon connection closed".into(),
                     });
                     write_json_line(&mut write_half, &frame).await?;
                     return Ok(());
-                }
+                };
                 if legacy_line.trim().is_empty() { continue; }
                 let event: Value = match serde_json::from_str(legacy_line.trim()) {
                     Ok(value) => value,
@@ -186,4 +186,82 @@ where
     line.push('\n');
     writer.write_all(line.as_bytes()).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn bridge_preserves_partial_frames_in_both_directions() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("daemon.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            let (client, bridge) = UnixStream::pair().unwrap();
+            let bridge = tokio::spawn(handle_api_client(bridge, path));
+            let (client_read, mut client_write) = client.into_split();
+            let mut client_lines = BufReader::new(client_read).lines();
+            write_json_line(
+                &mut client_write,
+                &json!({
+                    "v": API_VERSION_MAJOR, "id": 1, "req": "hello",
+                    "min_version": API_VERSION_MAJOR, "max_version": API_VERSION_MAJOR
+                }),
+            )
+            .await
+            .unwrap();
+            let hello: ServerFrame =
+                serde_json::from_str(&client_lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert!(matches!(hello.event, ApiEvent::HelloOk { .. }));
+
+            let (daemon, _) = listener.accept().await.unwrap();
+            let (daemon_read, mut daemon_write) = daemon.into_split();
+            let mut daemon_lines = BufReader::new(daemon_read).lines();
+
+            client_write.write_all(b"{\"v\":1,\"id\":2,").await.unwrap();
+            tokio::task::yield_now().await;
+            write_json_line(
+                &mut daemon_write,
+                &json!({"type": "text_delta", "text": "ready"}),
+            )
+            .await
+            .unwrap();
+            let event: ServerFrame =
+                serde_json::from_str(&client_lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert!(matches!(event.event, ApiEvent::TextDelta { text, .. } if text == "ready"));
+            client_write
+                .write_all(b"\"req\":\"ping\"}\n")
+                .await
+                .unwrap();
+            let ping: Value =
+                serde_json::from_str(&daemon_lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(ping["type"], "ping");
+
+            daemon_write
+                .write_all(b"{\"type\":\"pong\",")
+                .await
+                .unwrap();
+            tokio::task::yield_now().await;
+            write_json_line(&mut client_write, &json!({"v": 1, "id": 3, "req": "ping"}))
+                .await
+                .unwrap();
+            let second_ping: Value =
+                serde_json::from_str(&daemon_lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(second_ping["type"], "ping");
+            daemon_write
+                .write_all(format!("\"id\":{}}}\n", ping["id"]).as_bytes())
+                .await
+                .unwrap();
+            let pong: ServerFrame =
+                serde_json::from_str(&client_lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(pong, ServerFrame::reply(2, ApiEvent::Pong));
+
+            client_write.shutdown().await.unwrap();
+            bridge.await.unwrap().unwrap();
+        })
+        .await
+        .expect("bridge round trip timed out");
+    }
 }

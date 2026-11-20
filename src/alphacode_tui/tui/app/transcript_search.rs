@@ -10,6 +10,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use super::App;
+use crate::alphacode_tui::tui::core::{next_grapheme_boundary, prev_grapheme_boundary};
 use crate::alphacode_tui::tui::transcript_search::{
     TranscriptSearchMatch, TranscriptSearchState, TranscriptSearchView,
 };
@@ -34,10 +35,7 @@ impl App {
     /// Used by the `/find <text>` command so the user can jump straight to a
     /// hit instead of typing the query into the overlay.
     pub(super) fn open_transcript_search_with_query(&mut self, query: &str) {
-        self.open_transcript_search();
-        let Some(state) = self.transcript_search.as_mut() else {
-            return;
-        };
+        let state = self.transcript_search.get_or_insert_with(Default::default);
         state.query = query.to_string();
         state.query_cursor = state.query.len();
         state.selected = 0;
@@ -69,78 +67,40 @@ impl App {
     /// Typing a query and pressing Enter within the same event batch must
     /// still advance the search.
     fn step_transcript_search(&mut self, delta: i64) {
-        let Some(state) = self.transcript_search.as_ref() else {
+        let Some(state) = self.transcript_search.as_mut() else {
             return;
         };
-        let index = state.index.borrow();
-        let fresh = index.signature.query == state.query
-            && index.signature.case_sensitive == state.case_sensitive;
-        if !fresh {
-            drop(index);
-            if let Some(state) = self.transcript_search.as_mut() {
-                state.pending_step += delta;
-            }
-            self.request_full_repaint();
-            return;
-        }
-        let matches = index.matches.clone();
-        drop(index);
-        if matches.is_empty() {
-            return;
-        }
-        let max = matches.len() as i64 - 1;
-        let selected = self
-            .transcript_search
-            .as_ref()
-            .map(|state| state.selected)
-            .unwrap_or(0);
-        let next = (selected as i64 + delta).clamp(0, max) as usize;
-        if let Some(state) = self.transcript_search.as_mut() {
-            state.selected = next;
-        }
-        self.scroll_to_transcript_match(matches[next]);
+        state.pending_step = state.pending_step.saturating_add(delta);
+        self.apply_pending_transcript_search_step();
     }
 
-    /// Apply a find-in-page step that was deferred because the renderer had
-    /// not caught up with the query yet.
-    ///
-    /// Called right after a frame is drawn: the draw refreshed the hit index,
-    /// so a pending step can be applied to it now.
+    /// Apply a deferred step once the renderer has indexed the current query.
     pub(super) fn apply_pending_transcript_search_step(&mut self) {
-        let Some(state) = self.transcript_search.as_ref() else {
+        let Some(state) = self.transcript_search.as_mut() else {
             return;
         };
         let delta = state.pending_step;
         if delta == 0 {
             return;
         }
-        let index = state.index.borrow();
-        let fresh = index.signature.query == state.query
-            && index.signature.case_sensitive == state.case_sensitive;
-        if !fresh {
-            // Still stale: keep the step pending for the next frame.
+        let index = state.index.get_mut();
+        if index.signature.query != state.query
+            || index.signature.case_sensitive != state.case_sensitive
+        {
+            self.request_full_repaint();
             return;
         }
-        let matches = index.matches.clone();
-        drop(index);
 
-        if let Some(state) = self.transcript_search.as_mut() {
-            state.pending_step = 0;
-        }
-        if matches.is_empty() {
-            return;
-        }
-        let max = matches.len() as i64 - 1;
-        let selected = self
-            .transcript_search
-            .as_ref()
-            .map(|state| state.selected)
-            .unwrap_or(0);
-        let next = (selected as i64 + delta).clamp(0, max) as usize;
-        if let Some(state) = self.transcript_search.as_mut() {
+        state.pending_step = 0;
+        let total = index.matches.len();
+        if total > 0 {
+            let selected = state.selected.min(total - 1) as i64;
+            let total = total as i64;
+            let next = (selected + delta.rem_euclid(total)).rem_euclid(total) as usize;
             state.selected = next;
+            let hit = index.matches[next];
+            self.scroll_to_transcript_match(hit);
         }
-        self.scroll_to_transcript_match(matches[next]);
     }
 
     /// Scroll the transcript so the given hit is at the top of the viewport.
@@ -191,6 +151,15 @@ impl App {
             }
             KeyCode::Char('n') if ctrl => {
                 self.step_transcript_search(1);
+                return true;
+            }
+            KeyCode::Char('f' | 'F') if ctrl && !alt => {
+                let delta = if modifiers.contains(KeyModifiers::SHIFT) {
+                    -1
+                } else {
+                    1
+                };
+                self.step_transcript_search(delta);
                 return true;
             }
             KeyCode::Char('p') if ctrl => {
@@ -268,18 +237,21 @@ impl App {
     }
 
     /// Insert text at the query cursor.
-    fn insert_transcript_search_text(&mut self, text: &str) {
+    pub(super) fn insert_transcript_search_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
         let Some(state) = self.transcript_search.as_mut() else {
             return;
         };
         let cursor = state.query_cursor.min(state.query.len());
         state.query.insert_str(cursor, text);
-        state.query_cursor = cursor + text.len();
+        state.query_cursor = snap_query_cursor(&state.query, cursor + text.len());
         state.selected = 0;
         self.invalidate_transcript_search_index();
     }
 
-    /// Delete the character before the query cursor.
+    /// Delete the grapheme before the query cursor.
     fn delete_transcript_search_char(&mut self) {
         let Some(state) = self.transcript_search.as_mut() else {
             return;
@@ -288,14 +260,14 @@ impl App {
         if cursor == 0 {
             return;
         }
-        let previous = prev_char_boundary(&state.query, cursor);
+        let previous = prev_grapheme_boundary(&state.query, cursor);
         state.query.replace_range(previous..cursor, "");
-        state.query_cursor = previous;
+        state.query_cursor = snap_query_cursor(&state.query, previous);
         state.selected = 0;
         self.invalidate_transcript_search_index();
     }
 
-    /// Delete the character at the query cursor.
+    /// Delete the grapheme at the query cursor.
     fn delete_transcript_search_char_forward(&mut self) {
         let Some(state) = self.transcript_search.as_mut() else {
             return;
@@ -304,8 +276,9 @@ impl App {
         if cursor >= state.query.len() {
             return;
         }
-        let next = next_char_boundary(&state.query, cursor);
+        let next = next_grapheme_boundary(&state.query, cursor);
         state.query.replace_range(cursor..next, "");
+        state.query_cursor = snap_query_cursor(&state.query, cursor);
         state.selected = 0;
         self.invalidate_transcript_search_index();
     }
@@ -319,7 +292,7 @@ impl App {
         let mut start = cursor;
         // Skip the whitespace immediately before the cursor.
         while start > 0 {
-            let previous = prev_char_boundary(&state.query, start);
+            let previous = prev_grapheme_boundary(&state.query, start);
             if !state.query[previous..start]
                 .chars()
                 .all(char::is_whitespace)
@@ -330,7 +303,7 @@ impl App {
         }
         // Then skip the word itself.
         while start > 0 {
-            let previous = prev_char_boundary(&state.query, start);
+            let previous = prev_grapheme_boundary(&state.query, start);
             if state.query[previous..start]
                 .chars()
                 .any(char::is_whitespace)
@@ -343,16 +316,12 @@ impl App {
             return;
         }
         state.query.replace_range(start..cursor, "");
-        state.query_cursor = start;
+        state.query_cursor = snap_query_cursor(&state.query, start);
         state.selected = 0;
         self.invalidate_transcript_search_index();
     }
 
-    /// Move the query cursor by `delta` characters.
-    ///
-    /// The cursor always lands on a character boundary: stepping by bytes
-    /// would put it inside a multi-byte character, and the next insertion
-    /// would then split that character.
+    /// Move the query cursor by one displayed grapheme.
     fn move_transcript_search_cursor(&mut self, delta: i64) {
         let Some(state) = self.transcript_search.as_mut() else {
             return;
@@ -360,22 +329,18 @@ impl App {
         let len = state.query.len();
         let cursor = state.query_cursor.min(len);
         let next = if delta < 0 {
-            prev_char_boundary(&state.query, cursor)
+            prev_grapheme_boundary(&state.query, cursor)
         } else {
-            next_char_boundary(&state.query, cursor)
+            next_grapheme_boundary(&state.query, cursor)
         };
         state.query_cursor = next;
     }
 
-    /// Force the renderer to rescan the transcript on the next frame.
-    ///
-    /// The renderer caches its hit index against the query and the transcript
-    /// size, so a query edit has to invalidate that cache explicitly. The
-    /// stale hits are dropped too: navigating them would jump to a match of
-    /// the *previous* query.
+    /// Discard the hits and any queued navigation for the previous query.
     fn invalidate_transcript_search_index(&mut self) {
-        if let Some(state) = self.transcript_search.as_ref() {
-            let mut index = state.index.borrow_mut();
+        if let Some(state) = self.transcript_search.as_mut() {
+            state.pending_step = 0;
+            let index = state.index.get_mut();
             index.signature = Default::default();
             index.matches.clear();
         }
@@ -385,94 +350,22 @@ impl App {
     pub(crate) fn transcript_search_view(&self) -> Option<TranscriptSearchView> {
         let state = self.transcript_search.as_ref()?;
         let index = state.index.borrow();
-        let current_line = index.matches.get(state.selected).map(|hit| hit.abs_line);
+        let selected = state.selected.min(index.matches.len().saturating_sub(1));
+        let current_line = index.matches.get(selected).map(|hit| hit.abs_line);
         Some(TranscriptSearchView {
             query: state.query.clone(),
             case_sensitive: state.case_sensitive,
-            selected: state.selected,
+            selected,
             match_count: index.matches.len(),
             current_line,
         })
     }
 }
 
-/// The byte offset of the character *before* `offset`.
-///
-/// This is the "delete backwards" offset: the cursor points at the start of a
-/// character, and the character may be several bytes long, so the start of the
-/// previous character is not simply `offset - 1`.
-fn prev_char_boundary(text: &str, offset: usize) -> usize {
-    let mut index = offset.min(text.len());
-    if index == 0 {
+/// An edit can join the graphemes on either side of the caret.
+fn snap_query_cursor(text: &str, cursor: usize) -> usize {
+    if cursor == 0 {
         return 0;
     }
-    // Step back one byte, then keep stepping until the offset is on a
-    // character boundary — that is the start of the character before the
-    // cursor.
-    index -= 1;
-    while index > 0 && !text.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
-}
-
-/// Round a byte offset up to the boundary *after* the character at it.
-///
-/// This is the "delete the character under the cursor" offset: the cursor
-/// points at the start of a character, and the character may be several bytes
-/// long, so the end boundary is not simply the next byte.
-fn next_char_boundary(text: &str, offset: usize) -> usize {
-    let len = text.len();
-    let mut index = offset.min(len);
-    // Never assume the offset is already on a boundary.
-    while index < len && !text.is_char_boundary(index) {
-        index += 1;
-    }
-    if index >= len {
-        return len;
-    }
-    let mut next = index + 1;
-    while next < len && !text.is_char_boundary(next) {
-        next += 1;
-    }
-    next
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{next_char_boundary, prev_char_boundary};
-
-    #[test]
-    fn prev_boundary_points_at_the_start_of_the_previous_char() {
-        let text = "aé";
-        // The cursor sits after "é" (byte 3), so the previous character starts
-        // at byte 1 — not byte 2, which is inside the two-byte "é".
-        assert_eq!(prev_char_boundary(text, 3), 1);
-        assert_eq!(prev_char_boundary(text, 1), 0);
-        assert_eq!(prev_char_boundary(text, 0), 0);
-    }
-
-    #[test]
-    fn prev_boundary_handles_ascii() {
-        assert_eq!(prev_char_boundary("abc", 3), 2);
-        assert_eq!(prev_char_boundary("abc", 1), 0);
-    }
-
-    #[test]
-    fn next_boundary_never_splits_a_char() {
-        let text = "aé";
-        // "é" is two bytes, so the boundary after it is 3.
-        assert_eq!(next_char_boundary(text, 0), 1);
-        assert_eq!(next_char_boundary(text, 1), 3);
-        assert_eq!(next_char_boundary(text, 3), 3);
-    }
-
-    #[test]
-    fn next_boundary_lands_on_a_boundary_even_from_a_split_offset() {
-        let text = "aé";
-        // Offset 2 is inside "é"; the result must still be a boundary.
-        let next = next_char_boundary(text, 2);
-        assert_eq!(next, 3);
-        assert!(text.is_char_boundary(next));
-    }
+    next_grapheme_boundary(text, prev_grapheme_boundary(text, cursor))
 }

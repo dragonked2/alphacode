@@ -6,14 +6,18 @@ use crossterm::event::KeyEvent;
 
 impl App {
     fn handle_turn_key_burst(&mut self, key: KeyEvent, events: &mut EventStream) {
+        let started = Instant::now();
         let _ = self.handle_key_press_event(key);
         if !is_plain_text_key(key) {
             return;
         }
         // The first key is handled immediately. Only coalesce keys the
         // terminal already has ready, so there is no typing or paste timer.
-        for _ in 0..32 {
-            if self.cancel_requested || self.should_quit {
+        for _ in 0..super::run_shell::MAX_READY_INPUT_EVENTS {
+            if self.cancel_requested
+                || self.should_quit
+                || started.elapsed() >= super::run_shell::READY_INPUT_BUDGET
+            {
                 break;
             }
             let Some(key) = events.next_ready_text_key() else {
@@ -162,7 +166,7 @@ impl App {
                 tokio::select! {
                     biased;
                     // Handle keyboard input while waiting for API
-                    event = event_stream.next() => {
+                    event = event_stream.next_live() => {
                         match event {
                             Some(Ok(Event::Key(key))) => {
                                 self.update_copy_badge_key_event(key);
@@ -343,7 +347,7 @@ impl App {
                         }
                     }
                     // Handle keyboard input
-                    event = event_stream.next() => {
+                    event = event_stream.next_live() => {
                         match event {
                             Some(Ok(Event::Key(key))) => {
                                 self.update_copy_badge_key_event(key);
@@ -1372,7 +1376,7 @@ impl App {
                     tokio::select! {
                         biased;
                         // Handle keyboard input while tool executes
-                        event = event_stream.next() => {
+                        event = event_stream.next_live() => {
                             match event {
                                 Some(Ok(Event::Key(key))) => {
                                     self.update_copy_badge_key_event(key);

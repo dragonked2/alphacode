@@ -254,7 +254,9 @@ pub fn truncate_line_with_ellipsis_to_width(line: &Line<'static>, width: usize) 
 /// A terminal glyph cannot change style halfway through a combining/ZWJ
 /// sequence. Join such clusters using their starting span's style before
 /// measuring or clipping. Ordinary ASCII and single-span lines stay borrowed.
-fn coalesce_line_graphemes<'a>(line: &'a Line<'static>) -> std::borrow::Cow<'a, Line<'static>> {
+pub(crate) fn coalesce_line_graphemes<'a>(
+    line: &'a Line<'static>,
+) -> std::borrow::Cow<'a, Line<'static>> {
     use std::borrow::Cow;
     if line.spans.len() < 2 || line.spans.iter().all(|span| span.content.is_ascii()) {
         return Cow::Borrowed(line);

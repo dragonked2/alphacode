@@ -166,73 +166,84 @@ fn fold_char(ch: char, case_sensitive: bool) -> char {
     }
 }
 
-/// Find every occurrence of `query` in `text`.
-///
-/// Returns the display-column range of each hit. Overlapping hits are
-/// reported (a query of `aa` matches `aaa` twice), matching the behaviour of
-/// browser find-in-page.
-pub fn find_line_matches(text: &str, query: &str, case_sensitive: bool) -> Vec<(usize, usize)> {
-    if query.is_empty() || text.is_empty() {
-        return Vec::new();
+/// A compiled query, reused for each line in a transcript scan.
+struct LineMatcher {
+    needle: Vec<char>,
+    failure: Vec<usize>,
+    case_sensitive: bool,
+}
+
+impl LineMatcher {
+    fn new(query: &str, case_sensitive: bool) -> Self {
+        let needle: Vec<_> = query
+            .chars()
+            .map(|ch| fold_char(ch, case_sensitive))
+            .collect();
+        // KMP keeps repeated-prefix queries linear, including overlapping hits.
+        let mut failure = vec![0; needle.len()];
+        let mut matched = 0;
+        for i in 1..needle.len() {
+            while matched > 0 && needle[i] != needle[matched] {
+                matched = failure[matched - 1];
+            }
+            if needle[i] == needle[matched] {
+                matched += 1;
+            }
+            failure[i] = matched;
+        }
+        Self {
+            needle,
+            failure,
+            case_sensitive,
+        }
     }
 
-    let needle: Vec<char> = query.chars().collect();
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() < needle.len() {
-        return Vec::new();
-    }
+    fn find(&self, text: &str) -> Vec<(usize, usize)> {
+        if self.needle.is_empty() {
+            return Vec::new();
+        }
+        let mut hits = Vec::new();
+        let mut matched = 0;
+        for (end, ch) in text.chars().enumerate() {
+            let folded = fold_char(ch, self.case_sensitive);
+            while matched > 0 && folded != self.needle[matched] {
+                matched = self.failure[matched - 1];
+            }
+            if folded == self.needle[matched] {
+                matched += 1;
+            }
+            if matched == self.needle.len() {
+                hits.push((end + 1 - matched, end));
+                matched = self.failure[matched - 1];
+            }
+        }
 
-    // Map each scalar to its complete grapheme's cell range. Summing scalar
-    // widths overcounts ZWJ emoji and flags, shifting all subsequent hits.
-    let mut cell_ranges = Vec::with_capacity(chars.len());
-    let mut width = 0usize;
-    for grapheme in text.graphemes(true) {
-        let end = width + unicode_width::UnicodeWidthStr::width(grapheme);
-        cell_ranges.extend(grapheme.chars().map(|_| (width, end)));
-        width = end;
+        if !hits.is_empty() {
+            // Only matched lines need cell geometry. Scalars inside a joined
+            // emoji, flag, or combining sequence share its entire cell range.
+            let mut cell_ranges = Vec::new();
+            let mut width = 0;
+            for grapheme in text.graphemes(true) {
+                let end = width + unicode_width::UnicodeWidthStr::width(grapheme);
+                cell_ranges.extend(grapheme.chars().map(|_| (width, end)));
+                width = end;
+            }
+            for (start, end) in &mut hits {
+                (*start, *end) = (cell_ranges[*start].0, cell_ranges[*end].1);
+            }
+        }
+        hits
     }
+}
 
-    let folded_needle: Vec<char> = needle
-        .iter()
-        .map(|ch| fold_char(*ch, case_sensitive))
-        .collect();
-    // KMP keeps repeated-prefix queries linear instead of comparing the
-    // entire query at every column of a large tool-output line.
-    let mut failure = vec![0usize; folded_needle.len()];
-    let mut matched = 0usize;
-    for i in 1..folded_needle.len() {
-        while matched > 0 && folded_needle[i] != folded_needle[matched] {
-            matched = failure[matched - 1];
-        }
-        if folded_needle[i] == folded_needle[matched] {
-            matched += 1;
-        }
-        failure[i] = matched;
-    }
-
-    let mut hits = Vec::new();
-    matched = 0;
-    for (end, &ch) in chars.iter().enumerate() {
-        let folded = fold_char(ch, case_sensitive);
-        while matched > 0 && folded != folded_needle[matched] {
-            matched = failure[matched - 1];
-        }
-        if folded == folded_needle[matched] {
-            matched += 1;
-        }
-        if matched == folded_needle.len() {
-            let start = end + 1 - matched;
-            hits.push((cell_ranges[start].0, cell_ranges[end].1));
-            matched = failure[matched - 1];
-        }
-    }
-    hits
+#[cfg(test)]
+fn find_line_matches(text: &str, query: &str, case_sensitive: bool) -> Vec<(usize, usize)> {
+    LineMatcher::new(query, case_sensitive).find(text)
 }
 
 /// Scan the prepared transcript and collect every hit of `query`.
 ///
-/// `base_line` is the absolute line index of the first scanned line, so the
-/// returned hit positions are absolute transcript coordinates.
+/// Returned hits carry the absolute line and terminal cell range.
 pub fn scan_lines<'a>(
     lines: impl IntoIterator<Item = (usize, &'a str)>,
     query: &str,
@@ -241,9 +252,10 @@ pub fn scan_lines<'a>(
     if query.is_empty() {
         return Vec::new();
     }
+    let matcher = LineMatcher::new(query, case_sensitive);
     let mut matches = Vec::new();
     for (abs_line, text) in lines {
-        for (start_col, end_col) in find_line_matches(text, query, case_sensitive) {
+        for (start_col, end_col) in matcher.find(text) {
             matches.push(TranscriptSearchMatch {
                 abs_line,
                 start_col,

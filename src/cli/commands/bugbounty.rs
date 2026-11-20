@@ -222,10 +222,12 @@ async fn orchestrate(
     let outcomes = bugbounty_executor::run_workflow(&orchestrator, &output_dir, resume).await?;
 
     let summary = orchestrator.get_summary().await;
+    let disposition = bugbounty_executor::workflow_disposition(&orchestrator).await;
 
     if json {
         let payload = json!({
             "summary": summary,
+            "workflow_disposition": disposition,
             "outcomes": outcomes
                 .iter()
                 .map(|o| json!({
@@ -249,6 +251,7 @@ async fn orchestrate(
         println!();
     }
     println!("{}", summary);
+    println!("Workflow disposition: {disposition}");
     let failed = outcomes.iter().filter(|o| !o.ok).count();
     if failed > 0 {
         println!(
