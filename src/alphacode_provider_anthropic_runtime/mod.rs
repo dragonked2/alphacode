@@ -1744,7 +1744,8 @@ async fn run_stream_with_retries(
                 } else {
                     let e = if attempt + 1 == MAX_RETRIES {
                         crate::alphacode_provider_core::retry::stream_retry_limit_reached(
-                            e, MAX_RETRIES,
+                            e,
+                            MAX_RETRIES,
                         )
                     } else {
                         e
@@ -1761,9 +1762,9 @@ async fn run_stream_with_retries(
     // All retries exhausted
     if let Some(e) = last_error {
         let _ = tx
-            .send(Err(crate::alphacode_provider_core::retry::stream_retry_limit_reached(
-                e, MAX_RETRIES,
-            )))
+            .send(Err(
+                crate::alphacode_provider_core::retry::stream_retry_limit_reached(e, MAX_RETRIES),
+            ))
             .await;
     }
 }

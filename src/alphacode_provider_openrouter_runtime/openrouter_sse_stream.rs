@@ -354,7 +354,10 @@ pub(super) async fn run_stream_with_retries(
                 }
 
                 let e = if attempt + 1 == MAX_RETRIES {
-                    crate::alphacode_provider_core::retry::stream_retry_limit_reached(e, MAX_RETRIES)
+                    crate::alphacode_provider_core::retry::stream_retry_limit_reached(
+                        e,
+                        MAX_RETRIES,
+                    )
                 } else {
                     e
                 };
@@ -363,7 +366,6 @@ pub(super) async fn run_stream_with_retries(
             }
         }
     }
-
 }
 
 #[expect(

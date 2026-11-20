@@ -81,7 +81,9 @@ pub const MAX_ATTEMPTS: u32 = 5;
 pub(crate) const STREAM_RETRY_LIMIT_PREFIX: &str = "Provider request retry limit reached";
 
 pub(crate) fn stream_retry_limit_reached(error: Error, attempts: u32) -> Error {
-    error.context(format!("{STREAM_RETRY_LIMIT_PREFIX} after {attempts} attempts"))
+    error.context(format!(
+        "{STREAM_RETRY_LIMIT_PREFIX} after {attempts} attempts"
+    ))
 }
 
 /// Hard cap on a server-supplied or backoff-derived retry delay. Anything

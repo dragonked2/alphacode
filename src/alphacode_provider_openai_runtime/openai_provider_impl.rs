@@ -631,7 +631,8 @@ impl Provider for OpenAIProvider {
                             );
                             let error = if attempt + 1 == MAX_RETRIES {
                                 crate::alphacode_provider_core::retry::stream_retry_limit_reached(
-                                    error, MAX_RETRIES,
+                                    error,
+                                    MAX_RETRIES,
                                 )
                             } else {
                                 error
@@ -654,9 +655,12 @@ impl Provider for OpenAIProvider {
                         ],
                     );
                     let _ = tx
-                        .send(Err(crate::alphacode_provider_core::retry::stream_retry_limit_reached(
-                            e, MAX_RETRIES,
-                        )))
+                        .send(Err(
+                            crate::alphacode_provider_core::retry::stream_retry_limit_reached(
+                                e,
+                                MAX_RETRIES,
+                            ),
+                        ))
                         .await;
                 }
             };

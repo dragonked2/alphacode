@@ -2441,7 +2441,9 @@ mod tests {
         let mut attempts = 0;
         assert!(!Agent::is_transient_provider_error(&message));
         assert_eq!(
-            agent.maybe_continue_after_provider_error(&message, &mut attempts).unwrap(),
+            agent
+                .maybe_continue_after_provider_error(&message, &mut attempts)
+                .unwrap(),
             None
         );
         assert_eq!(attempts, 0);
