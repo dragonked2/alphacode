@@ -298,6 +298,8 @@ pub(super) struct StatusSpinnerRenderer {
 impl StatusSpinnerRenderer {
     pub(super) fn spinner_only_available(&self, app: &App) -> bool {
         status_spinner_only_symbol(app).is_some()
+            && crate::alphacode_tui::tui::ui::last_status_area()
+                .is_some_and(|area| !area.is_empty())
     }
 
     pub(super) fn invalidate(&mut self) {

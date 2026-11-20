@@ -309,10 +309,11 @@ impl App {
         // prompt in the reload snapshot as a hidden system queue entry plus a
         // spawn hint. Remembered here so the turn can be re-armed below, after
         // `apply_restored_reload_input` has reset the turn state.
-        let mut restored_startup_prompt = false;
-        if let Some(restored) = Self::restore_input_for_reload(session_id) {
-            restored_startup_prompt = !restored.hidden_queued_system_messages.is_empty()
-                && restored.startup_status_notice.is_some();
+        let mut local_startup_notice = None;
+        if let Some(mut restored) = Self::restore_input_for_reload(session_id) {
+            if !self.is_remote && !restored.hidden_queued_system_messages.is_empty() {
+                local_startup_notice = restored.startup_status_notice.take();
+            }
             self.apply_restored_reload_input(restored);
         }
         if let Ok(session) = Session::load(session_id) {
@@ -500,11 +501,12 @@ impl App {
         // behaviour (its comment explains the Windows composer-freeze bug that
         // auto-starting there caused), and never applied to a remote client,
         // whose dispatch is gated on the server history instead.
-        if restored_startup_prompt && !self.is_remote {
+        if let Some(notice) = local_startup_notice {
             self.is_processing = true;
             self.pending_turn = true;
             self.processing_started = Some(Instant::now());
             self.status = ProcessingStatus::Sending;
+            self.set_status_notice(notice);
         }
     }
 

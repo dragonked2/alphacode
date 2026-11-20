@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.1.13] - Pending release
 
+### Changed
+
+- Short and narrow terminals keep the active picker selection and draft
+  visible. Picker shortcuts and route details yield space to the results.
+
 ### Fixed
 
 - Session replay recovers complete entries after a journal write interrupted
@@ -23,6 +28,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Performance
 
+- Assign chat rows directly, including during streaming and resize, and draw
+  the banner and agent strip without cloning their lines.
 - Recheck model-catalog freshness when claiming a refresh to avoid duplicate
   provider requests after a concurrent refresh completes.
 - Calculate diagnostic token estimates only when an OpenAI-compatible Chat

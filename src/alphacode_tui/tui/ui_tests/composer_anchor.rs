@@ -253,7 +253,7 @@ fn short_terminals_keep_composer_and_picker_visible() {
             kind: PickerKind::Model,
             filtered: (0..entries.len()).collect(),
             entries,
-            selected: 0,
+            selected: 17,
             column: 0,
             filter: String::new(),
             last_scored_filter: String::new(),
@@ -262,9 +262,18 @@ fn short_terminals_keep_composer_and_picker_visible() {
         }),
         ..Default::default()
     };
-    for height in [9, 12, 16, 24] {
+    for (width, height) in [
+        (80, 5),
+        (80, 7),
+        (80, 8),
+        (80, 9),
+        (80, 12),
+        (80, 16),
+        (80, 24),
+        (20, 12),
+    ] {
         clear_flicker_frame_history_for_tests();
-        let (rows, layout) = draw_frame(&state, 80, height);
+        let (rows, layout) = draw_frame(&state, width, height);
         let input = layout.input_area.expect("composer");
         assert!(input.height >= 3, "height {height}: {input:?}");
         assert!(layout.messages_area.height >= 1, "height {height}");
@@ -274,7 +283,7 @@ fn short_terminals_keep_composer_and_picker_visible() {
             rows.join("\n")
         );
         assert!(
-            rows.iter().any(|row| row.contains("MODEL")),
+            rows.iter().any(|row| row.contains("model-17")),
             "picker missing at height {height}: {}",
             rows.join("\n")
         );

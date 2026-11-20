@@ -473,7 +473,58 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
 
     let height = area.height as usize;
     let width = area.width as usize;
-    if height <= 2 || width <= 2 {
+    if height == 0 || width == 0 {
+        return;
+    }
+    if height < 4 || width < 28 {
+        let mut lines = Vec::with_capacity(height);
+        if height > 1 {
+            let hint = if picker.filter.is_empty() {
+                format!("{} · ↑↓ move", picker.primary_label())
+            } else {
+                format!("Filter  {}", picker.filter)
+            };
+            lines.push(Line::styled(
+                truncate_display(&hint, width),
+                Style::default().fg(dim_color()),
+            ));
+        }
+        let list_height = height - lines.len();
+        let start = picker
+            .selected
+            .saturating_sub(list_height / 2)
+            .min(picker.filtered.len().saturating_sub(list_height));
+        for (row, index) in picker
+            .filtered
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(list_height)
+        {
+            let entry = &picker.entries[*index];
+            let selected = row == picker.selected;
+            let label = if selected && picker.column != 0 {
+                entry.active_option().map_or_else(
+                    || entry.name.clone(),
+                    |route| format!("{} · {}", route.provider, entry.name),
+                )
+            } else {
+                entry.name.clone()
+            };
+            let (marker, style) = if selected {
+                ("› ", Style::default().fg(accent_color()).bold())
+            } else {
+                ("  ", Style::default().fg(muted_text_color()))
+            };
+            lines.push(Line::styled(
+                truncate_display(&format!("{marker}{label}"), width),
+                style,
+            ));
+        }
+        if picker.filtered.is_empty() {
+            lines.push(Line::styled("No matches", Style::default().fg(dim_color())));
+        }
+        frame.render_widget(Paragraph::new(lines), area);
         return;
     }
 
@@ -526,7 +577,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
     // Hotkey hint sits ABOVE the picker box (outside its border) so the
     // shortcuts are always visible without competing with the column headers.
     let keybind_hint = model_picker_top_hint(picker);
-    let hint_rows: u16 = if keybind_hint.is_some() && area.height > 3 {
+    let hint_rows: u16 = if keybind_hint.is_some() && area.height >= 5 {
         1
     } else {
         0
@@ -698,7 +749,8 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         .filtered
         .get(selected)
         .and_then(|entry_idx| picker.entries.get(*entry_idx))
-        .and_then(|entry| selected_route_notice_text(picker, entry.active_option()));
+        .and_then(|entry| selected_route_notice_text(picker, entry.active_option()))
+        .filter(|_| height >= 3);
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(header_spans));

@@ -2862,19 +2862,18 @@ pub(crate) fn debug_chat_image_regions_json() -> String {
 /// screen no matter how far the transcript is scrolled.
 const CHUNK_BANNER: usize = 0;
 const CHUNK_MESSAGES: usize = 1;
-const CHUNK_TRANSCRIPT_GAP: usize = 2;
 // Pending-turn feedback (soft interrupts the user queued while a turn is
 // running, plus the interleave): queued prompts themselves are no longer
 // surfaced, but this row still shows the messages that will act on the turn.
-const CHUNK_PENDING: usize = 3;
-const CHUNK_SWARM_STRIP: usize = 4;
-const CHUNK_STATUS: usize = 5;
-const CHUNK_NOTIFICATION: usize = 6;
-const CHUNK_INLINE_UI: usize = 7;
-// Slot 8 is the inline-UI/composer spacing.
-const CHUNK_INPUT: usize = 9;
-const CHUNK_OVERSCROLL: usize = 10;
-const CHUNK_DONUT: usize = 11;
+const CHUNK_PENDING: usize = 2;
+const CHUNK_SWARM_STRIP: usize = 3;
+const CHUNK_STATUS: usize = 4;
+const CHUNK_NOTIFICATION: usize = 5;
+const CHUNK_INLINE_UI: usize = 6;
+const CHUNK_INLINE_GAP: usize = 7;
+const CHUNK_INPUT: usize = 8;
+const CHUNK_OVERSCROLL: usize = 9;
+const CHUNK_DONUT: usize = 10;
 
 pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     record_idle_animation_area(None);
@@ -3326,13 +3325,14 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Reserve transcript and status rows before assigning optional
     // chrome. On short terminals the composer scrolls internally instead of
     // displacing itself or the picker outside the available layout.
-    let picker_reserve = if requested_inline_height > 0 && chat_area.height >= 9 {
-        4
-    } else {
-        0
-    };
     let transcript_reserve = if chat_area.height >= 12 { 3 } else { 1 };
-    let essential_rows = 1 + transcript_reserve;
+    let status_height = u16::from(requested_inline_height == 0 || chat_area.height >= 9);
+    let essential_rows = status_height + transcript_reserve;
+    let picker_reserve = requested_inline_height.min(4).min(
+        chat_area
+            .height
+            .saturating_sub(essential_rows + frame_rows + 1),
+    );
     let input_height = requested_input_height.min(
         chat_area
             .height
@@ -3342,8 +3342,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         .height
         .saturating_sub(input_height + essential_rows);
     let desired_banner = header::conversation_banner_height(app, chat_area.width, chat_area.height);
-    let minimum_picker = if requested_inline_height > 0 { 4 } else { 0 };
-    let banner_height = desired_banner.min(remaining.saturating_sub(minimum_picker));
+    let banner_height = desired_banner.min(remaining.saturating_sub(picker_reserve));
     remaining -= banner_height;
     let inline_block_height = requested_inline_height.min(remaining);
     remaining -= inline_block_height;
@@ -3447,7 +3446,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             .min(remaining.saturating_sub(guide_reserve));
     // Elastic overscroll status line revealed when the user scrolls past the
     // bottom of the transcript. Rendered directly below the input line.
-    let fixed_height = 1
+    let fixed_height = status_height
         + pending_height
         + swarm_strip_height
         + notification_height
@@ -3554,61 +3553,30 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let use_packed = !swarm_page_active
         && !transcript_overflows(content_height, fixed_height, transcript_budget_height);
 
-    // Give unused rows to the transcript viewport. This keeps bottom chrome
-    // pinned while allowing widgets to dock in genuinely empty viewport space.
-    let transcript_gap = if use_packed {
-        transcript_budget_height
-            .saturating_sub(u16::try_from(content_height).unwrap_or(u16::MAX))
-            .saturating_sub(fixed_height)
-    } else {
-        0
-    };
-
-    // Layout: messages (includes header), slack, queued, swarm, status,
-    // notification, inline UI, gap, input, overscroll, donut.
-    // All vertical chunks are within the chat_area (left column).
-    //
-    // The banner is pinned in its own band at the very top of the chat column
-    // (CHUNK_BANNER, sized above) so the brand stays visible while the
-    // transcript scrolls, instead of scrolling away with the messages.
-    let banner_lines = if banner_height > 0 {
-        header::build_banner_band_lines(app, chat_area.width, banner_height)
-    } else {
-        Vec::new()
-    };
-    let transcript = if use_packed {
-        Constraint::Length(
-            u16::try_from(content_height)
-                .unwrap_or(u16::MAX)
-                .saturating_add(transcript_gap),
-        )
-    } else {
-        Constraint::Min(transcript_reserve)
-    };
-    let constraints = [
-        Constraint::Length(banner_height),
-        transcript,
-        Constraint::Length(if use_packed { 0 } else { transcript_gap }),
-        Constraint::Length(pending_height),
-        Constraint::Length(swarm_strip_height),
-        Constraint::Length(1),
-        Constraint::Length(notification_height),
-        Constraint::Length(inline_block_height),
-        Constraint::Length(inline_ui_gap_height),
-        Constraint::Length(input_height),
-        Constraint::Length(overscroll_height),
-        Constraint::Length(donut_height),
+    // Every non-transcript row is already budgeted. Assign the rest directly
+    // to the transcript so the composer anchors are exact even during resize.
+    let heights = [
+        banner_height,
+        transcript_budget_height.saturating_sub(fixed_height),
+        pending_height,
+        swarm_strip_height,
+        status_height,
+        notification_height,
+        inline_block_height,
+        inline_ui_gap_height,
+        input_height,
+        overscroll_height,
+        donut_height,
     ];
     // Keep semantic chunk indices independent of their visual order so hit
     // testing, overlays and partial redraws all use the same rectangles.
     let order = if app.composer_at_top() {
         [
             CHUNK_INPUT,
-            8,
+            CHUNK_INLINE_GAP,
             CHUNK_INLINE_UI,
             CHUNK_BANNER,
             CHUNK_MESSAGES,
-            CHUNK_TRANSCRIPT_GAP,
             CHUNK_PENDING,
             CHUNK_SWARM_STRIP,
             CHUNK_STATUS,
@@ -3619,27 +3587,24 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     } else {
         std::array::from_fn(|index| index)
     };
-    let areas = Layout::vertical(order.map(|index| constraints[index])).split(chat_area);
-    let mut chunks = [Rect::default(); 12];
-    for (index, area) in order.into_iter().zip(areas.iter().copied()) {
-        chunks[index] = area;
+    let mut chunks = [Rect::default(); 11];
+    let mut y = chat_area.y;
+    for index in order {
+        chunks[index] = Rect::new(chat_area.x, y, chat_area.width, heights[index]);
+        y = chunks[index].bottom();
     }
     record_status_area(chunks[CHUNK_STATUS]);
 
     // Pinned banner band: the brand wordmark stays at the top of the chat
     // column no matter how far the transcript has scrolled.
-    if banner_height > 0 && !banner_lines.is_empty() {
-        clear_area(frame, chunks[CHUNK_BANNER]);
-        frame.render_widget(Paragraph::new(banner_lines.clone()), chunks[CHUNK_BANNER]);
+    if banner_height > 0 {
+        let lines = header::build_banner_band_lines(app, chat_area.width, banner_height);
+        frame.render_widget(Paragraph::new(lines), chunks[CHUNK_BANNER]);
     }
 
     // Draw the inline swarm strip directly above the status line if present.
     if swarm_strip_height > 0 {
-        clear_area(frame, chunks[CHUNK_SWARM_STRIP]);
-        frame.render_widget(
-            Paragraph::new(swarm_strip_lines.clone()),
-            chunks[CHUNK_SWARM_STRIP],
-        );
+        frame.render_widget(Paragraph::new(swarm_strip_lines), chunks[CHUNK_SWARM_STRIP]);
     }
 
     // Capture layout info for visual debug
@@ -3859,45 +3824,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("draw_status".to_string());
     }
-    // A gradient rule above the status line, drawn *only* into rows the
-    // transcript does not own — i.e. the bottom row of `CHUNK_TRANSCRIPT_GAP`.
-    //
-    // It used to be painted at `chunks[3].y - 1`, which is the transcript's own
-    // last row whenever the transcript fills its chunk. That silently erased
-    // the newest transcript line: the prompt the user had just sent (nothing
-    // else is appended after it until the first token arrives), the live
-    // streaming line, and the legacy `↓N` overflow indicator, which lives on
-    // that same row. It also blocked the session-fact stack, whose contract is
-    // to composite onto `input_area.bottom() - 1` and climb through the rows
-    // above it, because a full-width rule is never blank.
-    //
-    // The rule still stops short of the right-rail fact band on this row for
-    // the same reason: the stack only docks on rows whose right suffix is
-    // genuinely blank, so a rule that spans the whole width makes the gap row
-    // impassable and the stack settles higher in the transcript (or hides).
-    //
-    // The separation itself is not lost: the status row keeps its own
-    // background fill and the composer still draws a breathing top rule.
-    let gap = chunks[CHUNK_TRANSCRIPT_GAP];
-    if gap.height > 0 && gap.y > 0 {
-        let rule_width = gap
-            .width
-            .saturating_sub(input_ui::right_fact_reserved_width(app));
-        if rule_width > 0 {
-            let sep_area = Rect {
-                x: gap.x,
-                y: gap.bottom().saturating_sub(1),
-                width: rule_width,
-                height: 1,
-            };
-            let sep_line = crate::alphacode_tui::tui::ui_polish::gradient_separator_line(
-                rule_width as usize,
-                dim_color(),
-            );
-            frame.render_widget(Paragraph::new(sep_line), sep_area);
-        }
+    if status_height > 0 {
+        input_ui::draw_status(frame, app, chunks[CHUNK_STATUS], pending_count);
     }
-    input_ui::draw_status(frame, app, chunks[CHUNK_STATUS], pending_count);
     if notification_height > 0 {
         input_ui::draw_notification(frame, app, chunks[CHUNK_NOTIFICATION]);
     }

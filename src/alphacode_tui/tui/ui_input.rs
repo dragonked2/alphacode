@@ -3864,28 +3864,6 @@ const RIGHT_FACT_CONTEXT_CELLS: usize = 6;
 const RIGHT_FACT_GAP: u16 = 2;
 const RIGHT_FACT_PAD: u16 = 1;
 
-/// Columns the session-fact stack may occupy on the rows it can dock on,
-/// including its left gutter and right pad. Chrome decoration that paints
-/// across such a row (the transcript-gap gradient rule) must stop short of
-/// this band: the stack only docks on rows whose suffix cells are genuinely
-/// blank, so a full-width rule makes the row impassable and the stack either
-/// settles higher in the transcript or hides entirely.
-pub(super) fn right_fact_reserved_width(app: &dyn TuiState) -> u16 {
-    if app.chat_overscroll_active() {
-        // The legacy overscroll row owns the facts while it is revealed; the
-        // stack stands down and needs no band.
-        return 0;
-    }
-    right_fact_lines(app)
-        .iter()
-        .map(|line| {
-            line.width
-                .saturating_add(RIGHT_FACT_GAP)
-                .saturating_add(RIGHT_FACT_PAD)
-        })
-        .max()
-        .unwrap_or(0)
-}
 const RIGHT_FACT_TRANSCRIPT_ROWS: u16 = 4;
 
 /// Maximum number of rows the compact session-fact stack may occupy, and the
