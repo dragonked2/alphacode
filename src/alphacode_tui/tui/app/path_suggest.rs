@@ -258,21 +258,20 @@ fn cached_candidates() -> std::sync::Arc<Vec<PathCandidate>> {
 /// Returns `None` when the candidate does not match at all. Lower is better:
 /// a basename prefix beats a basename substring, which beats a match anywhere
 /// in the path, which beats a typo-tolerant fuzzy match.
-fn rank(candidate: &PathCandidate, fragment: &str) -> Option<(u8, usize)> {
-    if fragment.is_empty() {
+fn rank(candidate: &PathCandidate, lower_fragment: &str) -> Option<(u8, usize)> {
+    if lower_fragment.is_empty() {
         return Some((3, candidate.path.len()));
     }
-    let lower_fragment = fragment.to_lowercase();
-    if candidate.lower_name.starts_with(&lower_fragment) {
+    if candidate.lower_name.starts_with(lower_fragment) {
         return Some((0, candidate.path.len()));
     }
-    if candidate.lower_name.contains(&lower_fragment) {
+    if candidate.lower_name.contains(lower_fragment) {
         return Some((1, candidate.path.len()));
     }
-    if candidate.lower_path.contains(&lower_fragment) {
+    if candidate.lower_path.contains(lower_fragment) {
         return Some((2, candidate.path.len()));
     }
-    if crate::alphacode_tui::tui::fuzzy::fuzzy_score(&lower_fragment, &candidate.lower_path)
+    if crate::alphacode_tui::tui::fuzzy::fuzzy_score(lower_fragment, &candidate.lower_path)
         .is_some()
     {
         return Some((3, candidate.path.len()));
@@ -283,12 +282,13 @@ fn rank(candidate: &PathCandidate, fragment: &str) -> Option<(u8, usize)> {
 /// Path candidates matching the typed fragment, best match first.
 pub fn candidates(fragment: &str) -> Vec<PathCandidate> {
     let all = cached_candidates();
-    let mut scored: Vec<(u8, usize, PathCandidate)> = Vec::new();
+    let lower_fragment = fragment.to_lowercase();
+    let mut scored = Vec::new();
     for candidate in all.iter() {
-        let Some((bucket, len)) = rank(candidate, fragment) else {
+        let Some((bucket, len)) = rank(candidate, &lower_fragment) else {
             continue;
         };
-        scored.push((bucket, len, candidate.clone()));
+        scored.push((bucket, len, candidate));
     }
     scored.sort_by(|a, b| {
         a.0.cmp(&b.0)
@@ -298,7 +298,7 @@ pub fn candidates(fragment: &str) -> Vec<PathCandidate> {
     scored
         .into_iter()
         .take(MAX_CANDIDATES)
-        .map(|(_, _, candidate)| candidate)
+        .map(|(_, _, candidate)| candidate.clone())
         .collect()
 }
 

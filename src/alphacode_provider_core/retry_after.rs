@@ -136,10 +136,14 @@ pub fn error_with_retry_after(message: String, retry_after: Option<RetryAfter>) 
 /// Recover a server retry hint from a provider error, including through anyhow
 /// context layers.
 pub fn retry_after_from_error(error: &Error) -> Option<Duration> {
+    retry_deadline_from_error(error).map(RetryAfter::remaining)
+}
+
+pub(crate) fn retry_deadline_from_error(error: &Error) -> Option<RetryAfter> {
     error
         .chain()
         .find_map(|source| source.downcast_ref::<RetryAfterError>())
-        .map(|error| error.retry_after.remaining())
+        .map(|error| error.retry_after)
 }
 
 /// Select the delay before a retry, preferring a validated server hint over

@@ -21,6 +21,11 @@ import sys
 import tempfile
 import time
 
+if __package__:
+    from . import provider_traffic
+else:
+    import provider_traffic
+
 
 def bounded_path(root, value):
     path = (root / value).resolve()
@@ -81,7 +86,7 @@ def stop_process_tree(process):
     process.wait()
 
 
-def run_command(argv, cwd, timeout, log):
+def run_command(argv, cwd, timeout, log, *, env=None):
     started = time.monotonic()
     options = (
         {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
@@ -92,7 +97,7 @@ def run_command(argv, cwd, timeout, log):
         try:
             process = subprocess.Popen(
                 argv, cwd=cwd, stdout=output, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, **options,
+                stdin=subprocess.DEVNULL, env=env, **options,
             )
         except OSError as error:
             output.write(str(error).encode("utf-8", errors="replace"))
@@ -138,7 +143,7 @@ def verify_worker(verifier, workspace, receipt, token):
         output.write(token)
 
 
-def evaluate(manifest, command, label, output, timeout=300, verify_timeout=60, repetitions=1):
+def evaluate(manifest, command, label, output, timeout=300, verify_timeout=60, repetitions=1, *, provider_audit=False):
     if not isinstance(command, list) or not command or not all(isinstance(arg, str) for arg in command) or not command[0]:
         raise ValueError("Agent command must be a nonempty JSON array of strings")
     if not all(math.isfinite(value) and value > 0 for value in (timeout, verify_timeout)) or repetitions < 1:
@@ -168,7 +173,15 @@ def evaluate(manifest, command, label, output, timeout=300, verify_timeout=60, r
             shutil.copytree(task["fixture_path"], workspace)
             replacements = {"prompt": task["prompt"], "workspace": str(workspace), "python": sys.executable}
             argv = [re.sub(r"\{(prompt|workspace|python)\}", lambda match: replacements[match[1]], arg) for arg in command]
-            agent = run_command(argv, workspace, timeout, trial_dir / "agent.log")
+            audit_dir = trial_dir / "provider-audit"
+            env = dict(os.environ, ALPHACODE_PROVIDER_AUDIT_DIR=str(audit_dir)) if provider_audit else None
+            agent = run_command(argv, workspace, timeout, trial_dir / "agent.log", env=env)
+            if provider_audit:
+                try:
+                    agent["provider_traffic"] = provider_traffic.read_summary(audit_dir)
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    agent["provider_traffic"] = None
+                    agent["provider_traffic_error"] = str(error)
             # Keep the verifier outside the copied workspace, so editing the
             # task's visible tests does not replace the evaluator's checks.
             token = secrets.token_hex(32)
@@ -206,10 +219,11 @@ def main():
     parser.add_argument("--timeout", type=float, default=300)
     parser.add_argument("--verify-timeout", type=float, default=60)
     parser.add_argument("--repetitions", type=int, default=1)
+    parser.add_argument("--provider-audit", action="store_true", help="Collect AlphaCode request dispatch counts per trial")
     args = parser.parse_args()
     try:
         report = evaluate(args.manifest, args.agent_command, args.label, args.output,
-                          args.timeout, args.verify_timeout, args.repetitions)
+                          args.timeout, args.verify_timeout, args.repetitions, provider_audit=args.provider_audit)
     except (ValueError, OSError, KeyError, TypeError) as error:
         parser.error(str(error))
     print(json.dumps({"report": str(args.output.resolve()), "passed": report["passed"],

@@ -1,4 +1,3 @@
-import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -8,9 +7,8 @@ import time
 import unittest
 
 
-spec = importlib.util.spec_from_file_location("agent_eval", Path(__file__).parents[1] / "agent_eval.py")
-agent_eval = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(agent_eval)
+sys.path.insert(0, str(Path(__file__).parents[1]))
+import agent_eval
 
 
 class AgentEvalTests(unittest.TestCase):
@@ -52,6 +50,22 @@ class AgentEvalTests(unittest.TestCase):
         self.assertEqual(report["trials"][0]["agent"]["exit_code"], 0)
         self.assertNotEqual(report["trials"][0]["verifier"]["exit_code"], 0)
         self.assertEqual(report["passed"], 0)
+
+    def test_provider_audit_counts_are_isolated_per_trial(self):
+        report = self.run_agent(
+            "import json, os; from pathlib import Path; "
+            "audit = Path(os.environ['ALPHACODE_PROVIDER_AUDIT_DIR']); audit.mkdir(); "
+            "event = dict(unix_ms=1, kind='inference', origin='local', "
+            "method='POST', prompt='1', session='1'); "
+            "(audit / 'requests-test.jsonl').write_text(json.dumps(event) + '\\n'); "
+            "Path('answer.txt').write_text('fixed')",
+            repetitions=2, provider_audit=True,
+        )
+        self.assertEqual(report["passed"], 2)
+        for trial in report["trials"]:
+            traffic = trial["agent"]["provider_traffic"]
+            self.assertEqual(traffic["total"], 1)
+            self.assertEqual(traffic["peak_rolling_60s"], 1)
 
     def test_arguments_remain_literal_and_prompt_substitution_is_not_recursive(self):
         prompt = "Fix the answer; $(do_not_execute) {workspace}"

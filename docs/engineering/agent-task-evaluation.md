@@ -28,6 +28,9 @@ through the agent's own configuration. Record actual agent/model versions in
 the label; the runner does not verify that label or infer model selection.
 `--no-update` pins the AlphaCode executable for the run. `--ndjson` records
 streaming progress and provider connection phases in each trial's agent log.
+Add `--provider-audit` with AlphaCode to record dispatch attempts and the peak
+rolling 60-second request count for each trial. A `null` traffic summary means
+the runner could not obtain audit data for that trial.
 
 The command exits nonzero if any task fails. Inspect `agent.log` and
 `verifier.log` in the report's artifact directory to distinguish agent errors

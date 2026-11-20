@@ -16,7 +16,10 @@ adheres to [Semantic Versioning](https://semver.org/).
   NDJSON output. Providers that require credentials must be configured before
   the run starts.
 - Concurrent coding evaluations preserve the first report written to a shared
-  output path. The smoke suite also includes a two-file inventory repair.
+  output path. The smoke suite includes a two-file inventory repair and can
+  record provider dispatch counts per trial.
+- Alphax Free preserves provider cooldown deadlines when masking upstream
+  connection details.
 
 ### Performance
 
@@ -25,6 +28,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Calculate diagnostic token estimates only when an OpenAI-compatible Chat
   Completions or Responses request fails. Reuse the sorted request ledger for
   quota lookups without allocating temporary timestamp lists.
+- Normalize each path-completion query once and clone only the candidates
+  shown in the palette.
 
 ## [1.1.12] - 2026-11-19
 

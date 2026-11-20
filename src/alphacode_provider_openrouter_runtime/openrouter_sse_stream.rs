@@ -42,6 +42,22 @@ fn user_facing_endpoint_label(api_base: &str, endpoint: &str) -> String {
     }
 }
 
+fn redact_gateway_send_error(message: String, error: &anyhow::Error) -> anyhow::Error {
+    use crate::alphacode_provider_core::retry_after::{
+        error_with_retry_after, retry_deadline_from_error,
+    };
+
+    // The original error chain can contain the private upstream URL.
+    // Preserve the enforced deadline when replacing the displayed error.
+    if let Some(deadline) = retry_deadline_from_error(error) {
+        return error_with_retry_after(
+            format!("{message}\nProvider request deferred during rate limit cooldown."),
+            Some(deadline),
+        );
+    }
+    anyhow::Error::msg(message)
+}
+
 fn redact_alphax_gateway_brand(api_base: &str, detail: &str) -> String {
     if !is_alphax_free_gateway(api_base) {
         return detail.to_string();
@@ -460,10 +476,7 @@ async fn stream_response(
             hint
         );
         if suppress_upstream_error_details {
-            // reqwest's source chain may embed the upstream URL. Keep useful
-            // status and troubleshooting context while preventing that
-            // implementation detail from leaking into user-visible errors.
-            anyhow::anyhow!(message)
+            redact_gateway_send_error(message, &error)
         } else {
             error.context(message)
         }
@@ -777,7 +790,7 @@ async fn stream_via_responses_endpoint(
             hint
         );
         if suppress_upstream_error_details {
-            anyhow::anyhow!(message)
+            redact_gateway_send_error(message, &error)
         } else {
             error.context(message)
         }
@@ -955,6 +968,23 @@ fn is_retryable_error(error_str: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacted_gateway_send_error_keeps_cooldown() {
+        use crate::alphacode_provider_core::retry_after::{
+            RetryAfter, error_with_retry_after, requires_manual_retry,
+        };
+
+        let error = error_with_retry_after(
+            "private upstream URL".to_owned(),
+            Some(RetryAfter::new(std::time::Duration::from_secs(600))),
+        );
+        let safe = redact_gateway_send_error("Alphax Free request failed".to_owned(), &error);
+
+        assert!(requires_manual_retry(&safe));
+        assert!(safe.to_string().contains("rate limit cooldown"));
+        assert!(!format!("{safe:#}").contains("private upstream URL"));
+    }
 
     #[tokio::test]
     async fn compatibility_repair_retries_once_and_preserves_the_turn() {

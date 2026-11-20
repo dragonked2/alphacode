@@ -38,21 +38,32 @@ def summarize(events):
     }
 
 
+def read_summary(directory):
+    files = sorted(directory.glob("requests-*.jsonl"))
+    if not files:
+        return None
+    events = []
+    for path in files:
+        with path.open(encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, 1):
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError as error:
+                    raise ValueError(f"{path}:{line_number}: invalid or incomplete record: {error}") from error
+    return summarize(events)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
     args = parser.parse_args()
-    files = sorted(args.directory.glob("requests-*.jsonl"))
-    if not files:
+    try:
+        summary = read_summary(args.directory)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        parser.error(str(error))
+    if summary is None:
         parser.error("no requests-*.jsonl files found; enable ALPHACODE_PROVIDER_AUDIT_DIR before starting Alphacode")
-    events = []
-    for path in files:
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError as error:
-                parser.error(f"{path}:{line_number}: invalid or incomplete record: {error}")
-    print(json.dumps(summarize(events), indent=2))
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
