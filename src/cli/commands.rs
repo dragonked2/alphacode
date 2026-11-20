@@ -2496,11 +2496,9 @@ pub async fn run_single_message_command(
     emit_json: bool,
     emit_ndjson: bool,
 ) -> Result<()> {
-    let provider = if emit_json || emit_ndjson {
-        super::provider_init::init_provider_quiet(choice, model).await?
-    } else {
-        super::provider_init::init_provider_for_validation(choice, model).await?
-    };
+    // Scripted output modes must follow the same noninteractive provider
+    // setup as plain runs, including when no credentials are available.
+    let provider = super::provider_init::init_provider_for_validation(choice, model).await?;
     let registry = crate::tool::Registry::new(provider.clone()).await;
     // Load MCP servers from ~/.alphacode/mcp.json so headless `alphacode run` has the
     // same `mcp__*` tools as interactive/server sessions. This is non-blocking:

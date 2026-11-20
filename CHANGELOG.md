@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.13] - Pending release
+
+### Fixed
+
+- Session replay recovers complete entries after a journal write interrupted
+  inside a UTF-8 character.
+- Headless runs use the same noninteractive provider setup for text, JSON, and
+  NDJSON output. Providers that require credentials must be configured before
+  the run starts.
+- Concurrent coding evaluations preserve the first report written to a shared
+  output path. The smoke suite also includes a two-file inventory repair.
+
+### Performance
+
+- Recheck model-catalog freshness when claiming a refresh to avoid duplicate
+  provider requests after a concurrent refresh completes.
+- Calculate diagnostic token estimates only when an OpenAI-compatible Chat
+  Completions or Responses request fails. Reuse the sorted request ledger for
+  quota lookups without allocating temporary timestamp lists.
+
 ## [1.1.12] - 2026-11-19
 
 ### Fixed
