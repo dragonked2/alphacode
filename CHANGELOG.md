@@ -27,20 +27,51 @@ adheres to [Semantic Versioning](https://semver.org/).
 - A bounded "no actionable plan" nudge for security engagements: when a mission
   ends with recommendations instead of execution, alphacode asks for a plan
   once per unchanged session state instead of surrendering.
+- An offline bug bounty review scorer (`scripts/bounty_review_eval.py`) for
+  independently adjudicated reports, with per-family and per-participant
+  precision, recall, completion, and timing summaries.
+- Browser tool action normalization (`normalize_browser_action`), accepting
+  `get_page_content` as an alias for `get_content` and trimming action input.
 
 ### Changed
 
-- Bug bounty executor checkpoints scope/workflow fingerprints and refuses to
-  restore a state.json whose scope or version changed, preserving the old
+- **TUI rendering.** Chat rows are assigned directly during streaming and resize,
+  and the banner and agent strip are drawn without cloning their lines. The
+  transcript search overlay truncates its counter to the available width and
+  uses a second row for shortcuts only when there is room. Picker shortcuts and
+  route details yield space to results on short terminals, and the tool display
+  panel reclaims space for results. Copy-badge shortcut widths are computed once
+  and feedback now distinguishes success from failure.
+- **Shell event loop.** The interactive shell's event loop is unified across
+  local, remote, and native-scroll sessions with a single `ShellEvent` enum and
+  a wake order that prioritizes input after a burst, bounded by a ready-input
+  budget. Terminal liveness detection now answers "was the controlling terminal
+  attached at startup?" on all platforms instead of relying on Linux
+  `/proc/self/stat` alone.
+- **Scrollbar drag handling.** Mouse release over the chat scrollbar is handled
+  before the general geometry lookup, so drag end is reported even when the
+  geometry is stale.
+- **Browser tool.** The browser tool was rewritten: Firefox setup, install, and
+  repair run off the happy path; `wait` honors a fixed local delay; `get_content`
+  defaults its format from the requested action; action and format inputs are
+  validated against a known-action enum; and metadata records the provider and
+  browser used.
+- **Skills.** Skill loading fingerprints file paths, modification times, and
+  sizes so a changed skill set re-reads only what moved, and project overlays
+  are refreshed through a cached loader.
+- **Tools.** Tool output capping slices on byte boundaries instead of
+  re-collecting char slices, and short-circuits when the limit is not exceeded.
+  Batch subcall rendering pushes lines into a shared buffer instead of building
+  a single `Line`, and tool failure reasons are inlined when there is room.
+- **Bug bounty executor.** Checkpoints scope/workflow fingerprints and refuse to
+  restore a `state.json` whose scope or version changed, preserving the old
   directory for review instead.
-- Tool output capping slices on byte boundaries instead of re-collecting char
-  slices, and short-circuits when the limit is not exceeded.
-- The verification-loop prompt now asks whether read-only calls are still
-  producing evidence rather than demanding a state change.
-- Provider retry handling distinguishes stream-retry-limit errors from
-  throttling and stops replaying a throttled prompt after a single retry.
-- Compact TUI layout keeps the active picker selection and draft visible on
-  short terminals, and the tool display panel reclaims space for results.
+- **Agent.** The verification-loop prompt now asks whether read-only calls are
+  still producing evidence rather than demanding a state change. Provider retry
+  handling distinguishes stream-retry-limit errors from throttling and stops
+  replaying a throttled prompt after a single retry. A security engagement with
+  no actionable todo now receives one bounded nudge to write a plan instead of
+  silently surrendering.
 
 ## [1.1.13] - 2026-11-20
 
