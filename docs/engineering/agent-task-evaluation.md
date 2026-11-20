@@ -31,6 +31,9 @@ streaming progress and provider connection phases in each trial's agent log.
 Add `--provider-audit` with AlphaCode to record dispatch attempts and the peak
 rolling 60-second request count for each trial. A `null` traffic summary means
 the runner could not obtain audit data for that trial.
+With NDJSON, the same option also totals each reported token field across
+inference rounds. Cache fields are separate because provider accounting varies.
+Timed-out trials can contain partial usage and requests without a usage record.
 
 The command exits nonzero if any task fails. Inspect `agent.log` and
 `verifier.log` in the report's artifact directory to distinguish agent errors

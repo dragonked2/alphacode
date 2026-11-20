@@ -58,6 +58,10 @@ class AgentEvalTests(unittest.TestCase):
             "event = dict(unix_ms=1, kind='inference', origin='local', "
             "method='POST', prompt='1', session='1'); "
             "(audit / 'requests-test.jsonl').write_text(json.dumps(event) + '\\n'); "
+            "print(json.dumps(dict(type='tokens', input=15, output=3, cache_read_input=9))); "
+            "print(json.dumps(dict(type='tokens', input=2, output=4, cache_read_input=None))); "
+            "print(json.dumps(dict(type='done', usage=dict(input_tokens=2, output_tokens=4)))); "
+            "print('{partial'); "
             "Path('answer.txt').write_text('fixed')",
             repetitions=2, provider_audit=True,
         )
@@ -66,6 +70,10 @@ class AgentEvalTests(unittest.TestCase):
             traffic = trial["agent"]["provider_traffic"]
             self.assertEqual(traffic["total"], 1)
             self.assertEqual(traffic["peak_rolling_60s"], 1)
+            self.assertEqual(trial["agent"]["reported_token_usage"], {
+                "usage_records": 2, "input": 17, "output": 7,
+                "cache_read_input": 9, "cache_creation_input": None,
+            })
 
     def test_arguments_remain_literal_and_prompt_substitution_is_not_recursive(self):
         prompt = "Fix the answer; $(do_not_execute) {workspace}"

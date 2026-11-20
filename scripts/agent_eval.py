@@ -143,6 +143,30 @@ def verify_worker(verifier, workspace, receipt, token):
         output.write(token)
 
 
+def summarize_alphacode_usage(log):
+    fields = ("input", "output", "cache_read_input", "cache_creation_input")
+    totals = dict.fromkeys(fields, None)
+    records = 0
+    with log.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            if not line.lstrip().startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get("type") != "tokens":
+                continue
+            records += 1
+            for field in fields:
+                value = event.get(field)
+                if type(value) is int and value >= 0:
+                    totals[field] = (totals[field] or 0) + value
+    if not records:
+        return None
+    return {"usage_records": records, **totals}
+
+
 def evaluate(manifest, command, label, output, timeout=300, verify_timeout=60, repetitions=1, *, provider_audit=False):
     if not isinstance(command, list) or not command or not all(isinstance(arg, str) for arg in command) or not command[0]:
         raise ValueError("Agent command must be a nonempty JSON array of strings")
@@ -175,8 +199,10 @@ def evaluate(manifest, command, label, output, timeout=300, verify_timeout=60, r
             argv = [re.sub(r"\{(prompt|workspace|python)\}", lambda match: replacements[match[1]], arg) for arg in command]
             audit_dir = trial_dir / "provider-audit"
             env = dict(os.environ, ALPHACODE_PROVIDER_AUDIT_DIR=str(audit_dir)) if provider_audit else None
-            agent = run_command(argv, workspace, timeout, trial_dir / "agent.log", env=env)
+            agent_log = trial_dir / "agent.log"
+            agent = run_command(argv, workspace, timeout, agent_log, env=env)
             if provider_audit:
+                agent["reported_token_usage"] = summarize_alphacode_usage(agent_log)
                 try:
                     agent["provider_traffic"] = provider_traffic.read_summary(audit_dir)
                 except (OSError, ValueError, KeyError, TypeError) as error:
