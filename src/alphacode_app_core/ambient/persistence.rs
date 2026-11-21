@@ -1,9 +1,13 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
 
 use super::paths::{lock_path, state_path};
-use super::{AmbientCycleResult, AmbientState, AmbientStatus, CycleStatus, ScheduledItem};
+use super::{
+    AmbientCycleResult, AmbientState, AmbientStatus, CycleStatus, ScheduleTarget, ScheduledItem,
+};
 use crate::alphacode_app_core::storage;
 
 // ---------------------------------------------------------------------------
@@ -59,109 +63,175 @@ pub struct ScheduledQueue {
     path: PathBuf,
 }
 
+fn open_queue_lock(path: &Path) -> Result<File> {
+    if let Some(parent) = path.parent() {
+        storage::ensure_dir(parent)?;
+    }
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("Could not open schedule lock {}", path.display()))
+}
+
 impl ScheduledQueue {
-    pub fn load(path: PathBuf) -> Self {
-        let items: Vec<ScheduledItem> = if path.exists() {
-            storage::read_json(&path).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        Self { items, path }
+    pub fn load(path: PathBuf) -> Result<Self> {
+        let items = Self::read_items(&path)?;
+        Ok(Self { items, path })
     }
 
-    pub fn save(&self) -> Result<()> {
-        storage::write_json(&self.path, &self.items)
-    }
-
-    pub fn push(&mut self, item: ScheduledItem) {
-        self.items.push(item);
-        if let Err(err) = self.save() {
-            crate::logging::warn(&format!(
-                "[ambient] failed to persist scheduled queue after push: {}",
-                err
-            ));
+    fn read_items(path: &Path) -> Result<Vec<ScheduledItem>> {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .with_context(|| format!("Invalid schedule queue {}", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error)
+                .with_context(|| format!("Could not read schedule queue {}", path.display())),
         }
     }
 
-    /// Remove a scheduled item by ID, persisting the queue when found.
+    /// Reload after locking so a stale snapshot cannot overwrite another
+    /// process's changes. Publish the updated state before returning a claim.
+    fn update<T>(
+        &mut self,
+        change: impl FnOnce(&mut Vec<ScheduledItem>) -> (T, bool),
+    ) -> Result<T> {
+        let lock = open_queue_lock(&self.path.with_extension("lock"))?;
+        lock.lock().context("Could not lock schedule queue")?;
+        let mut items = Self::read_items(&self.path)?;
+        let (result, changed) = change(&mut items);
+        if changed {
+            storage::write_json(&self.path, &items)?;
+        }
+        self.items = items;
+        Ok(result)
+    }
+
+    pub fn push(&mut self, item: ScheduledItem) -> Result<()> {
+        self.update(|items| {
+            items.push(item);
+            ((), true)
+        })
+    }
+
     pub fn remove_by_id(&mut self, id: &str) -> Result<Option<ScheduledItem>> {
-        let Some(index) = self.items.iter().position(|item| item.id == id) else {
+        self.remove_matching(|item| item.id == id)
+    }
+
+    pub(crate) fn remove_session_schedule(&mut self, id: &str) -> Result<Option<ScheduledItem>> {
+        self.remove_matching(|item| item.id == id && item.target != ScheduleTarget::Workspace)
+    }
+
+    fn remove_matching(
+        &mut self,
+        matches: impl Fn(&ScheduledItem) -> bool,
+    ) -> Result<Option<ScheduledItem>> {
+        self.update(|items| match items.iter().position(matches) {
+            Some(index) => (Some(items.remove(index)), true),
+            None => (None, false),
+        })
+    }
+
+    pub fn set_paused(&mut self, id: &str, paused: bool) -> Result<Option<ScheduledItem>> {
+        self.update(|items| {
+            let Some(item) = items.iter_mut().find(|item| item.id == id) else {
+                return (None, false);
+            };
+            let changed = item.paused != paused;
+            item.paused = paused;
+            (Some(item.clone()), changed)
+        })
+    }
+
+    pub fn pop_ready(&mut self) -> Result<Vec<ScheduledItem>> {
+        self.take_ready_matching(|_| true, usize::MAX)
+    }
+
+    pub fn take_ready_direct_items(&mut self) -> Result<Vec<ScheduledItem>> {
+        self.take_ready_matching(|item| item.target.is_direct_delivery(), usize::MAX)
+    }
+
+    pub(crate) fn claim_next_direct_item(
+        &mut self,
+        include: impl Fn(&ScheduledItem) -> bool,
+    ) -> Result<Option<(File, ScheduledItem)>> {
+        let Some(lock) = self.try_lock_delivery()? else {
             return Ok(None);
         };
-
-        let item = self.items.remove(index);
-        self.save()?;
-        Ok(Some(item))
+        let mut claimed = self.take_ready_matching(include, 1)?;
+        Ok(claimed.pop().map(|item| (lock, item)))
     }
 
-    /// Pop items whose `scheduled_for` is in the past, sorted by priority
-    /// (highest first) then by time (earliest first).
-    pub fn pop_ready(&mut self) -> Vec<ScheduledItem> {
-        let now = Utc::now();
-        let (ready, remaining): (Vec<_>, Vec<_>) =
-            self.items.drain(..).partition(|i| i.scheduled_for <= now);
-
-        self.items = remaining;
-
-        let mut ready = ready;
-        // Sort: highest priority first, then earliest scheduled_for
-        ready.sort_by(|a, b| {
-            b.priority
-                .cmp(&a.priority)
-                .then_with(|| a.scheduled_for.cmp(&b.scheduled_for))
-        });
-
-        if !ready.is_empty()
-            && let Err(err) = self.save()
-        {
-            crate::logging::warn(&format!(
-                "[ambient] failed to persist scheduled queue after pop_ready: {}",
-                err
-            ));
-        }
-
-        ready
-    }
-
-    /// Remove and return ready items targeted at a specific direct-delivery session,
-    /// leaving ambient-targeted queue items intact for the ambient agent to process.
-    pub fn take_ready_direct_items(&mut self) -> Vec<ScheduledItem> {
-        let now = Utc::now();
-        let mut ready_direct = Vec::new();
-        let mut remaining = Vec::with_capacity(self.items.len());
-
-        for item in self.items.drain(..) {
-            let is_ready = item.scheduled_for <= now;
-            let is_direct_target = item.target.is_direct_delivery();
-            if is_ready && is_direct_target {
-                ready_direct.push(item);
-            } else {
-                remaining.push(item);
+    /// Serialize direct delivery across daemons without blocking schedule edits.
+    /// The OS releases this handle if a daemon exits during delivery.
+    fn try_lock_delivery(&self) -> Result<Option<File>> {
+        let file = open_queue_lock(&self.path.with_extension("delivery.lock"))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => {
+                Err(error).context("Could not lock schedule delivery")
             }
         }
+    }
 
-        self.items = remaining;
+    fn take_ready_matching(
+        &mut self,
+        include: impl Fn(&ScheduledItem) -> bool,
+        limit: usize,
+    ) -> Result<Vec<ScheduledItem>> {
+        self.update(|items| {
+            let now = Utc::now();
+            let mut due: Vec<_> = items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| !item.paused && item.scheduled_for <= now && include(item))
+                .collect();
+            due.sort_by(|(_, a), (_, b)| {
+                b.priority
+                    .cmp(&a.priority)
+                    .then_with(|| a.scheduled_for.cmp(&b.scheduled_for))
+            });
+            due.truncate(limit);
+            let claimed_indices: HashSet<_> = due.iter().map(|(index, _)| *index).collect();
+            let claimed: Vec<_> = due.into_iter().map(|(_, item)| item.clone()).collect();
 
-        if !ready_direct.is_empty()
-            && let Err(err) = self.save()
-        {
-            crate::logging::warn(&format!(
-                "[ambient] failed to persist scheduled queue after take_ready_direct: {}",
-                err
-            ));
-        }
+            let mut index = 0;
+            items.retain_mut(|item| {
+                let claimed = claimed_indices.contains(&index);
+                index += 1;
+                if !claimed {
+                    return true;
+                }
+                let Some(interval) = item.repeat_every_minutes else {
+                    return false;
+                };
+                let interval_seconds = i64::from(interval.get()) * 60;
+                let elapsed_seconds = (now - item.scheduled_for).num_seconds();
+                // Keep the original cadence and coalesce missed occurrences.
+                let delta = chrono::TimeDelta::seconds(
+                    (elapsed_seconds / interval_seconds + 1) * interval_seconds,
+                );
+                if let Some(next) = item.scheduled_for.checked_add_signed(delta) {
+                    item.scheduled_for = next;
+                } else {
+                    item.paused = true;
+                }
+                true
+            });
 
-        ready_direct.sort_by(|a, b| {
-            b.priority
-                .cmp(&a.priority)
-                .then_with(|| a.scheduled_for.cmp(&b.scheduled_for))
-        });
-
-        ready_direct
+            let changed = !claimed.is_empty();
+            (claimed, changed)
+        })
     }
 
     pub fn peek_next(&self) -> Option<&ScheduledItem> {
-        self.items.iter().min_by_key(|i| i.scheduled_for)
+        self.items
+            .iter()
+            .filter(|item| !item.paused)
+            .min_by_key(|item| item.scheduled_for)
     }
 
     pub fn len(&self) -> usize {

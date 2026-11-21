@@ -68,7 +68,7 @@ use reqwest::header::HeaderMap;
 use reqwest::{Method, Request, Response};
 
 use crate::alphacode_provider_core::retry_after::{
-    RetryAfter as ParsedRetryAfter, error_with_retry_after, retry_after, retry_after_from_error,
+    error_with_retry_after, retry_after, retry_after_from_error,
 };
 use crate::alphacode_provider_core::transport::{
     is_transient_transport_error, send_with_initial_response_timeout,
@@ -280,6 +280,9 @@ pub fn is_retryable_message(error_str: &str) -> bool {
     }
 
     let lower = error_str.to_ascii_lowercase();
+    if is_hard_quota_error(&lower) {
+        return false;
+    }
     if is_transient_transport_error(&lower) {
         return true;
     }
@@ -337,6 +340,18 @@ pub fn is_retryable_message(error_str: &str) -> bool {
         }
     }
     false
+}
+
+/// Explicit billing exhaustion codes. A request or token rate limit can
+/// reset shortly, but replaying a request cannot replenish account credit.
+pub(crate) fn is_hard_quota_error(lower: &str) -> bool {
+    [
+        "insufficient_quota",
+        "billing_hard_limit_reached",
+        "credit_balance_too_low",
+    ]
+    .iter()
+    .any(|code| lower.contains(code))
 }
 
 fn contains_429_with_rate_limit(lower: &str) -> bool {
@@ -524,9 +539,7 @@ pub async fn send_with_retry(
                     return Ok(response);
                 }
 
-                let headers = response.headers().clone();
-                let parsed_hint = retry_after(&headers);
-                let next_delay = parsed_hint.map(|h: ParsedRetryAfter| h.remaining());
+                let parsed_hint = retry_after(response.headers());
 
                 let code = status.as_u16();
                 let reason = if code == 429 {
@@ -542,27 +555,26 @@ pub async fn send_with_retry(
                     .await
                     .unwrap_or_else(|_| String::from("<unreadable body>"));
                 let combined = format!("HTTP {status}: {body_text}");
+                let response_error = error_with_retry_after(combined.clone(), parsed_hint);
+                let next_delay = retry_after_from_error(&response_error);
 
                 if next_delay.is_some_and(|hint| hint > super::retry_after::MAX_AUTOMATIC_WAIT) {
-                    return Err(error_with_retry_after(combined, parsed_hint));
+                    return Err(response_error);
                 }
 
                 let Some(reason) = reason else {
-                    return Err(
-                        anyhow!(combined.clone()).context(format!("request to {url} failed"))
-                    );
+                    return Err(response_error.context(format!("request to {url} failed")));
                 };
 
                 // Conservative 429 check using the status code plus the body.
                 // Use the numeric `code` (not `status`, whose reason phrase
                 // "Too Many Requests" would make every 429 look rate-limited
                 // and defeat the moderation guard below).
-                if matches!(reason, RetryReason::RateLimited)
-                    && !contains_429_with_rate_limit(
-                        &format!("HTTP {code}: {body_text}").to_ascii_lowercase(),
-                    )
-                {
-                    return Err(anyhow!(combined.clone())
+                if matches!(reason, RetryReason::RateLimited) && {
+                    let lower = format!("HTTP {code}: {body_text}").to_ascii_lowercase();
+                    is_hard_quota_error(&lower) || !contains_429_with_rate_limit(&lower)
+                } {
+                    return Err(response_error
                         .context(format!("request to {url} failed (non-rate-limit 429)")));
                 }
 
@@ -570,13 +582,12 @@ pub async fn send_with_retry(
                 state.last_status = Some(code);
                 state.last_message = combined;
                 state.hint = next_delay;
-                state.last_error = None;
-
                 if !idempotent {
-                    return Err(anyhow!(state.last_message.clone())).context(format!(
+                    return Err(response_error).context(format!(
                         "non-idempotent request to {url} failed; not retrying"
                     ));
                 }
+                state.last_error = Some(response_error);
                 continue;
             }
             Err(send_err) => {
@@ -1032,6 +1043,37 @@ mod tests {
             .await
             .expect_err("should not retry a moderation 429");
         assert!(err.to_string().contains("429"));
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn quota_429_sends_one_request_even_with_rate_limit_words() {
+        let body = r#"{"error":{"code":"insufficient_quota","message":"API quota exceeded"}}"#;
+        assert!(!is_retryable_message(&format!(
+            "status: 429 Too Many Requests\n{body}"
+        )));
+        let (url, counter) = one_shot_server(http_response(429, "Too Many Requests", body));
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let request = client.get(&url).build().unwrap();
+        let result = send_with_retry(&client, request, &RetryPolicy::default(), "test").await;
+        assert!(result.unwrap_err().to_string().contains("429"));
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn body_retry_after_prevents_resending_during_a_long_cooldown() {
+        let body = r#"{"error":"rate limit exceeded","retry_after_seconds":3541}"#;
+        let (url, counter) = one_shot_server(http_response(429, "Too Many Requests", body));
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let request = client.get(&url).build().unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            send_with_retry(&client, request, &RetryPolicy::default(), "test"),
+        )
+        .await
+        .expect("long provider cooldown should surface immediately");
+        let error = result.unwrap_err();
+        assert!(server_hint_from_error(&error).unwrap() > Duration::from_secs(3500));
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 

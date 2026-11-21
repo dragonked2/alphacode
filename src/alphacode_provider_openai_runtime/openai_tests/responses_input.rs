@@ -73,8 +73,8 @@ fn build_test_response_request(
     OpenAIProvider::build_response_request(
         model_id,
         "system".to_string(),
-        &[],
-        &[],
+        Vec::new(),
+        Vec::new(),
         is_chatgpt_mode,
         max_output_tokens,
         reasoning_effort,

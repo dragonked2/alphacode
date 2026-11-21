@@ -1415,6 +1415,14 @@ impl Server {
         if let Some(ref runner) = self.ambient_runner {
             let ambient_handle = runner.clone();
             let ambient_provider = Arc::clone(&self.provider);
+            let schedule_handle = runner.clone();
+            let schedule_provider = Arc::clone(&self.provider);
+            let accepts_workspace_jobs = temporary_server_policy.is_none();
+            tokio::spawn(async move {
+                schedule_handle
+                    .run_schedule_loop(schedule_provider, accepts_workspace_jobs)
+                    .await;
+            });
             crate::logging::info("Starting ambient/schedule background loop");
             tokio::spawn(async move {
                 ambient_handle.run_loop(ambient_provider).await;
@@ -1774,6 +1782,7 @@ impl Server {
         } else {
             let idle_client_count = Arc::clone(&self.client_count);
             let idle_server_name = self.identity.name.clone();
+            let idle_runner = self.ambient_runner.clone();
             tokio::spawn(async move {
                 let mut idle_since: Option<std::time::Instant> = None;
                 let mut check_interval = tokio::time::interval(std::time::Duration::from_secs(10));
@@ -1783,7 +1792,23 @@ impl Server {
 
                     let count = *idle_client_count.read().await;
 
-                    if count == 0 {
+                    let scheduled_work = if count == 0 && idle_runner.is_some() {
+                        let active = idle_runner
+                            .as_ref()
+                            .is_some_and(AmbientRunnerHandle::has_active_schedule);
+                        active
+                            || matches!(
+                                tokio::task::spawn_blocking(
+                                    AmbientRunnerHandle::has_queued_workspace_jobs
+                                )
+                                .await,
+                                Ok(Ok(true))
+                            )
+                    } else {
+                        false
+                    };
+
+                    if count == 0 && !scheduled_work {
                         // No clients connected
                         if idle_since.is_none() {
                             idle_since = Some(std::time::Instant::now());
@@ -1807,7 +1832,7 @@ impl Server {
                     } else {
                         // Clients connected - reset idle timer
                         if idle_since.is_some() {
-                            crate::logging::info("Client connected. Idle timer cancelled.");
+                            crate::logging::info("Server has active work. Idle timer cancelled.");
                         }
                         idle_since = None;
                     }

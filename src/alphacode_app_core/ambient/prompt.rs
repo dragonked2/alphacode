@@ -325,6 +325,9 @@ pub fn build_ambient_system_prompt(
                 ScheduleTarget::Spawn { parent_session_id } => {
                     prompt.push_str(&format!("  Spawn from session: {}\n", parent_session_id));
                 }
+                ScheduleTarget::Workspace => {
+                    prompt.push_str("  Target: fresh workspace session\n");
+                }
             }
             if let Some(ref dir) = item.working_dir {
                 prompt.push_str(&format!("  Working dir: {}\n", dir));
@@ -511,6 +514,10 @@ pub fn format_scheduled_session_message(item: &ScheduledItem) -> String {
             item.task_description.as_deref().unwrap_or(&item.context)
         ),
     ];
+
+    if item.target == ScheduleTarget::Workspace {
+        lines.push(format!("Schedule ID: {}", item.id));
+    }
 
     if let Some(ref dir) = item.working_dir {
         lines.push(format!("Working directory: {}", dir));

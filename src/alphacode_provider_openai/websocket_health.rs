@@ -5,6 +5,7 @@ pub const WEBSOCKET_FIRST_EVENT_TIMEOUT_SECS: u64 = 8;
 pub const WEBSOCKET_COMPLETION_TIMEOUT_SECS: u64 = 300;
 pub const WEBSOCKET_MODEL_COOLDOWN_BASE_SECS: u64 = 60;
 pub const WEBSOCKET_MODEL_COOLDOWN_MAX_SECS: u64 = 600;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -42,10 +43,26 @@ pub fn is_websocket_fallback_notice(data: &str) -> bool {
     // tool-call arguments when the model is editing source that mentions
     // websocket fallback), so a structured event must never be reinterpreted
     // as a transport control frame.
-    if is_structured_response_event(data) {
-        return false;
-    }
-    data.to_lowercase().contains(WEBSOCKET_FALLBACK_NOTICE)
+    contains_ascii_case_insensitive(data, WEBSOCKET_FALLBACK_NOTICE)
+        && !is_structured_response_event(data)
+}
+
+pub(super) fn contains_ascii_case_insensitive(data: &str, phrase: &str) -> bool {
+    let needle = phrase.as_bytes();
+    let Some(first) = needle.first() else {
+        return true;
+    };
+    let bytes = data.as_bytes();
+    memchr::memchr2_iter(
+        first.to_ascii_lowercase(),
+        first.to_ascii_uppercase(),
+        bytes,
+    )
+    .any(|offset| {
+        bytes
+            .get(offset..offset + needle.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(needle))
+    })
 }
 
 pub fn is_stream_activity_event(_event: &StreamEvent) -> bool {
@@ -61,24 +78,26 @@ pub fn is_structured_response_event(data: &str) -> bool {
 }
 
 pub fn is_websocket_activity_payload(data: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
-        return false;
-    };
-    let Some(kind) = value.get("type").and_then(|kind| kind.as_str()) else {
-        return false;
-    };
-    kind.starts_with("response.") || kind == "error"
+    websocket_event_kind(data).is_some_and(|kind| kind.starts_with("response.") || kind == "error")
 }
 
 pub fn is_websocket_first_activity_payload(data: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
-        return false;
-    };
-    value
-        .get("type")
-        .and_then(|kind| kind.as_str())
-        .map(|kind| !kind.is_empty())
-        .unwrap_or(false)
+    websocket_event_kind(data).is_some_and(|kind| !kind.is_empty())
+}
+
+fn websocket_event_kind(data: &str) -> Option<Cow<'_, str>> {
+    #[derive(serde::Deserialize)]
+    struct EventHeader<'a> {
+        #[serde(rename = "type", borrow)]
+        kind: Cow<'a, str>,
+    }
+
+    if !data.trim_start().starts_with('{') {
+        return None;
+    }
+    serde_json::from_str::<EventHeader<'_>>(data)
+        .ok()
+        .map(|header| header.kind)
 }
 
 pub fn websocket_remaining_timeout_secs(since: Instant, timeout_secs: u64) -> Option<u64> {

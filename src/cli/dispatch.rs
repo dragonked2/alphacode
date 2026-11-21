@@ -1,7 +1,7 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
-use anyhow::Result;
-use std::io::IsTerminal;
+use anyhow::{Context, Result};
+use std::io::{IsTerminal, Read};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Instant;
 
@@ -227,7 +227,16 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             message,
             json,
             ndjson,
+            prompt_file,
+            stdin,
         }) => {
+            let message = if let Some(message) = message {
+                message
+            } else {
+                tokio::task::spawn_blocking(move || read_run_prompt(prompt_file, stdin))
+                    .await
+                    .context("Reading the prompt was interrupted")??
+            };
             if !json && !ndjson && !output::quiet_enabled() && std::io::stderr().is_terminal() {
                 let banner =
                     output::styled_startup_banner(crate::alphacode_core::console::terminal_width());
@@ -399,6 +408,19 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         },
         Some(Command::Ambient(subcmd)) => {
             commands::run_ambient_command(map_ambient_subcommand(subcmd)).await?;
+        }
+        Some(Command::Schedule(subcmd)) => {
+            let starts_jobs = matches!(
+                &subcmd,
+                super::args::ScheduleCommand::Create { .. }
+                    | super::args::ScheduleCommand::Resume { .. }
+            );
+            tokio::task::spawn_blocking(move || commands::run_schedule_command(subcmd)).await??;
+            if starts_jobs && !crate::server_spawn::is_running().await {
+                crate::server_spawn::spawn_default_server()
+                    .await
+                    .context("Schedule saved, but the shared server could not be started")?;
+            }
         }
         Some(Command::Cloud(subcmd)) => {
             commands::run_cloud_command(map_cloud_subcommand(subcmd))?;
@@ -598,6 +620,29 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub(super) fn read_run_prompt(
+    prompt_file: Option<std::path::PathBuf>,
+    stdin: bool,
+) -> Result<String> {
+    let prompt = if let Some(path) = prompt_file {
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("Could not read UTF-8 prompt file {}", path.display()))?
+    } else if stdin {
+        let mut prompt = String::new();
+        std::io::stdin()
+            .lock()
+            .read_to_string(&mut prompt)
+            .context("Could not read a UTF-8 prompt from standard input")?;
+        prompt
+    } else {
+        anyhow::bail!("Provide a message, --prompt-file, or --stdin");
+    };
+    if prompt.trim().is_empty() {
+        anyhow::bail!("The prompt is empty");
+    }
+    Ok(prompt)
 }
 
 fn auth_doctor_provider_arg<'a>(

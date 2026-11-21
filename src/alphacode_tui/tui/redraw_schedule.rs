@@ -501,8 +501,14 @@ pub(crate) fn redraw_interval_with_policy_and_animation(
         return REDRAW_PASSIVE_LIVENESS;
     }
 
+    if !state.streaming_text().is_empty() {
+        return match policy.tier {
+            crate::perf::PerformanceTier::Minimal => fast_interval.max(Duration::from_millis(50)),
+            _ => fast_interval,
+        };
+    }
+
     if state.is_processing()
-        || !state.streaming_text().is_empty()
         || state.has_pending_mouse_scroll_animation()
         || state.copy_selection_edge_autoscroll_active()
         || rate_limit_countdown_redraw_active(state)

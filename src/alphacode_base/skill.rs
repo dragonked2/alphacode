@@ -110,10 +110,9 @@ struct SkillFrontmatter {
 pub struct SkillRegistry {
     /// Skills keyed by name.
     ///
-    /// The values are shared (`Arc`) so cloning a registry — which happens on
-    /// every prompt build and on every project-overlay composition — copies
-    /// pointers instead of the megabyte-scale `SKILL.md` bodies (audit M23).
-    skills: HashMap<String, Arc<Skill>>,
+    /// Snapshots share the index, and overlay/reload edits copy the index only
+    /// when needed. The skill bodies remain shared even across those edits.
+    skills: Arc<HashMap<String, Arc<Skill>>>,
 }
 
 /// Maximum directory depth scanned under a Claude Code plugin root when
@@ -374,7 +373,23 @@ impl SkillRegistry {
     /// over same-named global skills, mirroring the historical load order
     /// (project dirs loaded last).
     pub fn merge_overlay(&mut self, overlay: Self) {
-        self.skills.extend(overlay.skills);
+        if overlay.skills.is_empty() {
+            return;
+        }
+        if self.skills.is_empty() {
+            self.skills = overlay.skills;
+        } else {
+            self.skills_mut().extend(
+                overlay
+                    .skills
+                    .iter()
+                    .map(|(name, skill)| (name.clone(), Arc::clone(skill))),
+            );
+        }
+    }
+
+    fn skills_mut(&mut self) -> &mut HashMap<String, Arc<Skill>> {
+        Arc::make_mut(&mut self.skills)
     }
 
     /// Effective skills for a session: shared global skills plus the
@@ -669,7 +684,8 @@ impl SkillRegistry {
                 if skill_file.exists()
                     && let Ok(skill) = Self::parse_skill(&skill_file)
                 {
-                    self.skills.insert(skill.name.clone(), Arc::new(skill));
+                    self.skills_mut()
+                        .insert(skill.name.clone(), Arc::new(skill));
                     count += 1;
                 }
             }
@@ -736,7 +752,7 @@ impl SkillRegistry {
                     // the entry API: only insert if no on-disk skill of the
                     // same name was already loaded.
                     registry
-                        .skills
+                        .skills_mut()
                         .entry(parsed.name.clone())
                         .or_insert_with(|| Arc::new(parsed));
                 }
@@ -766,26 +782,39 @@ impl SkillRegistry {
             return;
         }
 
+        if let Err(error) =
+            crate::alphacode_app_core::plugin::recover_interrupted_plugin_upgrades(&plugins_dir)
+        {
+            crate::alphacode_logging::warn(&format!("failed to recover plugins: {error}"));
+        }
         let entries = match std::fs::read_dir(&plugins_dir) {
             Ok(entries) => entries,
             Err(_) => return,
         };
 
-        for entry in entries.flatten() {
-            let plugin_dir = entry.path();
-            if !plugin_dir.is_dir() {
-                continue;
-            }
-
-            let skills_dir = plugin_dir.join("skills");
-            if skills_dir.exists()
-                && let Err(err) = registry.load_from_dir(&skills_dir)
-            {
-                crate::alphacode_logging::warn(&format!(
+        let mut plugins: Vec<_> = entries
+            .flatten()
+            .filter(|entry| entry.file_name() != ".transactions")
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect();
+        plugins.sort();
+        for plugin_dir in plugins {
+            match crate::alphacode_app_core::plugin::installed_skill_files(&plugin_dir) {
+                Ok(files) => {
+                    for file in files {
+                        if let Ok(skill) = Self::parse_skill(&file) {
+                            registry
+                                .skills_mut()
+                                .insert(skill.name.clone(), Arc::new(skill));
+                        }
+                    }
+                }
+                Err(error) => crate::alphacode_logging::warn(&format!(
                     "failed to load skills from plugin {}: {}",
                     plugin_dir.display(),
-                    err
-                ));
+                    error
+                )),
             }
         }
     }
@@ -992,12 +1021,13 @@ impl SkillRegistry {
             }
             if path.exists() {
                 let skill = Self::parse_skill(&path)?;
-                self.skills.remove(name);
-                self.skills.insert(skill.name.clone(), Arc::new(skill));
+                let skills = self.skills_mut();
+                skills.remove(name);
+                skills.insert(skill.name.clone(), Arc::new(skill));
                 Ok(true)
             } else {
                 // Skill file was deleted
-                self.skills.remove(name);
+                self.skills_mut().remove(name);
                 Ok(false)
             }
         } else {
@@ -1771,7 +1801,7 @@ mod tests {
         }
         let mut registry = SkillRegistry::default();
         registry
-            .skills
+            .skills_mut()
             .insert(bounty.name.clone(), Arc::new(bounty));
         assert_eq!(
             registry.find_auto_invoke_match("/bugbounty"),
@@ -1787,7 +1817,9 @@ mod tests {
         let mut focused = test_skill("focused", "", "");
         focused.aliases = vec!["security audit".into()];
         for skill in [broad, focused] {
-            registry.skills.insert(skill.name.clone(), Arc::new(skill));
+            registry
+                .skills_mut()
+                .insert(skill.name.clone(), Arc::new(skill));
         }
         assert_eq!(
             registry.find_auto_invoke_match("security audit"),
@@ -1883,7 +1915,7 @@ mod tests {
         let mut reg_a = SkillRegistry::default();
         for name in names {
             reg_a
-                .skills
+                .skills_mut()
                 .insert(name.to_string(), Arc::new(test_skill(name, "d", "c")));
         }
 
@@ -1892,7 +1924,7 @@ mod tests {
         let mut reg_b = SkillRegistry::default();
         for name in names.iter().rev() {
             reg_b
-                .skills
+                .skills_mut()
                 .insert(name.to_string(), Arc::new(test_skill(name, "d", "c")));
         }
 
@@ -1972,7 +2004,7 @@ mod tests {
 
         // Effective set = base globals + overlay, with overlay winning on name.
         let mut base = SkillRegistry::default();
-        base.skills.insert(
+        base.skills_mut().insert(
             "session-skill".to_string(),
             Arc::new(test_skill("session-skill", "global variant", "global body")),
         );
@@ -2571,7 +2603,7 @@ mod tests {
                     "bundled bugbounty body must contain the hunter methodology text"
                 );
                 registry
-                    .skills
+                    .skills_mut()
                     .entry(parsed.name.clone())
                     .or_insert_with(|| Arc::new(parsed));
                 found = true;

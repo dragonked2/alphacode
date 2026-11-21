@@ -312,28 +312,24 @@ pub async fn rerank_candidates_consensus_attributed(
     let prompt = build_rerank_prompt(focused_query, &pairs);
     let n = candidates.len();
 
-    // Fire `votes` independent reranks concurrently.
-    let futures = (0..votes).map(|_| {
-        let sidecar = sidecar.clone();
-        let prompt = prompt.clone();
-        async move {
-            match sidecar.complete(LLM_RERANK_SYSTEM, &prompt).await {
-                Ok(resp) => extract_ranking(&resp, n), // Some([]) = nothing relevant
-                Err(e) => {
-                    record_failure_backoff(&e);
-                    crate::logging::event_rate_limited(
-                        crate::logging::LogLevel::Warn,
-                        "memory_consensus_judge_failed",
-                        Duration::from_secs(60),
-                        "Memory consensus judge failed; circuit breaker armed",
-                        vec![("error", e.to_string())],
-                    );
-                    None // transport error = no vote
-                }
+    let vote = || async {
+        match sidecar.complete(LLM_RERANK_SYSTEM, &prompt).await {
+            Ok(resp) => extract_ranking(&resp, n), // Some([]) = nothing relevant
+            Err(e) => {
+                record_failure_backoff(&e);
+                crate::logging::event_rate_limited(
+                    crate::logging::LogLevel::Warn,
+                    "memory_consensus_judge_failed",
+                    Duration::from_secs(60),
+                    "Memory consensus judge failed; circuit breaker armed",
+                    vec![("error", e.to_string())],
+                );
+                None // transport error = no vote
             }
         }
-    });
-    let ballots: Vec<Option<Vec<usize>>> = futures::future::join_all(futures).await;
+    };
+
+    let ballots = collect_ballots(votes, min_agree, vote).await;
 
     let usable = ballots.iter().filter(|b| b.is_some()).count();
     if usable == 0 {
@@ -349,7 +345,8 @@ pub async fn rerank_candidates_consensus_attributed(
     let kept = tally_consensus(&ballots, n, min_agree);
 
     crate::logging::info(&format!(
-        "Memory consensus rerank: {usable}/{votes} judges, {} of {n} candidates met >={min_agree} agreement",
+        "Memory consensus rerank: {usable}/{} judges returned ballots, {} of {n} candidates met >={min_agree} agreement",
+        ballots.len(),
         kept.len()
     ));
 
@@ -357,6 +354,28 @@ pub async fn rerank_candidates_consensus_attributed(
         compose_reranked(candidates, &kept, RerankMode::Precision),
         RerankOutcome::Judged,
     )
+}
+
+async fn collect_ballots<F: Future<Output = Option<Vec<usize>>>>(
+    votes: usize,
+    min_agree: usize,
+    mut vote: impl FnMut() -> F,
+) -> Vec<Option<Vec<usize>>> {
+    // With unanimity, a valid empty first ballot settles the result. A failed
+    // ballot still needs the others to distinguish a confirmed empty result
+    // from all judges failing.
+    let mut ballots = Vec::with_capacity(votes);
+    if min_agree == votes {
+        let first = vote().await;
+        let decided = first.as_ref().is_some_and(Vec::is_empty);
+        ballots.push(first);
+        if decided {
+            return ballots;
+        }
+    }
+    let remaining = std::iter::repeat_with(vote).take(votes - ballots.len());
+    ballots.extend(futures::future::join_all(remaining).await);
+    ballots
 }
 
 /// Pure consensus tally: given per-judge ballots (each an optional best-first
@@ -508,6 +527,33 @@ fn compose_reranked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn consensus_skips_only_votes_that_cannot_change_a_valid_empty_result() {
+        let mut calls = 0;
+        let unanimous = collect_ballots(2, 2, || {
+            calls += 1;
+            std::future::ready(Some(Vec::new()))
+        })
+        .await;
+        assert_eq!(calls, 1);
+        assert_eq!(unanimous, vec![Some(Vec::new())]);
+        assert!(tally_consensus(&unanimous, 1, 2).is_empty());
+
+        for (first, min_agree, expected) in [
+            (Some(vec![]), 1, vec![0]),
+            (Some(vec![0]), 2, vec![0]),
+            (None, 2, vec![]),
+        ] {
+            let mut replies = [first, Some(vec![0])].into_iter();
+            let ballots = collect_ballots(2, min_agree, || {
+                std::future::ready(replies.next().expect("one response per vote"))
+            })
+            .await;
+            assert_eq!(ballots.len(), 2);
+            assert_eq!(tally_consensus(&ballots, 1, min_agree), expected);
+        }
+    }
 
     #[test]
     fn parse_rerank_response_basic() {

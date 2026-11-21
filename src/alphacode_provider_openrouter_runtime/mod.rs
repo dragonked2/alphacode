@@ -1827,6 +1827,7 @@ pub struct OpenRouterProvider {
     provider_routing: Arc<RwLock<ProviderRouting>>,
     /// Pinned provider for this session (cache-aware)
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
+    stream_usage_support: Arc<openrouter_sse_stream::StreamUsageSupport>,
     /// In-memory cache of per-model endpoint data
     endpoints_cache: Arc<RwLock<EndpointsCache>>,
     /// Background refresh state for per-model endpoint data
@@ -2341,6 +2342,7 @@ impl OpenRouterProvider {
             model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
             provider_routing: Arc::new(RwLock::new(ProviderRouting::default())),
             provider_pin: Arc::new(Mutex::new(None)),
+            stream_usage_support: Arc::default(),
             endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
             endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
         })
@@ -2572,6 +2574,7 @@ impl OpenRouterProvider {
             model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
             provider_routing: Arc::new(RwLock::new(provider_routing)),
             provider_pin: Arc::new(Mutex::new(None)),
+            stream_usage_support: Arc::default(),
             endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
             endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
         })
@@ -2614,6 +2617,7 @@ impl OpenRouterProvider {
             model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
             provider_routing: Arc::new(RwLock::new(Self::parse_provider_routing())),
             provider_pin: Arc::new(Mutex::new(None)),
+            stream_usage_support: Arc::default(),
             endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
             endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
         })
@@ -2715,6 +2719,7 @@ impl OpenRouterProvider {
             model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
             provider_routing: Arc::new(RwLock::new(ProviderRouting::default())),
             provider_pin: Arc::new(Mutex::new(None)),
+            stream_usage_support: Arc::default(),
             endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
             endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
         })
@@ -2971,6 +2976,7 @@ impl OpenRouterProvider {
                 model_catalog_refresh: Arc::new(Mutex::new(ModelCatalogRefreshState::default())),
                 provider_routing: Arc::new(RwLock::new(ProviderRouting::default())),
                 provider_pin: Arc::new(Mutex::new(None)),
+                stream_usage_support: Arc::default(),
                 endpoints_cache,
                 endpoint_refresh: Arc::clone(&refresh_state),
             };
@@ -3982,7 +3988,9 @@ mod llamacpp_compat_tests {
     use super::*;
     use crate::alphacode_provider_core::Provider;
 
-    async fn counting_catalog_server() -> (
+    async fn counting_catalog_server(
+        reject_stream_usage: bool,
+    ) -> (
         String,
         tokio::sync::oneshot::Sender<()>,
         tokio::task::JoinHandle<Vec<String>>,
@@ -4013,23 +4021,33 @@ mod llamacpp_compat_tests {
                         content_length = length.trim().parse::<usize>().unwrap();
                     }
                 }
-                socket
-                    .read_exact(&mut vec![0; content_length])
-                    .await
-                    .unwrap();
+                let mut payload = vec![0; content_length];
+                socket.read_exact(&mut payload).await.unwrap();
+                let mut status = "200 OK";
                 let body = if path.ends_with("/models") {
                     serde_json::json!({"data": (0..30).map(|i| serde_json::json!({"id":format!("unused-{i}")})).collect::<Vec<_>>()})
                 } else {
                     serde_json::json!({"data":{"endpoints":[]}})
                 }.to_string();
                 let body = if path.ends_with("/chat/completions") {
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string()
+                    if reject_stream_usage
+                        && serde_json::from_slice::<Value>(&payload)
+                            .unwrap()
+                            .get("stream_options")
+                            .is_some()
+                    {
+                        status = "400 Bad Request";
+                        r#"{"error":{"code":"unsupported_parameter","param":"stream_options"}}"#
+                            .to_string()
+                    } else {
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_string()
+                    }
                 } else {
                     body
                 };
                 paths.push(path);
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 socket
@@ -4045,7 +4063,7 @@ mod llamacpp_compat_tests {
 
     #[tokio::test]
     async fn catalog_refresh_does_not_probe_unused_models() {
-        let (base, done_tx, server) = counting_catalog_server().await;
+        let (base, done_tx, server) = counting_catalog_server(false).await;
         let mut provider = local_no_auth_provider("active-refresh-fixture");
         provider.api_base = base;
         provider.profile_id = None;
@@ -4068,7 +4086,7 @@ mod llamacpp_compat_tests {
 
     #[tokio::test]
     async fn concurrent_cold_prefetch_and_picker_send_one_catalog_request() {
-        let (base, done_tx, server) = counting_catalog_server().await;
+        let (base, done_tx, server) = counting_catalog_server(false).await;
         let mut provider = local_no_auth_provider("cold-catalog-fixture");
         provider.api_base = base;
         provider.client = Client::builder().no_proxy().build().unwrap();
@@ -4103,7 +4121,7 @@ mod llamacpp_compat_tests {
 
     #[tokio::test]
     async fn warm_direct_provider_sends_one_request_per_completion_without_catalog_polls() {
-        let (base, done_tx, server) = counting_catalog_server().await;
+        let (base, done_tx, server) = counting_catalog_server(false).await;
         let mut provider = local_no_auth_provider("prompt-count-fixture");
         provider.api_base = base;
         provider.client = Client::builder().no_proxy().build().unwrap();
@@ -4133,6 +4151,39 @@ mod llamacpp_compat_tests {
                 "/v1/chat/completions",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn unsupported_stream_usage_costs_one_probe_per_model_across_rounds_and_forks() {
+        let (base, done_tx, server) = counting_catalog_server(true).await;
+        let mut provider = local_no_auth_provider("usage-rejected");
+        provider.api_base = base;
+        provider.client = Client::builder().no_proxy().build().unwrap();
+        let fork = provider.fork();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            assert_eq!(
+                provider.complete_simple("first", "test").await.unwrap(),
+                "Hello"
+            );
+            assert_eq!(
+                fork.complete_simple("second", "test").await.unwrap(),
+                "Hello"
+            );
+            assert_eq!(
+                provider.complete_simple("third", "test").await.unwrap(),
+                "Hello"
+            );
+            fork.set_model("another-model").unwrap();
+            assert_eq!(
+                fork.complete_simple("fourth", "test").await.unwrap(),
+                "Hello"
+            );
+        })
+        .await
+        .unwrap();
+        done_tx.send(()).unwrap();
+        // Four successful completions, plus the first rejection for each model.
+        assert_eq!(server.await.unwrap(), vec!["/v1/chat/completions"; 6]);
     }
 
     #[tokio::test]
@@ -4214,6 +4265,7 @@ mod llamacpp_compat_tests {
                 ProviderRouting::default(),
             )),
             provider_pin: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            stream_usage_support: Arc::default(),
             endpoints_cache: std::sync::Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),

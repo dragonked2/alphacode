@@ -131,7 +131,20 @@ impl Provider for OpenRouterProvider {
             "stream": true,
         });
 
-        if !self.supports_provider_features {
+        // Direct compatible runtimes request streaming usage by default.
+        // Some endpoints reject the option outright. Remember that result
+        // across rounds, while honoring explicit request-body overrides.
+        let stream_usage_support = (!self.supports_provider_features
+            && !self
+                .extra_body
+                .as_ref()
+                .is_some_and(|extra| extra.contains_key("stream_options")))
+        .then(|| Arc::clone(&self.stream_usage_support));
+        if !self.supports_provider_features
+            && stream_usage_support
+                .as_ref()
+                .is_none_or(|support| support.should_request(&model))
+        {
             request["stream_options"] = serde_json::json!({
                 "include_usage": true,
             });
@@ -389,6 +402,7 @@ impl Provider for OpenRouterProvider {
                     send_openrouter_headers,
                     request_for_retries,
                     bytes::Bytes::from(request_body),
+                    stream_usage_support,
                     responses_fallback,
                     tx,
                     provider_pin,
@@ -963,6 +977,7 @@ impl Provider for OpenRouterProvider {
                     .unwrap_or_default(),
             )),
             provider_pin: Arc::new(Mutex::new(None)),
+            stream_usage_support: Arc::clone(&self.stream_usage_support),
             endpoints_cache: Arc::clone(&self.endpoints_cache),
             endpoint_refresh: Arc::clone(&self.endpoint_refresh),
         })

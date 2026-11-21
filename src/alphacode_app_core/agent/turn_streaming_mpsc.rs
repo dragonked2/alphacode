@@ -137,7 +137,7 @@ impl Agent {
             std::sync::Arc<crate::prompt::SplitSystemPrompt>,
             crate::prompt::PromptTier,
         )> = None;
-        let mut cached_tools: Option<Vec<ToolDefinition>> = None;
+        let mut cached_tools: Option<Arc<Vec<ToolDefinition>>> = None;
         let open_mission = self.open_mission();
         let mut ctf_continuations = std::collections::HashSet::new();
         let mut iteration_count: u32 = 0;
@@ -217,11 +217,13 @@ impl Agent {
                     let task = super::prompting::latest_task_text(&self.session.messages)
                         .unwrap_or_default();
                     let query = super::prompting::adaptive_tool_query(&task, node_stack_observed);
-                    super::turn_execution::context_adaptive_tools_with_promotions(
-                        &definitions,
-                        &query,
-                        self.provider.context_window(),
-                        &crate::tool::tool_help::promoted_tools(&self.session.id),
+                    Arc::new(
+                        super::turn_execution::context_adaptive_tools_with_promotions(
+                            &definitions,
+                            &query,
+                            self.provider.context_window(),
+                            &crate::tool::tool_help::promoted_tools(&self.session.id),
+                        ),
                     )
                 } else {
                     definitions
@@ -230,7 +232,7 @@ impl Agent {
             let capability_names = self.session_capability_names().await;
             // Drop removed or newly restricted tools even while schemas are locked.
             if let Some(cached) = cached_tools.as_mut() {
-                cached.retain(|tool| capability_names.binary_search(&tool.name).is_ok());
+                super::turn_execution::retain_available_tool_definitions(cached, &capability_names);
             }
             let tools: &[ToolDefinition] = cached_tools.as_deref().unwrap();
             let messages: std::sync::Arc<[Message]> = messages.into();
@@ -2424,6 +2426,51 @@ mod tests {
                 .maybe_continue_after_provider_error("status: 429 Too Many Requests", &mut attempts)
                 .unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn empty_post_tool_recovery_is_a_system_reminder_and_only_retries_once() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
+        let _restore_home = RestoreAlphacodeHome(previous_home);
+        let provider = Arc::new(FailOnceProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(provider, crate::alphacode_app_core::tool::Registry::empty());
+        agent.add_message(Role::User, Message::user("Summarize the result").content);
+        agent.add_message(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "fixture".into(),
+                content: "Finished".into(),
+                is_error: None,
+            }],
+        );
+
+        let mut attempts = 0;
+        assert!(
+            agent
+                .maybe_continue_empty_post_tool_response(true, true, None, &mut attempts)
+                .unwrap()
+        );
+        assert_eq!(
+            agent.session.messages.last().unwrap().display_role,
+            Some(StoredDisplayRole::System)
+        );
+        assert_eq!(
+            super::super::prompting::latest_task_text(&agent.session.messages).as_deref(),
+            Some("Summarize the result")
+        );
+        let prompt = agent.provider_messages();
+        assert!(!crate::message::ends_with_fresh_user_turn(&prompt));
+        assert!(Agent::messages_end_with_tool_result(&prompt));
+        assert!(
+            !agent
+                .maybe_continue_empty_post_tool_response(true, true, None, &mut attempts)
+                .unwrap()
         );
     }
 

@@ -51,7 +51,7 @@ impl Agent {
     /// Retries allowed when the provider returns an empty response right after
     /// tool results. The counter is per turn-loop, so a genuinely finished
     /// agent still exits promptly.
-    pub(crate) const MAX_EMPTY_POST_TOOL_CONTINUATION_ATTEMPTS: u32 = 5;
+    pub(crate) const MAX_EMPTY_POST_TOOL_CONTINUATION_ATTEMPTS: u32 = 1;
     /// Interval (in tool iterations) between periodic session auto-saves.
     /// During long-running turns with many tool calls, this ensures progress
     /// is periodically persisted to disk so a crash loses at most this many
@@ -116,7 +116,7 @@ impl Agent {
             std::sync::Arc<crate::prompt::SplitSystemPrompt>,
             crate::prompt::PromptTier,
         )> = None;
-        let mut cached_tools: Option<Vec<ToolDefinition>> = None;
+        let mut cached_tools: Option<Arc<Vec<ToolDefinition>>> = None;
         let open_mission = self.open_mission();
         let mut ctf_continuations = std::collections::HashSet::new();
         let mut iteration_count: u32 = 0;
@@ -188,11 +188,13 @@ impl Agent {
                     let task = super::prompting::latest_task_text(&self.session.messages)
                         .unwrap_or_default();
                     let query = super::prompting::adaptive_tool_query(&task, node_stack_observed);
-                    super::turn_execution::context_adaptive_tools_with_promotions(
-                        &definitions,
-                        &query,
-                        self.provider.context_window(),
-                        &crate::tool::tool_help::promoted_tools(&self.session.id),
+                    Arc::new(
+                        super::turn_execution::context_adaptive_tools_with_promotions(
+                            &definitions,
+                            &query,
+                            self.provider.context_window(),
+                            &crate::tool::tool_help::promoted_tools(&self.session.id),
+                        ),
                     )
                 } else {
                     definitions
@@ -201,7 +203,7 @@ impl Agent {
             let capability_names = self.session_capability_names().await;
             // Drop removed or newly restricted tools even while schemas are locked.
             if let Some(cached) = cached_tools.as_mut() {
-                cached.retain(|tool| capability_names.binary_search(&tool.name).is_ok());
+                super::turn_execution::retain_available_tool_definitions(cached, &capability_names);
             }
             let tools: &[ToolDefinition] = cached_tools.as_deref().unwrap();
             let messages: std::sync::Arc<[Message]> = messages.into();
@@ -1821,10 +1823,7 @@ impl Agent {
     }
 
     pub(super) fn messages_end_with_tool_result(messages: &[Message]) -> bool {
-        messages.iter().rev().any(|message| {
-            if !matches!(message.role, Role::User) {
-                return false;
-            }
+        for message in messages.iter().rev().take_while(|m| m.role == Role::User) {
             if message
                 .content
                 .iter()
@@ -1832,11 +1831,11 @@ impl Agent {
             {
                 return true;
             }
-            message.content.iter().any(|block| match block {
-                ContentBlock::Text { text, .. } => text.trim().starts_with("<system-reminder>"),
-                _ => false,
-            })
-        })
+            if !message.is_internal_system_reminder() {
+                break;
+            }
+        }
+        false
     }
 }
 
@@ -1893,8 +1892,21 @@ mod tests {
 
     #[test]
     fn messages_end_with_tool_result_ignores_plain_user_prompt() {
-        let messages = vec![user_text("hello")];
+        let messages = vec![
+            user_text("<system-reminder>Session context</system-reminder>"),
+            tool_result("old", "previous work"),
+            user_text("hello"),
+            user_text("<system-reminder>Current context</system-reminder>"),
+        ];
 
+        assert!(!Agent::messages_end_with_tool_result(&messages));
+    }
+
+    #[test]
+    fn messages_end_with_tool_result_requires_a_result_beneath_reminders() {
+        let messages = vec![user_text(
+            "<system-reminder>Session context</system-reminder>",
+        )];
         assert!(!Agent::messages_end_with_tool_result(&messages));
     }
 }

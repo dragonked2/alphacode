@@ -1,3 +1,6 @@
+use super::websocket_health::{
+    contains_ascii_case_insensitive, is_structured_response_event, is_websocket_fallback_notice,
+};
 use crate::alphacode_message_types::{StreamEvent, sanitize_tool_id};
 use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -11,7 +14,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context as TaskContext, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const WEBSOCKET_FALLBACK_NOTICE: &str = "falling back from websockets to https transport";
 static FALLBACK_TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(1);
 static RECOVERED_TEXT_WRAPPED_TOOL_CALLS: AtomicU64 = AtomicU64::new(0);
 static NORMALIZED_NULL_TOOL_ARGUMENTS: AtomicU64 = AtomicU64::new(0);
@@ -24,49 +26,6 @@ fn truncated_stream_payload_context(data: &str) -> String {
     } else {
         crate::alphacode_core::util::truncate_str(trimmed, 240).to_string()
     }
-}
-
-fn is_structured_response_event(data: &str) -> bool {
-    // Fast path: most chunks are `response.output_text.delta` etc. Peek at the
-    // raw `"type"` string without a full `serde_json::Value` parse (which
-    // allocates a map per chunk on the hot streaming path).
-    let trimmed = data.trim_start();
-    if !trimmed.starts_with('{') {
-        return false;
-    }
-    // Find `"type"` key quickly. This is only a fast-`true` peek: the first
-    // `"type"` occurrence may belong to a nested object (serde_json emits map
-    // keys alphabetically, so `response` sorts before the top-level `type`),
-    // so a non-match must fall through to the full parse, never return false.
-    if let Some(type_pos) = trimmed.find("\"type\"") {
-        let after = &trimmed[type_pos + 6..];
-        // Skip whitespace + colon + whitespace + quote.
-        let mut chars = after.chars().skip_while(|c| c.is_whitespace() || *c == ':');
-        if chars.next() == Some('"') {
-            let rest: String = chars.collect();
-            if rest.starts_with("response.") || rest.starts_with("error\"") {
-                return true;
-            }
-        }
-    }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
-        return false;
-    };
-    let Some(kind) = value.get("type").and_then(|kind| kind.as_str()) else {
-        return false;
-    };
-    kind.starts_with("response.") || kind == "error"
-}
-
-fn is_websocket_fallback_notice(data: &str) -> bool {
-    // The proxy injects the fallback notice as a plain-text control frame, not a
-    // structured Responses API event. A legitimate `response.*`/`error` event can
-    // contain this phrase in model output or tool-call arguments and must still be
-    // parsed normally.
-    if is_structured_response_event(data) {
-        return false;
-    }
-    data.to_lowercase().contains(WEBSOCKET_FALLBACK_NOTICE)
 }
 
 fn extract_error_with_retry(
@@ -418,9 +377,7 @@ pub fn parse_openai_response_event(
         return None;
     }
 
-    if data
-        .to_lowercase()
-        .contains("stream disconnected before completion")
+    if contains_ascii_case_insensitive(data, "stream disconnected before completion")
         && !is_structured_response_event(data)
     {
         return Some(StreamEvent::Error {
@@ -881,6 +838,8 @@ fn handle_openai_image_generation_item(
 pub struct OpenAIResponsesStream {
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     buffer: String,
+    buffer_start: usize,
+    buffer_scan: usize,
     /// Carries incomplete multi-byte UTF-8 sequences across chunk boundaries
     /// so split CJK characters are not dropped (#609).
     utf8: crate::alphacode_core::util::Utf8StreamDecoder,
@@ -895,6 +854,8 @@ impl OpenAIResponsesStream {
         Self {
             inner: Box::pin(stream),
             buffer: String::new(),
+            buffer_start: 0,
+            buffer_scan: 0,
             utf8: crate::alphacode_core::util::Utf8StreamDecoder::new(),
             pending: VecDeque::new(),
             saw_text_delta: false,
@@ -908,41 +869,35 @@ impl OpenAIResponsesStream {
             return Some(event);
         }
 
-        while let Some(pos) = self.buffer.find("\n\n") {
-            // PERF: `drain` moves bytes once instead of cloning the head AND
-            // the tail (`to_string` x2 = 2x memcpy of the whole buffer per
-            // event, O(n^2) on long streams).
-            let event_str: String = self.buffer.drain(..pos + 2).collect();
-            // Strip the trailing "\n\n" without a second allocation.
-            let event_str = event_str.trim_end_matches('\n');
-
-            // Pre-size: most SSE events have 1-2 data lines.
-            let mut data_lines: Vec<&str> = Vec::with_capacity(2);
-            for line in event_str.lines() {
-                if let Some(data) = crate::alphacode_core::util::sse_data_line(line) {
-                    data_lines.push(data);
-                }
-            }
-
-            if data_lines.is_empty() {
+        while let Some((end, next)) = crate::alphacode_core::util::sse_frame_end(
+            &self.buffer,
+            self.buffer_start,
+            &mut self.buffer_scan,
+        ) {
+            let frame = &self.buffer[self.buffer_start..end];
+            self.buffer_start = next;
+            self.buffer_scan = next;
+            let mut data_lines = frame
+                .lines()
+                .filter_map(crate::alphacode_core::util::sse_data_line);
+            let Some(first) = data_lines.next() else {
                 continue;
-            }
+            };
 
-            // Avoid `join` alloc when there's a single data line (common).
             let data_owned;
-            let data: &str = if data_lines.len() == 1 {
-                data_lines[0]
-            } else {
-                let total: usize = data_lines.iter().map(|s| s.len() + 1).sum();
-                let mut buf = String::with_capacity(total);
-                for (i, s) in data_lines.iter().enumerate() {
-                    if i > 0 {
-                        buf.push('\n');
-                    }
-                    buf.push_str(s);
+            let data: &str = if let Some(second) = data_lines.next() {
+                let mut joined = String::with_capacity(first.len() + second.len() + 1);
+                joined.push_str(first);
+                joined.push('\n');
+                joined.push_str(second);
+                for line in data_lines {
+                    joined.push('\n');
+                    joined.push_str(line);
                 }
-                data_owned = buf;
+                data_owned = joined;
                 &data_owned
+            } else {
+                first
             };
             if let Some(event) = parse_openai_response_event(
                 data,
@@ -995,8 +950,14 @@ impl Stream for OpenAIResponsesStream {
 
             match self.inner.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(bytes))) => {
-                    let text = self.utf8.decode(&bytes);
-                    self.buffer.push_str(&text);
+                    let stream = self.as_mut().get_mut();
+                    let start = stream.buffer_start;
+                    if start > 0 && start >= stream.buffer.len() / 2 {
+                        stream.buffer.drain(..start);
+                        stream.buffer_start = 0;
+                        stream.buffer_scan -= start;
+                    }
+                    stream.utf8.decode_into(&bytes, &mut stream.buffer);
                 }
                 Poll::Ready(Some(Err(e))) => {
                     return Poll::Ready(Some(Err(anyhow::anyhow!("Stream error: {}", e))));

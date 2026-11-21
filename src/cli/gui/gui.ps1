@@ -98,6 +98,7 @@ $script:requestStarted = [DateTime]::MinValue
 $script:queue = New-Object System.Collections.Queue
 $script:expanded = $true
 $script:ownedBusy = $false
+$script:ownedSessionId = ''
 $script:working = 0
 $script:lastSignature = ''
 $script:hasLiveSnapshot = $false
@@ -417,6 +418,7 @@ try {
       <Border Width="1" Height="18" Background="{DynamicResource Border}" Margin="8,0" VerticalAlignment="Center"/>
       <Button x:Name="FindReply" Style="{StaticResource IconButton}" ToolTip="Find in conversation (Ctrl+F)" AutomationProperties.Name="Find in conversation"><Path Style="{StaticResource Icon}" Width="16" Height="16" Data="M 14 14 L 20 20 M 16 9 A 7 7 0 1 1 2 9 A 7 7 0 1 1 16 9"/></Button>
       <Button x:Name="OpenTerminal" Padding="10,4" FontSize="12" Foreground="{DynamicResource Muted}" ToolTip="Continue with the full terminal interface" AutomationProperties.Name="Open terminal interface"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource Icon}" Width="16" Height="14" Data="M 2 2 L 7 7 L 2 12 M 10 12 L 18 12" Margin="0,0,8,0"/><TextBlock Text="Terminal" VerticalAlignment="Center"/></StackPanel></Button>
+      <Button x:Name="ResumeChat" Content="Resume chat" Padding="10,4" FontSize="12" ToolTip="Continue this chat in the desktop app" Visibility="Collapsed"/>
       <Button x:Name="Cancel" Content="Stop" Padding="10,4" FontSize="12" Foreground="{DynamicResource Danger}" ToolTip="Cancel the running turn" AutomationProperties.Name="Cancel running turn" IsEnabled="False"/>
       <Button x:Name="Rename" Style="{StaticResource IconButton}" ToolTip="Rename chat" AutomationProperties.Name="Rename chat" IsEnabled="False"><Path Style="{StaticResource Icon}" Width="16" Height="16" Data="M 3 13 L 13 3 L 17 7 L 7 17 L 2 18 Z M 11 5 L 15 9"/></Button>
       <Button x:Name="Archive" Style="{StaticResource IconButton}" Content="&#x2606;" FontSize="20" ToolTip="Save chat" AutomationProperties.Name="Save chat" IsEnabled="False"/>
@@ -573,7 +575,7 @@ $controls = @{}
 foreach ($name in @('CommandOverlay','CommandPaletteSurface','CommandSearch','CommandResults','CommandEmpty','CloseCommands','FocusMode','CommandMenu','ResponseActivity','ResponseStage','ResponseDetail','ResponseElapsed','ResponseStop','LoadingDot1','LoadingDot2','LoadingDot3','ModelChooser','ModelChoiceLabel','ModelPopup','ModelPopupSurface','ModelSearch','ModelResults','ModelResultCount','ModelEmpty','ApplyModelChoice','ClearChatSearch','FilterAll','FilterLive','FilterSaved','ChatsHeading','ReplySearchBar','ReplySearch','ReplySearchCount','CloseReplySearch','FindReply','ConversationCards','WorkflowResize','WorkDividerColumn','WorkflowScroll','WorkToggle','WorkColumn','ConversationColumn','WorkflowSurface','WorkflowSummary','WorkflowTodos','WorkflowPlan','WorkflowSwarm','ExamplesPanel','NoticeBanner','NoticeText','ChatSurface','ComposerSurface','ComposerContent','ComposerFocusRing','ComposerHint','PromptCount','ThemeToggle','JumpLatest','Panel','TitleBar','Back','Forward','SidebarToggle','SidebarColumn','SidebarDivider','SidebarSurface','Minimize','Maximize','Close','Cancel','Rename','Archive','Sessions','SessionsEmpty','ProjectsList','SessionSearch','SearchPlaceholder','ModelPicker','EffortPicker','WorkspacePath','OpenTerminal','ExampleExplore','ExampleReview','ExampleTest','Activity','Detail','Timeline','Reply','ReplyScroll','Prompt','CommandInput','SecretInput','Placeholder','EmptyState','Send','Copy','Refresh','AddContext','Voice','NewChat','NavHome','NavRecents','NavProjects','NavArchive','NavCompanion','More','Search','ComposerSettings','SidebarHint','SidebarStatus','SessionCount','StatePill','StateText','FooterStatus','WorkspaceTitle','WorkspaceSubtitle')) {
     $controls[$name] = $window.FindName($name)
 }
-foreach ($name in @('OpenSettings','ChatHeader','WelcomeMark')) { $controls[$name] = $window.FindName($name) }
+foreach ($name in @('OpenSettings','ChatHeader','WelcomeMark','ResumeChat')) { $controls[$name] = $window.FindName($name) }
 
 
 function Toggle-FocusMode {
@@ -1089,7 +1091,8 @@ function Update-ComposerState {
     $session = Get-SelectedSessionRow
     $selected = Get-SelectedSessionId
     $hasContent = $script:inputMode -or -not [string]::IsNullOrWhiteSpace($controls.Prompt.Text)
-    $controls.Send.IsEnabled = $null -ne $session -and $hasContent -and [string]$session.state -notin @('stored','offline') -and -not ($script:ownedBusy -and $selected -eq '__companion__' -and -not $script:inputMode) -and $script:pendingKind -notin @('prompt','input') -and $script:queue.Count -eq 0
+    $controls.Send.IsEnabled = $null -ne $session -and $hasContent -and [string]$session.state -notin @('stored','offline') -and -not ($script:ownedBusy -and $selected -eq '__companion__' -and -not $script:inputMode) -and $script:pendingKind -notin @('prompt','input','new_chat','resume_chat') -and $script:queue.Count -eq 0
+    $controls.ResumeChat.IsEnabled = -not $script:ownedBusy -and $script:queue.Count -eq 0 -and $script:pendingKind -in @('','status','sessions','transcript')
 }
 
 function Save-GuiSettings {
@@ -1568,7 +1571,9 @@ function Format-Transcript($transcript) {
 function Get-SessionRows {
     $rows = New-Object System.Collections.Generic.List[object]
     $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+    if ($script:ownedSessionId) { [void]$seen.Add($script:ownedSessionId) }
     foreach ($live in @($script:liveSessions)) {
+        if ($live.id -eq $script:ownedSessionId) { continue }
         [void]$rows.Add($live)
         if ($live.id) { [void]$seen.Add([string]$live.id) }
     }
@@ -1648,6 +1653,12 @@ function Set-Snapshot($snapshot) {
     $firstConnection = -not $script:hasLiveSnapshot
     $script:hasLiveSnapshot = $true
     $script:ownedBusy = [bool]$snapshot.owned_busy
+    $ownedId = [string]$snapshot.owned_session_id
+    if ($ownedId -and -not $script:ownedSessionId -and $script:draftSession -eq '__companion__' -and $script:pendingKind -ne 'resume_chat') {
+        $script:draftSession = $ownedId
+        $script:drafts.Remove('__companion__')
+    }
+    $script:ownedSessionId = $ownedId
     $script:responseDisconnected = $false
     $script:working = [int]$snapshot.working
     $selected = $controls.Sessions.SelectedValue
@@ -1762,19 +1773,22 @@ function Update-SelectedSession([string]$sessionId = '') {
     }
     $session = @($script:allSessions | Where-Object { $_.id -eq $selected }) | Select-Object -First 1
     if (-not $session) { return }
-    if ($script:draftSession -ne [string]$selected) {
+    $draftKey = Get-ChatDraftKey $selected
+    if ($script:draftSession -ne $draftKey) {
         if ($controls.ReplySearchBar.Visibility -eq 'Visible') { Close-ConversationSearch }
         $script:deliveryNotice = ''
         $script:noticeUntil = [DateTime]::MinValue
         if ($script:draftSession) { $script:drafts[$script:draftSession] = $controls.Prompt.Text }
-        $script:draftSession = [string]$selected
+        $script:draftSession = $draftKey
         $controls.Prompt.Text = [string]$script:drafts[$script:draftSession]
         $controls.Prompt.CaretIndex = $controls.Prompt.Text.Length
         $controls.ReplyScroll.ScrollToHome()
     }
     $storedOnly = [string]$session.state -eq 'stored'
+    $canResume = $storedOnly -and [string]$session.source -eq 'alphacode'
+    $controls.ResumeChat.Visibility = if ($canResume) { 'Visible' } else { 'Collapsed' }
     $controls.Prompt.IsReadOnly = $storedOnly
-    $controls.Placeholder.Text = if ($storedOnly) { 'Saved chat · open Terminal to continue' } else { 'Describe a task. Ask a question. Start here.' }
+    $controls.Placeholder.Text = if ($canResume) { 'Resume this chat to send a message' } elseif ($storedOnly) { 'Open Terminal to continue this imported chat' } else { 'Describe a task. Ask a question. Start here.' }
     $controls.ModelPicker.IsEnabled = -not $storedOnly -and $script:availableModels.Count -gt 0 -and -not $script:modelRequestPending
     $controls.EffortPicker.IsEnabled = -not $storedOnly -and -not [string]::IsNullOrWhiteSpace($script:selectedModel) -and -not $script:effortRequestPending
     $controls.WorkspaceTitle.Text = $session.title
@@ -1782,7 +1796,7 @@ function Update-SelectedSession([string]$sessionId = '') {
         'working' { if ($session.detail) { [string]$session.detail } else { 'Working in this workspace…' } }
         'attention' { 'This workspace needs a decision from you' }
         'offline' { 'The workspace is reconnecting to its local daemon' }
-        'stored' { 'Saved chat from the CLI session list · read-only here' }
+        'stored' { if ($canResume) { 'Saved chat · ready to resume' } else { 'Imported chat · opens in Terminal' } }
         default { if ($session.working_dir) { [string]$session.working_dir } else { 'Ready to work in your workspace' } }
     }
     $controls.SidebarHint.Text = "Open: $($session.title)"
@@ -1790,7 +1804,7 @@ function Update-SelectedSession([string]$sessionId = '') {
     $controls.Activity.Text = switch ($session.state) { 'working' { 'Working on it' } 'attention' { 'Needs your attention' } 'offline' { 'Reconnecting to session' } 'stored' { 'Saved chat' } default { 'Ready for your next idea' } }
     $controls.Detail.Text = $session.detail
     Set-TextDirection $controls.Detail $session.detail
-    if ($storedOnly) { $controls.Timeline.Text = if ([string]$session.source -eq 'alphacode') { 'Read-only history · resume this chat from the terminal to continue' } else { 'Resume this imported chat from the terminal to view and continue it' } }
+    if ($storedOnly) { $controls.Timeline.Text = if ($canResume) { 'Select Resume chat to continue' } else { 'Open Terminal to view and continue this imported chat' } }
     elseif ($script:snapshot.activity -and @($script:snapshot.activity).Count -gt 0) { $controls.Timeline.Text = (@($script:snapshot.activity) -join "`n") } else { $controls.Timeline.Text = 'Live activity will appear here' }
     $inputRequest = if ($selected -eq '__companion__') { $script:snapshot.input_request } else { $null }
     $script:inputMode = $null -ne $inputRequest
@@ -1850,7 +1864,7 @@ function Update-SelectedSession([string]$sessionId = '') {
     $controls.WorkspacePath.ToolTip = if ($workspace) { $workspace } else { 'Choose a folder with the + button' }
     $controls.Archive.Content = if ([bool]$session.saved) { [char]0x2605 } else { [char]0x2606 }
     $controls.Archive.Foreground = Get-GuiBrush $(if ([bool]$session.saved) { 'Warning' } else { 'Muted' })
-    $controls.Send.ToolTip = if ($storedOnly) { 'Resume this chat from the terminal to continue it' } else { 'Send prompt (Enter; Shift+Enter or Alt+Enter for a new line)' }
+    $controls.Send.ToolTip = if ($canResume) { 'Resume this chat to send a message' } elseif ($storedOnly) { 'Open Terminal to continue this imported chat' } else { 'Send prompt (Enter; Shift+Enter or Alt+Enter for a new line)' }
     $notice = if ($script:inputMode) { [string]$inputRequest.prompt } elseif ($script:deliveryNotice -and [DateTime]::UtcNow -lt $script:noticeUntil) { $script:deliveryNotice } else { '' }
     $noticeRole = if (-not $script:inputMode -and $notice -eq 'Prompt delivered') { 'Success' } else { 'Warning' }
     $controls.NoticeText.Foreground = Get-GuiBrush $noticeRole
@@ -1869,7 +1883,7 @@ function Send-Prompt {
     $content = if ($script:passwordMode) { $controls.SecretInput.Password } elseif ($script:inputMode) { $controls.CommandInput.Text } else { $controls.Prompt.Text }
     if (-not $script:inputMode -and [string]::IsNullOrWhiteSpace($content)) { return }
     if ($Preview) { $controls.Detail.Text = 'Preview only. No prompt was sent.'; return }
-    if ($script:queue.Count -gt 0 -or $script:pendingKind -in @('prompt','input')) { return }
+    if ($script:queue.Count -gt 0 -or $script:pendingKind -in @('prompt','input','new_chat','resume_chat')) { return }
     $script:deliveryNotice = ''
     $script:noticeUntil = [DateTime]::MaxValue
     $script:submittedInput = $script:inputMode
@@ -2274,7 +2288,7 @@ function Start-NewChat {
         $controls.Sessions.SelectedValue = '__companion__'
     }
     $controls.SessionSearch.Clear()
-    $controls.Prompt.Clear(); $controls.CommandInput.Clear(); $controls.SecretInput.Clear(); $controls.Prompt.Focus()
+    $controls.CommandInput.Clear(); $controls.SecretInput.Clear(); $controls.Prompt.Focus()
     $script:lastSignature = ''
     $script:transcript = ''; $script:transcriptFor = ''
     Queue-Action 'new_chat' '__companion__'
@@ -2345,6 +2359,11 @@ function Get-SelectedSessionId {
     return ''
 }
 
+function Get-ChatDraftKey([string]$sessionId) {
+    if ($sessionId -eq '__companion__' -and $script:ownedSessionId) { return $script:ownedSessionId }
+    return $sessionId
+}
+
 function Get-SelectedSessionRow {
     $id = Get-SelectedSessionId
     if ([string]::IsNullOrWhiteSpace($id)) { return $null }
@@ -2362,6 +2381,15 @@ $controls.Cancel.Add_Click({
     Clear-GuiNotice
     Queue-Action 'cancel' $selected
     $controls.FooterStatus.Text = 'Cancelling the running turn...'
+})
+
+$controls.ResumeChat.Add_Click({
+    $session = Get-SelectedSessionRow
+    if (-not $session -or $session.state -ne 'stored' -or $session.source -ne 'alphacode') { return }
+    if (-not (Can-QueueAction)) { return }
+    Queue-Action 'resume_chat' ([string]$session.id)
+    $controls.ResumeChat.IsEnabled = $false
+    Show-GuiNotice 'Resuming the saved chat…' 75
 })
 
 # Rename and Archive both need a value, so they open a small labeled input
@@ -2707,9 +2735,26 @@ $timer.Add_Tick({
                     Show-GuiNotice 'Reconnecting to AlphaCode…' 20
                 }
                 elseif ($response.ok -and $script:pendingKind -eq 'new_chat') {
+                    if ($script:draftSession -and $script:draftSession -ne '__companion__') {
+                        $script:drafts[$script:draftSession] = $controls.Prompt.Text
+                    }
+                    $script:drafts.Remove('__companion__')
+                    $script:draftSession = ''
+                    $script:ownedSessionId = ''
+                    if ($response.snapshot) { Set-Snapshot $response.snapshot }
                     Show-GuiNotice 'New chat ready  ·  type a prompt to begin'
                     $controls.Prompt.Focus() | Out-Null
                     $script:lastPoll = [DateTime]::MinValue
+                }
+                elseif ($response.ok -and $script:pendingKind -eq 'resume_chat') {
+                    $controls.SessionSearch.Clear()
+                    Set-Navigation 'Home'
+                    Set-Snapshot $response.snapshot
+                    $controls.Sessions.SelectedValue = '__companion__'
+                    Update-SelectedSession '__companion__'
+                    Show-GuiNotice 'Saved chat resumed'
+                    $controls.Prompt.Focus() | Out-Null
+                    $script:lastStoredPoll = [DateTime]::MinValue
                 }
                 elseif ($response.ok -and $script:pendingKind -eq 'archive') {
                     $verb = if ([bool]$response.saved) { 'Saved' } else { 'Unsaved' }
@@ -2765,7 +2810,7 @@ $timer.Add_Tick({
                     $script:dictationAutoSend = $false
                     Send-Prompt
                 }
-            } elseif (([DateTime]::UtcNow - $script:requestStarted).TotalSeconds -gt $(if ($script:pendingKind -eq 'dictate') { 90 } elseif ($script:pendingKind -in @('prompt','input')) { 75 } else { 12 })) {
+            } elseif (([DateTime]::UtcNow - $script:requestStarted).TotalSeconds -gt $(if ($script:pendingKind -eq 'dictate') { 90 } elseif ($script:pendingKind -in @('prompt','input','resume_chat')) { 75 } else { 12 })) {
                 throw 'Connection timed out. Check the session before resending; delivery may have succeeded.'
             }
             return
@@ -2800,7 +2845,7 @@ $timer.Add_Tick({
         }
         if ($request) {
             $script:pendingKind = $request.action
-            if ($request.action -in @('prompt','input')) { $script:submittedPrompt = $request.prompt; $script:submittedSession = [string]$request.session_id }
+            if ($request.action -in @('prompt','input')) { $script:submittedPrompt = $request.prompt; $script:submittedSession = Get-ChatDraftKey ([string]$request.session_id) }
             $script:inputWriter.WriteLine(($request | ConvertTo-Json -Compress))
             $script:pending = $script:process.StandardOutput.ReadLineAsync()
             $script:requestStarted = [DateTime]::UtcNow

@@ -1,6 +1,36 @@
 use super::*;
 use crate::alphacode_provider_openrouter::stream::OpenRouterStream;
 
+/// A runtime and its forks share the result of the usage-option probe.
+#[derive(Default)]
+pub(super) struct StreamUsageSupport {
+    rejected: Mutex<HashMap<String, std::time::Instant>>,
+}
+
+impl StreamUsageSupport {
+    const RETEST_AFTER: std::time::Duration = std::time::Duration::from_secs(3600);
+
+    pub(super) fn should_request(&self, model: &str) -> bool {
+        self.rejected
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(model)
+            .is_none_or(|rejected_at| rejected_at.elapsed() >= Self::RETEST_AFTER)
+    }
+
+    fn remember_rejection(&self, model: &str) {
+        let mut rejected = self
+            .rejected
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        rejected.retain(|_, rejected_at| rejected_at.elapsed() < Self::RETEST_AFTER);
+        if rejected.len() >= 256 {
+            rejected.clear();
+        }
+        rejected.insert(model.to_owned(), std::time::Instant::now());
+    }
+}
+
 fn local_endpoint_troubleshooting_hint(api_base: &str, model: &str) -> &'static str {
     let lower = api_base.to_ascii_lowercase();
     if lower.contains("localhost:11434") || lower.contains("127.0.0.1:11434") {
@@ -247,10 +277,11 @@ pub(super) async fn run_stream_with_retries(
     api_base: String,
     auth: ProviderAuth,
     send_openrouter_headers: bool,
-    request: Value,
+    mut request: Value,
     // The chat body already encoded by the caller. The context pre-flight
     // guard and the wire send share this one serialization.
-    request_body: bytes::Bytes,
+    mut request_body: bytes::Bytes,
+    stream_usage_support: Option<Arc<StreamUsageSupport>>,
     responses_fallback: super::openrouter_responses_fallback::ResponsesFallbackContext,
     tx: mpsc::Sender<Result<StreamEvent>>,
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
@@ -266,6 +297,22 @@ pub(super) async fn run_stream_with_retries(
                 next_retry_delay.take(),
             );
             tokio::time::sleep(delay).await;
+            // A repaired attempt can fail later in the stream. Keep it
+            // repaired when replaying, including a newly learned rejection.
+            if stream_usage_support
+                .as_ref()
+                .is_some_and(|support| !support.should_request(&model))
+                && let Some(fields) = request.as_object_mut()
+                && fields.remove("stream_options").is_some()
+            {
+                match serde_json::to_vec(&request) {
+                    Ok(body) => request_body = bytes::Bytes::from(body),
+                    Err(error) => {
+                        let _ = tx.send(Err(error.into())).await;
+                        return;
+                    }
+                }
+            }
             crate::alphacode_base::logging::info(&format!(
                 "Retrying API request using {} (attempt {}/{})",
                 auth.label(),
@@ -307,6 +354,7 @@ pub(super) async fn run_stream_with_retries(
             send_openrouter_headers,
             &request,
             request_body.clone(),
+            stream_usage_support.as_deref(),
             &responses_fallback,
             attempt_tx,
             Arc::clone(&provider_pin),
@@ -379,6 +427,7 @@ async fn stream_response(
     send_openrouter_headers: bool,
     request: &Value,
     request_body: bytes::Bytes,
+    stream_usage_support: Option<&StreamUsageSupport>,
     responses_fallback: &super::openrouter_responses_fallback::ResponsesFallbackContext,
     tx: mpsc::Sender<Result<StreamEvent>>,
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
@@ -510,6 +559,12 @@ async fn stream_response(
             && let Some(repaired) =
                 repair_unsupported_optional_parameter(status, &upstream_body, request)
         {
+            if request.get("stream_options").is_some()
+                && repaired.get("stream_options").is_none()
+                && let Some(support) = stream_usage_support
+            {
+                support.remember_rejection(&model);
+            }
             let body = bytes::Bytes::from(serde_json::to_vec(&repaired)?);
             crate::alphacode_base::logging::info(
                 "Provider rejected an optional request setting; retrying once without that setting",
@@ -521,6 +576,7 @@ async fn stream_response(
                 send_openrouter_headers,
                 &repaired,
                 body,
+                stream_usage_support,
                 responses_fallback,
                 tx,
                 provider_pin,
@@ -1055,6 +1111,7 @@ mod tests {
                 false,
                 &request,
                 bytes::Bytes::from(serde_json::to_vec(&request).unwrap()),
+                None,
                 &fallback,
                 tx,
                 Arc::new(Mutex::new(None)),

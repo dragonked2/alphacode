@@ -242,6 +242,17 @@ pub(super) fn context_adaptive_tools(
     selected
 }
 
+/// Copy the shared tool definitions only if this session can no longer use one.
+pub(super) fn retain_available_tool_definitions(
+    tools: &mut Arc<Vec<ToolDefinition>>,
+    available_names: &[String],
+) {
+    let is_available = |tool: &ToolDefinition| available_names.binary_search(&tool.name).is_ok();
+    if !tools.iter().all(is_available) {
+        Arc::make_mut(tools).retain(is_available);
+    }
+}
+
 /// Keep the discovery entry point and explicitly promoted tools available to
 /// local models even when relevance scoring would otherwise drop them.
 pub(super) fn context_adaptive_tools_with_promotions(
@@ -701,7 +712,7 @@ impl Agent {
         self.stdin_request_tx = Some(tx);
     }
 
-    pub(super) async fn tool_definitions(&mut self) -> Vec<ToolDefinition> {
+    pub(super) async fn tool_definitions(&mut self) -> Arc<Vec<ToolDefinition>> {
         if self.session.is_canary {
             self.registry.register_selfdev_tools().await;
         }
@@ -750,7 +761,7 @@ impl Agent {
             }
         }
 
-        let tools = self.build_filtered_tool_definitions().await;
+        let tools = Arc::new(self.build_filtered_tool_definitions().await);
 
         // Lock the tool list to prevent cache invalidation when more tools
         // arrive asynchronously mid-session.

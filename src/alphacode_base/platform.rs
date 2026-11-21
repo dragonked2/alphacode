@@ -1,5 +1,12 @@
 use std::path::Path;
 
+#[cfg(windows)]
+#[path = "platform/windows_console_handoff.rs"]
+mod windows_console_handoff;
+
+#[cfg(windows)]
+pub(crate) use windows_console_handoff::console_supervisor_pid;
+
 /// Keep a captured helper from opening a console when launched by the daemon.
 /// Foreground terminal programs must retain their console attachment.
 pub fn hide_helper_console(command: &mut std::process::Command) -> &mut std::process::Command {
@@ -584,15 +591,9 @@ pub fn replace_process(cmd: &mut std::process::Command) -> std::io::Error {
 ///
 /// On Unix this is [`replace_process`] (exec never returns).
 ///
-/// On Windows it spawns the replacement and *waits* for it, then exits with
-/// its code. The shell that started us blocks on this process, so it must not
-/// return to its prompt while the replacement owns the console: when it exits
-/// early, the shell prints a prompt and starts reading console input while the
-/// replacement TUI is also reading it. Keystrokes then split between the two —
-/// the replacement renders but looks frozen and "cannot be typed into", and
-/// reopening a terminal reproduces it as long as the binary keeps handing off
-/// to a newer one. Waiting keeps the shell blocked until the whole chain ends,
-/// which is exec-like semantics without exec on Windows.
+/// On Windows the first process waits on behalf of the shell. Successive
+/// AlphaCode replacements transfer the wait handle back to that process so
+/// the shell stays blocked and intermediate clients can exit.
 pub fn replace_process_wait(cmd: &mut std::process::Command) -> std::io::Error {
     #[cfg(unix)]
     {
@@ -600,13 +601,7 @@ pub fn replace_process_wait(cmd: &mut std::process::Command) -> std::io::Error {
     }
     #[cfg(windows)]
     {
-        match cmd.spawn() {
-            Ok(mut child) => {
-                let code = child.wait().ok().and_then(|status| status.code());
-                std::process::exit(code.unwrap_or(0));
-            }
-            Err(error) => error,
-        }
+        windows_console_handoff::replace(cmd)
     }
 }
 

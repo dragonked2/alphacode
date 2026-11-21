@@ -210,8 +210,20 @@ pub(crate) enum Command {
         #[arg(long, conflicts_with = "json")]
         ndjson: bool,
 
+        /// Read a UTF-8 prompt from a file
+        #[arg(long, value_name = "PATH", conflicts_with = "stdin")]
+        prompt_file: Option<std::path::PathBuf>,
+
+        /// Read a UTF-8 prompt from standard input until EOF
+        #[arg(long)]
+        stdin: bool,
+
         /// The message to send
-        message: String,
+        #[arg(
+            required_unless_present_any = ["prompt_file", "stdin"],
+            conflicts_with_all = ["prompt_file", "stdin"]
+        )]
+        message: Option<String>,
     },
 
     /// Login to a provider via OAuth, API key, or local credentials
@@ -362,6 +374,10 @@ pub(crate) enum Command {
     /// Ambient mode management
     #[command(subcommand)]
     Ambient(AmbientCommand),
+
+    /// Manage one-shot and recurring workspace jobs
+    #[command(subcommand)]
+    Schedule(ScheduleCommand),
 
     /// Optional AlphaCode Cloud/Jade integration commands
     #[command(subcommand)]
@@ -967,6 +983,10 @@ pub(crate) enum PluginCommand {
         /// Install from a Git repository URL
         #[arg(long)]
         git: bool,
+
+        /// Install the exact Git commit identified by its full hash
+        #[arg(long, requires = "git", value_name = "COMMIT")]
+        rev: Option<String>,
     },
 
     /// Remove an installed plugin
@@ -1206,6 +1226,42 @@ pub(crate) enum AmbientCommand {
     /// Run an ambient cycle in a visible TUI (internal, spawned by the ambient runner)
     #[command(hide = true)]
     RunVisible,
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum ScheduleCommand {
+    /// Schedule a fresh session in the current workspace
+    Create {
+        /// Delay before the first run, in minutes
+        #[arg(long, conflicts_with = "at", required_unless_present_any = ["at", "every_minutes"])]
+        in_minutes: Option<std::num::NonZeroU32>,
+        /// RFC 3339 timestamp for the first run
+        #[arg(long)]
+        at: Option<String>,
+        /// Repeat at this interval in minutes
+        #[arg(long)]
+        every_minutes: Option<std::num::NonZeroU32>,
+        /// Read a UTF-8 prompt from a file
+        #[arg(long, value_name = "PATH", conflicts_with = "stdin")]
+        prompt_file: Option<std::path::PathBuf>,
+        /// Read a UTF-8 prompt from standard input
+        #[arg(long)]
+        stdin: bool,
+        /// The task prompt
+        #[arg(required_unless_present_any = ["prompt_file", "stdin"], conflicts_with_all = ["prompt_file", "stdin"])]
+        message: Option<String>,
+    },
+    /// List jobs and their next due times
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pause future runs of a job
+    Pause { id: String },
+    /// Resume a paused job
+    Resume { id: String },
+    /// Cancel future runs of a job
+    Cancel { id: String },
 }
 
 #[derive(Subcommand, Debug)]

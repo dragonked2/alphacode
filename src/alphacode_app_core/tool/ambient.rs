@@ -949,8 +949,10 @@ impl ScheduleTool {
             .ok_or_else(|| anyhow::anyhow!("schedule_id is required for action=cancel"))?;
 
         let mut manager = AmbientManager::new()?;
-        let Some(item) = manager.cancel_schedule(id)? else {
-            anyhow::bail!("No scheduled task found with id '{}'", id);
+        let Some(item) = manager.cancel_session_schedule(id)? else {
+            anyhow::bail!(
+                "No session-scheduled task found with id '{id}'. Manage workspace jobs with alphacode schedule."
+            );
         };
         nudge_schedule_runner();
 
@@ -999,13 +1001,26 @@ fn format_schedule_target(target: &ScheduleTarget) -> String {
         ScheduleTarget::Spawn { parent_session_id } => {
             format!("spawn one child session from {}", parent_session_id)
         }
+        ScheduleTarget::Workspace => "fresh workspace session".to_string(),
     }
 }
 
 fn format_scheduled_item(item: &ScheduledItem) -> String {
+    let status = if item.paused { "paused" } else { "active" };
+    let recurrence = item.repeat_every_minutes.map_or_else(
+        || "once".to_string(),
+        |minutes| {
+            format!(
+                "every {}",
+                crate::ambient::format_minutes_human(minutes.get())
+            )
+        },
+    );
     format!(
-        "- {} | {} | {:?} | {} | {}",
+        "- {} | {} | {} | {} | {:?} | {} | {}",
         item.id,
+        status,
+        recurrence,
         item.scheduled_for,
         item.priority,
         format_schedule_target(&item.target),

@@ -25,7 +25,9 @@ use crate::alphacode_app_core::session::Session;
 use crate::alphacode_app_core::tool;
 use crate::alphacode_app_core::tool::ambient as ambient_tools;
 use chrono::Utc;
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Notify, RwLock};
 
 const MAX_IDLE_POLL_SECS: u64 = 30;
@@ -39,12 +41,10 @@ pub struct AmbientRunnerHandle {
 struct AmbientRunnerInner {
     /// Current snapshot of ambient state (for queries)
     state: RwLock<AmbientState>,
-    /// Queue item count for widget
-    queue_count: RwLock<usize>,
-    /// Next queue item context preview
-    next_queue_preview: RwLock<Option<String>>,
     /// Wake notify (nudge the loop to re-check sooner)
     wake_notify: Notify,
+    schedule_notify: Notify,
+    schedule_active: AtomicBool,
     /// Whether the runner loop is active
     running: RwLock<bool>,
     /// Safety system shared with ambient tools
@@ -64,9 +64,9 @@ impl AmbientRunnerHandle {
         Self {
             inner: Arc::new(AmbientRunnerInner {
                 state: RwLock::new(state),
-                queue_count: RwLock::new(0),
-                next_queue_preview: RwLock::new(None),
                 wake_notify: Notify::new(),
+                schedule_notify: Notify::new(),
+                schedule_active: AtomicBool::new(false),
                 running: RwLock::new(false),
                 safety,
                 notifier: NotificationDispatcher::new(),
@@ -79,11 +79,24 @@ impl AmbientRunnerHandle {
     /// Nudge the ambient loop to check sooner (e.g., after session close/crash).
     pub fn nudge(&self) {
         self.inner.wake_notify.notify_one();
+        self.inner.schedule_notify.notify_one();
     }
 
     /// Check if the runner loop is active.
     pub async fn is_running(&self) -> bool {
         *self.inner.running.read().await
+    }
+
+    pub(crate) fn has_active_schedule(&self) -> bool {
+        self.inner.schedule_active.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn has_queued_workspace_jobs() -> anyhow::Result<bool> {
+        let queue = ambient::ScheduledQueue::load(ambient::paths::queue_path()?)?;
+        Ok(queue
+            .items()
+            .iter()
+            .any(|item| !item.paused && item.target == ScheduleTarget::Workspace))
     }
 
     /// Get current ambient state snapshot.
@@ -192,10 +205,10 @@ impl AmbientRunnerHandle {
                 let now = Utc::now();
                 let items = mgr.queue().items();
                 let queue_count = items.len();
-                let next_item = items.iter().min_by_key(|item| item.scheduled_for);
+                let next_item = mgr.queue().peek_next();
                 let overdue_queue_count = items
                     .iter()
-                    .filter(|item| item.scheduled_for <= now)
+                    .filter(|item| !item.paused && item.scheduled_for <= now)
                     .count();
                 let reminder_items: Vec<_> = items
                     .iter()
@@ -204,11 +217,12 @@ impl AmbientRunnerHandle {
                 let reminder_count = reminder_items.len();
                 let next_reminder = reminder_items
                     .iter()
+                    .filter(|item| !item.paused)
                     .min_by_key(|item| item.scheduled_for)
                     .copied();
                 let overdue_reminder_count = reminder_items
                     .iter()
-                    .filter(|item| item.scheduled_for <= now)
+                    .filter(|item| !item.paused && item.scheduled_for <= now)
                     .count();
 
                 (
@@ -294,6 +308,7 @@ impl AmbientRunnerHandle {
                                 ScheduleTarget::Spawn { parent_session_id } => {
                                     ("spawn", None, Some(parent_session_id.clone()))
                                 }
+                                ScheduleTarget::Workspace => ("workspace", None, None),
                             };
                         let overdue_seconds =
                             (Utc::now() - item.scheduled_for).num_seconds().max(0);
@@ -303,6 +318,8 @@ impl AmbientRunnerHandle {
                             "context": item.context,
                             "task_description": item.task_description,
                             "priority": format!("{:?}", item.priority),
+                            "repeat_every_minutes": item.repeat_every_minutes,
+                            "paused": item.paused,
                             "created_at": item.created_at.to_rfc3339(),
                             "target_kind": target_kind,
                             "target_session_id": target_session_id,
@@ -310,8 +327,8 @@ impl AmbientRunnerHandle {
                             "working_dir": item.working_dir,
                             "relevant_files": item.relevant_files,
                             "git_branch": item.git_branch,
-                            "overdue": item.scheduled_for <= Utc::now(),
-                            "overdue_seconds": overdue_seconds,
+                            "overdue": !item.paused && item.scheduled_for <= Utc::now(),
+                            "overdue_seconds": if item.paused { 0 } else { overdue_seconds },
                         })
                     })
                     .collect();
@@ -407,52 +424,56 @@ impl AmbientRunnerHandle {
         &self,
         provider: &Arc<dyn Provider>,
         item: &ScheduledItem,
-        parent_session_id: &str,
+        parent_session_id: Option<&str>,
     ) -> anyhow::Result<String> {
-        let mut child = match Session::load(parent_session_id) {
-            Ok(parent) => {
-                let mut child = Session::create(
-                    Some(parent_session_id.to_string()),
-                    Some(
-                        item.task_description
-                            .clone()
-                            .unwrap_or_else(|| "Scheduled task".to_string()),
-                    ),
-                );
-                child.replace_messages(parent.messages.clone());
-                child.compaction = parent.compaction.clone();
-                child.provider_key = parent.provider_key.clone();
-                child.route_api_method = parent.route_api_method.clone();
-                child.model = parent.model.clone();
-                child.subagent_model = parent.subagent_model.clone();
-                child.improve_mode = parent.improve_mode;
-                child.autoreview_enabled = parent.autoreview_enabled;
-                child.autojudge_enabled = parent.autojudge_enabled;
-                child.is_canary = parent.is_canary;
-                child.testing_build = parent.testing_build.clone();
-                child.is_debug = parent.is_debug;
-                child.memory_injections = parent.memory_injections.clone();
-                child.replay_events = parent.replay_events.clone();
-                child.working_dir = item.working_dir.clone().or(parent.working_dir.clone());
-                child
-            }
-            Err(err) => {
-                logging::warn(&format!(
-                    "Ambient runner: failed to load parent session {} for spawned scheduled task {}; creating a fresh child instead: {}",
-                    parent_session_id, item.id, err
-                ));
-                let mut child = Session::create(
-                    Some(parent_session_id.to_string()),
-                    Some(
-                        item.task_description
-                            .clone()
-                            .unwrap_or_else(|| "Scheduled task".to_string()),
-                    ),
-                );
-                child.working_dir = item.working_dir.clone();
-                child
-            }
+        let title = if item.target == ScheduleTarget::Workspace {
+            let first_line = item
+                .context
+                .trim()
+                .lines()
+                .next()
+                .unwrap_or("Scheduled task");
+            crate::util::truncate_str(first_line, 100).to_string()
+        } else {
+            item.task_description
+                .clone()
+                .unwrap_or_else(|| "Scheduled task".to_string())
         };
+        let mut child = Session::create(parent_session_id.map(str::to_string), Some(title));
+        child.working_dir = item.working_dir.clone();
+        if let Some(parent_session_id) = parent_session_id {
+            match Session::load(parent_session_id) {
+                Ok(parent) => {
+                    child.replace_messages(parent.messages.clone());
+                    child.compaction = parent.compaction.clone();
+                    child.provider_key = parent.provider_key.clone();
+                    child.route_api_method = parent.route_api_method.clone();
+                    child.model = parent.model.clone();
+                    child.subagent_model = parent.subagent_model.clone();
+                    child.improve_mode = parent.improve_mode;
+                    child.autoreview_enabled = parent.autoreview_enabled;
+                    child.autojudge_enabled = parent.autojudge_enabled;
+                    child.is_canary = parent.is_canary;
+                    child.testing_build = parent.testing_build.clone();
+                    child.is_debug = parent.is_debug;
+                    child.memory_injections = parent.memory_injections.clone();
+                    child.replay_events = parent.replay_events.clone();
+                    child.working_dir = item.working_dir.clone().or(parent.working_dir.clone());
+                }
+                Err(err) => {
+                    logging::warn(&format!(
+                        "Ambient runner: failed to load parent session {} for spawned scheduled task {}; creating a fresh child instead: {}",
+                        parent_session_id, item.id, err
+                    ));
+                }
+            }
+        } else if !item
+            .working_dir
+            .as_deref()
+            .is_some_and(|path| Path::new(path).is_dir())
+        {
+            anyhow::bail!("The scheduled workspace is unavailable");
+        }
         child.status = crate::session::SessionStatus::Closed;
         child.save()?;
 
@@ -506,7 +527,7 @@ impl AmbientRunnerHandle {
             }
             ScheduleTarget::Spawn { parent_session_id } => {
                 let spawned_session_id = self
-                    .spawn_session_for_scheduled_item(provider, item, parent_session_id)
+                    .spawn_session_for_scheduled_item(provider, item, Some(parent_session_id))
                     .await?;
                 logging::info(&format!(
                     "Ambient runner: spawned scheduled task {} into child session {} from {}",
@@ -514,20 +535,90 @@ impl AmbientRunnerHandle {
                 ));
                 Ok(())
             }
+            ScheduleTarget::Workspace => {
+                let session_id = self
+                    .spawn_session_for_scheduled_item(provider, item, None)
+                    .await?;
+                logging::info(&format!(
+                    "Ambient runner: completed scheduled task {} in session {}",
+                    item.id, session_id
+                ));
+                Ok(())
+            }
         }
     }
 
-    async fn deliver_ready_direct_items(
-        &self,
-        provider: &Arc<dyn Provider>,
-        items: Vec<ScheduledItem>,
+    /// Direct jobs run independently of ambient cycles and their pause state.
+    pub(crate) async fn run_schedule_loop(
+        self,
+        provider: Arc<dyn Provider>,
+        accepts_workspace_jobs: bool,
     ) {
-        for item in items {
-            if let Err(e) = self.deliver_scheduled_direct_item(provider, &item).await {
-                logging::error(&format!(
-                    "Ambient runner: failed to deliver scheduled direct item {}: {}",
-                    item.id, e
-                ));
+        loop {
+            let inner = Arc::clone(&self.inner);
+            let tick = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+                let mut queue = ambient::ScheduledQueue::load(ambient::paths::queue_path()?)?;
+                let include = |item: &ScheduledItem| {
+                    item.target.is_direct_delivery()
+                        && (accepts_workspace_jobs || item.target != ScheduleTarget::Workspace)
+                };
+                let now = Utc::now();
+                let next_due = queue
+                    .items()
+                    .iter()
+                    .filter(|item| !item.paused && include(item))
+                    .map(|item| item.scheduled_for)
+                    .min();
+                let claim = if next_due.is_some_and(|due| due <= now) {
+                    inner.schedule_active.store(true, Ordering::Release);
+                    queue.claim_next_direct_item(include)?
+                } else {
+                    None
+                };
+                Ok((next_due, claim))
+            })
+            .await;
+            if !matches!(&tick, Ok(Ok((_, Some(_))))) {
+                self.inner.schedule_active.store(false, Ordering::Release);
+            }
+            let sleep = match tick {
+                Ok(Ok((_, Some((_delivery_lock, item))))) => {
+                    if let Err(error) = self.deliver_scheduled_direct_item(&provider, &item).await {
+                        logging::error(&format!(
+                            "Ambient runner: failed to deliver scheduled item {}: {error:#}",
+                            item.id
+                        ));
+                    }
+                    self.inner.schedule_active.store(false, Ordering::Release);
+                    continue;
+                }
+                Ok(Ok((next_due, None))) => next_due
+                    .and_then(|due| (due - Utc::now()).to_std().ok())
+                    .unwrap_or_else(|| {
+                        std::time::Duration::from_secs(if next_due.is_some() {
+                            5
+                        } else {
+                            MAX_IDLE_POLL_SECS
+                        })
+                    })
+                    .clamp(
+                        std::time::Duration::from_millis(100),
+                        std::time::Duration::from_secs(MAX_IDLE_POLL_SECS),
+                    ),
+                Ok(Err(error)) => {
+                    logging::error(&format!(
+                        "Ambient runner: could not load schedule queue: {error:#}"
+                    ));
+                    std::time::Duration::from_secs(MAX_IDLE_POLL_SECS)
+                }
+                Err(error) => {
+                    logging::error(&format!("Ambient runner: schedule worker stopped: {error}"));
+                    std::time::Duration::from_secs(MAX_IDLE_POLL_SECS)
+                }
+            };
+            tokio::select! {
+                _ = self.inner.schedule_notify.notified() => {},
+                _ = tokio::time::sleep(sleep) => {},
             }
         }
     }
@@ -627,59 +718,23 @@ impl AmbientRunnerHandle {
                 }
             }
 
-            // Load manager to check should_run and update queue info
-            let (should_run, ready_direct_items, next_direct_due) = match AmbientManager::new() {
-                Ok(mut mgr) => {
-                    let ready_direct_items = mgr.take_ready_direct_items();
-                    let next_direct_due = mgr
-                        .queue()
-                        .items()
-                        .iter()
-                        .filter(|item| item.target.is_direct_delivery())
-                        .map(|item| item.scheduled_for)
-                        .min();
-                    // Update queue info for widget
-                    {
-                        let mut qc = self.inner.queue_count.write().await;
-                        *qc = mgr.queue().len();
+            let should_run = ambient_allowed
+                && match AmbientManager::new() {
+                    Ok(manager) => manager.should_run() || ambient::has_pending_directives(),
+                    Err(error) => {
+                        logging::error(&format!("Ambient runner: failed to load manager: {error}"));
+                        false
                     }
-                    {
-                        let mut qp = self.inner.next_queue_preview.write().await;
-                        *qp = mgr.queue().peek_next().map(|i| i.context.clone());
-                    }
-                    // Also run if there are pending email reply directives
-                    (
-                        ambient_allowed && (mgr.should_run() || ambient::has_pending_directives()),
-                        ready_direct_items,
-                        next_direct_due,
-                    )
-                }
-                Err(e) => {
-                    logging::error(&format!("Ambient runner: failed to load manager: {}", e));
-                    (false, Vec::new(), None)
-                }
-            };
-
-            if !ready_direct_items.is_empty() {
-                self.deliver_ready_direct_items(&provider, ready_direct_items)
-                    .await;
-            }
+                };
 
             if !should_run {
                 let sleep_secs = if ambient_allowed {
-                    let interval = scheduler
+                    scheduler
                         .calculate_interval(None)
                         .as_secs()
-                        .max(MAX_IDLE_POLL_SECS);
-                    let next_direct_secs = next_direct_due
-                        .map(|next| (next - Utc::now()).num_seconds().max(0) as u64)
-                        .unwrap_or(interval);
-                    interval.min(next_direct_secs.max(1))
+                        .max(MAX_IDLE_POLL_SECS)
                 } else {
-                    next_direct_due
-                        .map(|next| (next - Utc::now()).num_seconds().max(0) as u64)
-                        .map(|secs| secs.clamp(1, MAX_IDLE_POLL_SECS))
-                        .unwrap_or(MAX_IDLE_POLL_SECS)
+                    MAX_IDLE_POLL_SECS
                 };
 
                 logging::info(&format!(
@@ -846,7 +901,13 @@ impl AmbientRunnerHandle {
         let state = self.inner.state.read().await.clone();
 
         let mgr = AmbientManager::new()?;
-        let queue_items: Vec<_> = mgr.queue().items().to_vec();
+        let queue_items: Vec<_> = mgr
+            .queue()
+            .items()
+            .iter()
+            .filter(|item| !item.paused && !item.target.is_direct_delivery())
+            .cloned()
+            .collect();
 
         let memory_manager = MemoryManager::new();
         let graph_health = ambient::gather_memory_graph_health(&memory_manager);

@@ -296,69 +296,21 @@ Optimize engineering work in this order:
 
 **Correctness → Security → Reliability → Compatibility → Maintainability → Simplicity → Performance → Observability → Testability.**
 
-Adapt ordering only where the objective establishes a materially different priority, without sacrificing required safety or correctness.
+Adjust priorities to the objective while preserving required safety and correctness.
 
 ### Repository workflow
 
-Before editing:
-
-- Inspect relevant source files.
-- Check working-tree state and existing changes.
-- Identify architecture and dependencies.
-- Examine relevant tests and configuration.
-- Identify compatibility requirements.
-- Understand the failing behavior.
-- For a broad request, define observable acceptance criteria for each affected workflow. Capture a baseline before changing performance-sensitive paths when practical.
-
-During implementation:
-
-- Fix root causes instead of hiding symptoms.
-- Preserve unrelated changes.
-- Prefer cohesive, minimal modifications.
-- Refactor broadly when explicitly requested and justified.
-- Avoid introducing unnecessary frameworks or abstractions.
-- Preserve public interfaces unless change is required.
-- Handle errors explicitly.
-- Avoid silent failures.
-- Use established project conventions.
-
-After implementation:
-
-- Inspect the diff.
-- Run relevant permitted checks.
-- Test the behavior that changed.
-- Verify important edge cases.
-- Confirm unrelated functionality remains intact where practical.
-- Distinguish newly introduced failures from failures already present in the baseline.
-- Report what each check observed and disclose anything that remains unverified.
-
-Compilation, lint success, or a green process exit is not sufficient proof of correct runtime behavior when stronger verification is available.
+- Before editing, inspect relevant code, working-tree changes, architecture, dependencies, tests, configuration, compatibility requirements, and failing behavior. For broad requests, define observable acceptance criteria for each affected workflow.
+- Fix root causes with cohesive, minimal changes. Preserve unrelated work and public interfaces unless the task requires a change. Follow project conventions, handle errors explicitly, and add abstractions or broad refactors only when justified and in scope.
+- Review the diff and run relevant permitted checks. Exercise changed behavior, edge cases, and unaffected workflows where practical. Verify runtime behavior directly when possible. Distinguish baseline failures from regressions and report results and gaps.
 
 ### Performance optimization
 
-Use a measurement-first approach:
-
-**Baseline → Profile → Identify bottleneck → Optimize → Benchmark → Regression-check.**
-
-Prioritize algorithmic improvements, unnecessary I/O removal, batching, appropriate concurrency, caching, reduced serialization, and efficient data structures.
-
-Do not claim a speedup without comparable measurements.
-
-Maintain correctness across concurrency, retries, cancellation, and partial failures.
+When practical, baseline and profile before editing, then benchmark and check for regressions. Target algorithmic cost, excess I/O and serialization, batching, concurrency, caching, and data structures. Preserve correctness during concurrent work, retries, cancellation, and partial failures. Report speedups only with comparable measurements.
 
 ### Large refactors
 
-When the user requests maximum improvement:
-
-- Audit architecture, correctness, reliability, performance, security, and usability.
-- Separate real defects from optional enhancements.
-- Prioritize high-impact root causes.
-- Implement improvements in coherent groups.
-- Validate each group before dependent changes.
-- Avoid unbounded rewrites that destroy working functionality.
-- Preserve required branding, interfaces, features, and user constraints.
-
-Treat "improve everything" as a broad quality objective, not permission to erase existing functionality.
+For broad improvement requests, review architecture, correctness, reliability, speed, security, and usability. Prioritize concrete defects over optional enhancements. Work in cohesive, verified changes and preserve required branding, interfaces, features, and user constraints.
 
 ## 9. Tool Intelligence and Execution Reliability
 
@@ -692,28 +644,11 @@ Be direct, technically precise, and economical with user attention. Write in cle
 
 ### During execution
 
-For meaningful progress, communicate:
-
-**Action → Observation → Interpretation → Next action.**
-
-Do not narrate every tool call.
-
-Do not repeatedly ask for permission already established.
-
-Do not flood the user with routine process messages.
-
-Share meaningful progress at reasonable intervals, especially for lengthy operations.
+For lengthy work, share meaningful actions, observations, implications, and next steps at reasonable intervals. Avoid routine tool narration and redundant permission requests.
 
 ### Final engineering response
 
-Include:
-
-- What was changed
-- Why the change matters
-- What was verified
-- Which checks passed or failed
-- Remaining limitations
-- Exact reproduction commands when useful
+Report the changes, their impact, verification and check results, remaining limits, and exact reproduction commands when useful.
 
 ### Final security response
 

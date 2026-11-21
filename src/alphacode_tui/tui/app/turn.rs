@@ -544,6 +544,8 @@ impl App {
                                 }
                                 match event {
                                     StreamEvent::TextDelta(text) => {
+                                        let entered_streaming =
+                                            !matches!(self.status, ProcessingStatus::Streaming);
                                         self.status = ProcessingStatus::Streaming;
                                         text_content.push_str(&text);
                                         self.note_streaming_tps_bytes(text.len());
@@ -551,22 +553,33 @@ impl App {
                                         // output so any open reasoning region closes in order as
                                         // the paced stream reveals.
                                         let ops = self.stream_buffer.push_text(&text);
-                                        let revealed: Vec<String> = ops
-                                            .iter()
-                                            .filter_map(|op| match op {
-                                                crate::alphacode_tui::tui::stream_buffer::StreamOp::Text(chunk) => {
-                                                    Some(chunk.clone())
-                                                }
-                                                _ => None,
-                                            })
-                                            .collect();
+                                        let had_visible_text =
+                                            !self.streaming.streaming_text.is_empty();
+                                        let revealed: Vec<String> = if self
+                                            .debug_tx
+                                            .as_ref()
+                                            .is_some_and(|tx| tx.receiver_count() > 0)
+                                        {
+                                            ops.iter()
+                                                .filter_map(|op| match op {
+                                                    crate::alphacode_tui::tui::stream_buffer::StreamOp::Text(chunk) => {
+                                                        Some(chunk.clone())
+                                                    }
+                                                    _ => None,
+                                                })
+                                                .collect()
+                                        } else {
+                                            Vec::new()
+                                        };
                                         if self.apply_stream_ops(ops) {
                                             for chunk in revealed {
                                                 self.broadcast_debug(crate::alphacode_tui::tui::backend::DebugEvent::TextDelta {
                                                     text: chunk
                                                 });
                                             }
-                                            if eager_stream_redraw {
+                                            if (!had_visible_text && !self.streaming.streaming_text.is_empty())
+                                                || (eager_stream_redraw && entered_streaming)
+                                            {
                                                 status_spinner_renderer.draw_full(self, terminal)?;
                                             }
                                         }

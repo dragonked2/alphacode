@@ -322,6 +322,13 @@ To run a task without opening the interactive UI:
 alphacode run "fix the failing test"
 ```
 
+For scripts and CI, keep multiline prompts in a UTF-8 file or pipe them through standard input. Both forms support the same JSON output modes as an inline prompt.
+
+```bash
+alphacode run --json --prompt-file review.md
+cat review.md | alphacode run --ndjson --stdin
+```
+
 ### 4. Optional: connect Firefox
 
 Install the [AlphaCode Browser Agent extension](https://addons.mozilla.org/en-US/firefox/addon/alphacode-browser-agent/), then run:
@@ -625,6 +632,29 @@ AlphaCode includes **40+ tools**. Names and availability can vary with the build
 ### Skills
 
 Skills add reusable, specialized workflows without changing the core agent. Browse them with `/skills`. Examples include `/bugbounty`, `/meme-coin-audit`, and `/frontend-design`.
+
+Share skills as a plugin with `plugin.json` and a `skills/` directory. The manifest requires a `name` and `version`. To use another layout, set `skills` to the relative directories that each contain a `SKILL.md`.
+
+```bash
+alphacode plugin install ./my-plugin
+alphacode plugin install --git --rev <full-commit-hash> <repository-url>
+alphacode plugin list
+```
+
+### Scheduled tasks
+
+Run `alphacode schedule` to manage one-shot and recurring jobs for a workspace. Each run gets a fresh session. The shared server stays up while an active workspace job is pending, and jobs resume on its next startup after a shutdown.
+
+```bash
+alphacode schedule create --in-minutes 15 "Summarize the current worktree changes"
+alphacode schedule create --every-minutes 1440 --prompt-file daily-review.md
+alphacode schedule list --json
+alphacode schedule pause <id>
+alphacode schedule resume <id>
+alphacode schedule cancel <id>
+```
+
+Use `--at` with an RFC 3339 timestamp to choose the first run. After downtime, one overdue run catches up and the original interval resumes. Pause and cancel apply to future runs. AlphaCode records each occurrence before starting it, so a server failure after that point can skip the occurrence rather than repeat its side effects. Use the in-chat `schedule` tool for one-shot reminders tied to a chat. Use `cron` to manage legacy entries.
 
 ### Model Context Protocol (MCP)
 
@@ -942,6 +972,8 @@ See [`docs/configuration.md`](docs/configuration.md) for the full reference.
 
 Start with `alphacode doctor`, which catches most setup problems.
 
+On Windows, an interactive session normally uses one terminal client and one shared server. After a reload, the original launcher may also stay open to keep Command Prompt waiting until the session ends. Later reloads pass the wait back to that same launcher.
+
 | Symptom                              | Quick fix                                                                                 |
 |--------------------------------------|-------------------------------------------------------------------------------------------|
 | `alphacode` command not found        | Open a **new** terminal. Still failing? See the PATH steps below.                         |
@@ -1106,7 +1138,7 @@ If you installed with `cargo install --path .`, run `cargo uninstall alphacode`.
   - macOS: files in `~/Library/Application Support/Mozilla/NativeMessagingHosts/`
   - Windows: a **registry key** under `HKCU\Software\Mozilla\NativeMessagingHosts` (remove it with Registry Editor or `Remove-Item -Path "HKCU:\Software\Mozilla\NativeMessagingHosts\<name>"`)
 - **Credentials:** remove exported `*_API_KEY` variables, and revoke provider API keys or OAuth grants you no longer need.
-- **Scheduled jobs:** remove any recurring tasks created with `cron` or `schedule` **before** deleting local application data.
+- **Scheduled tasks:** cancel pending tasks with `alphacode schedule cancel <id>` before deleting local application data.
 
 **Verify removal**
 

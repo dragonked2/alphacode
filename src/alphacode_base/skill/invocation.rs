@@ -55,7 +55,7 @@ mod tests {
     fn registry(names: &[&str]) -> SkillRegistry {
         let mut registry = SkillRegistry::default();
         for name in names {
-            registry.skills.insert(
+            registry.skills_mut().insert(
                 (*name).to_string(),
                 Arc::new(Skill {
                     name: (*name).to_string(),

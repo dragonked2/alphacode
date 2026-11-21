@@ -741,24 +741,25 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 app.insert_thought_line(thought_line);
                 return eager_stream_redraw;
             }
-            let mut needs_redraw = false;
-            if matches!(
+            let entered_streaming = matches!(
                 app.status,
                 ProcessingStatus::Sending
                     | ProcessingStatus::Connecting(_)
                     | ProcessingStatus::Thinking(_)
-            ) || (app.is_processing && matches!(app.status, ProcessingStatus::Idle))
-            {
+            ) || (app.is_processing
+                && matches!(app.status, ProcessingStatus::Idle));
+            if entered_streaming {
                 app.status = ProcessingStatus::Streaming;
-                needs_redraw = true;
             }
             app.note_streaming_tps_bytes(text.len());
+            let had_visible_text = !app.streaming.streaming_text.is_empty();
             let ops = app.stream_buffer.push_text(&text);
-            if app.apply_stream_ops(ops) {
-                needs_redraw = true;
-            }
+            app.apply_stream_ops(ops);
             app.last_stream_activity = Some(Instant::now());
-            eager_stream_redraw && needs_redraw
+            // Paint the first visible output promptly. The streaming redraw
+            // timer coalesces later deltas, leaving time for input and daemon reads.
+            (!had_visible_text && !app.streaming.streaming_text.is_empty())
+                || (eager_stream_redraw && entered_streaming)
         }
         ServerEvent::TextReplace { text } => {
             let ops = app.stream_buffer.flush();

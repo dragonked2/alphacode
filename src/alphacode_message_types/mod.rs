@@ -28,13 +28,11 @@ pub struct ToolDefinition {
 impl ToolDefinition {
     /// Serialized size of the full tool definition payload sent to providers.
     pub fn prompt_chars(&self) -> usize {
-        serde_json::json!({
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self.input_schema,
-        })
-        .to_string()
-        .len()
+        // Serialize directly from the borrowed fields. Building a Value first
+        // duplicates every nested schema for an estimate used on each round.
+        serde_json::to_vec(self)
+            .expect("tool definitions contain only JSON-serializable fields")
+            .len()
     }
 
     /// Approximate prompt-token cost of this tool's top-level description.
@@ -47,14 +45,7 @@ impl ToolDefinition {
 
     /// Approximate prompt-token cost of the full tool definition payload.
     pub fn prompt_token_estimate(&self) -> usize {
-        estimate_tokens(
-            &serde_json::json!({
-                "name": self.name,
-                "description": self.description,
-                "input_schema": self.input_schema,
-            })
-            .to_string(),
-        )
+        self.prompt_chars() / APPROX_CHARS_PER_TOKEN
     }
 
     pub fn aggregate_prompt_chars(defs: &[ToolDefinition]) -> usize {
@@ -66,8 +57,9 @@ impl ToolDefinition {
     }
 }
 
+const APPROX_CHARS_PER_TOKEN: usize = 4;
+
 fn estimate_tokens(s: &str) -> usize {
-    const APPROX_CHARS_PER_TOKEN: usize = 4;
     s.len() / APPROX_CHARS_PER_TOKEN
 }
 

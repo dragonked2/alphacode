@@ -257,12 +257,13 @@ impl Agent {
         if self.maybe_rotate_free_pool_after_empty_response().is_some() {
             return Ok(true);
         }
-        self.add_message(
+        self.add_message_with_display_role(
             Role::User,
             vec![ContentBlock::Text {
-                text: "The previous provider response was empty after tool results. Please provide the final answer to the user's last request using the tool results above. Do not call more tools unless absolutely necessary.".to_string(),
+                text: "<system-reminder>The previous provider response was empty after tool results. Answer the user's last request using the results above. Call another tool only if essential.</system-reminder>".to_string(),
                 cache_control: None,
             }],
+            Some(StoredDisplayRole::System),
         );
         self.session.save()?;
         Ok(true)
@@ -290,6 +291,9 @@ impl Agent {
             return false;
         }
         let lower = error.to_ascii_lowercase();
+        if crate::alphacode_provider_core::retry::is_hard_quota_error(&lower) {
+            return false;
+        }
 
         // An explicit non-retryable 4xx status means the server
         // rejected this exact request (bad request, auth, not

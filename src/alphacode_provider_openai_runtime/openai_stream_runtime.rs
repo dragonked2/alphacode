@@ -76,12 +76,13 @@ pub(super) async fn force_refresh_openai_token(
 pub(super) async fn stream_response(
     client: Client,
     credentials: Arc<RwLock<CodexCredentials>>,
-    request: Value,
+    request: &Value,
+    request_body: &mut Option<bytes::Bytes>,
     initial_status_detail: String,
     tx: mpsc::Sender<Result<StreamEvent>>,
 ) -> Result<(), OpenAIStreamFailure> {
     use crate::alphacode_message_types::ConnectionPhase;
-    let request_model = openai_request_model(&request);
+    let request_model = openai_request_model(request);
     let stream_started_at = Instant::now();
     log_openai_stream_lifecycle(
         crate::alphacode_base::logging::LogLevel::Info,
@@ -119,10 +120,20 @@ pub(super) async fn stream_response(
 
     emit_connection_phase(&tx, ConnectionPhase::SendingRequest).await;
     let connect_start = std::time::Instant::now();
-    let idle_timeout = effective_https_idle_timeout(&request);
+    let idle_timeout = effective_https_idle_timeout(request);
+    let body = match request_body {
+        Some(body) => body.clone(),
+        None => {
+            let encoded = bytes::Bytes::from(
+                serde_json::to_vec(request).context("Failed to encode OpenAI request")?,
+            );
+            *request_body = Some(encoded.clone());
+            encoded
+        }
+    };
 
     let response = crate::alphacode_provider_core::transport::send_with_initial_response_timeout(
-        builder.json(&request),
+        builder.body(body),
         idle_timeout,
     )
     .await
@@ -403,7 +414,9 @@ pub(super) async fn try_persistent_ws_continuation(
 ) -> PersistentWsResult {
     let request_model = openai_request_model(request);
     let mut guard = persistent_ws.lock().await;
-    let state = match guard.as_mut() {
+    // Keep an in-flight chain out of the cache. Cancellation can drop this
+    // future at any await, leaving the socket with an unread partial response.
+    let mut state = match guard.take() {
         Some(s) => s,
         None => {
             log_openai_stream_lifecycle(
@@ -421,7 +434,6 @@ pub(super) async fn try_persistent_ws_continuation(
     // Check connection age - reconnect before the 60-min server limit
     if state.connected_at.elapsed() >= Duration::from_secs(WEBSOCKET_PERSISTENT_MAX_AGE_SECS) {
         crate::alphacode_base::logging::info("Persistent WS connection too old; forcing reconnect");
-        *guard = None;
         log_openai_stream_lifecycle(
             crate::alphacode_base::logging::LogLevel::Info,
             "persistent_state_reset",
@@ -441,7 +453,7 @@ pub(super) async fn try_persistent_ws_continuation(
         emit_status_detail(tx, "checking websocket").await;
     }
 
-    match ensure_persistent_ws_is_healthy(state, true).await {
+    match ensure_persistent_ws_is_healthy(&mut state, true).await {
         Ok(PersistentWsHealth::Healthy) => {}
         Ok(PersistentWsHealth::Reconnect {
             reset_reason,
@@ -451,7 +463,6 @@ pub(super) async fn try_persistent_ws_continuation(
                 "Persistent WS healthcheck requested reconnect before reuse: {}",
                 detail
             ));
-            *guard = None;
             log_openai_stream_lifecycle(
                 crate::alphacode_base::logging::LogLevel::Info,
                 "persistent_state_reset",
@@ -469,7 +480,6 @@ pub(super) async fn try_persistent_ws_continuation(
                 "Persistent WS healthcheck failed: {}; forcing reconnect",
                 err
             ));
-            *guard = None;
             log_openai_stream_lifecycle(
                 crate::alphacode_base::logging::LogLevel::Warn,
                 "persistent_state_reset",
@@ -503,7 +513,6 @@ pub(super) async fn try_persistent_ws_continuation(
                 ("last_input_item_count", last_input_item_count.to_string()),
             ],
         );
-        *guard = None;
         return PersistentWsResult::NotAvailable;
     }
 
@@ -526,7 +535,6 @@ pub(super) async fn try_persistent_ws_continuation(
     }
     if incremental_items.is_empty() {
         crate::alphacode_base::logging::info("No incremental items to send; need fresh request");
-        *guard = None;
         log_openai_stream_lifecycle(
             crate::alphacode_base::logging::LogLevel::Info,
             "persistent_state_reset",
@@ -842,7 +850,6 @@ pub(super) async fn try_persistent_ws_continuation(
 
         match result {
             Ok(WsMessage::Text(text)) => {
-                let text = text.to_string();
                 if !logged_first_server_event {
                     emit_connection_phase(
                         tx,
@@ -983,7 +990,6 @@ pub(super) async fn try_persistent_ws_continuation(
                 ("response_completed", saw_response_completed.to_string()),
             ],
         );
-        *guard = None;
         return PersistentWsResult::Success;
     }
 
@@ -1013,13 +1019,13 @@ pub(super) async fn try_persistent_ws_continuation(
                 ),
             ],
         );
+        *guard = Some(state);
         PersistentWsResult::Success
     } else {
         // Got response but no response_id - can't chain further
         crate::alphacode_base::logging::warn(
             "Persistent WS: no response_id in response; breaking chain",
         );
-        *guard = None;
         log_openai_stream_lifecycle(
             crate::alphacode_base::logging::LogLevel::Warn,
             "persistent_state_reset",
@@ -1040,7 +1046,7 @@ pub(super) async fn try_persistent_ws_continuation(
 /// This replaces the old `stream_response_websocket` for the fresh-connection path.
 pub(super) async fn stream_response_websocket_persistent(
     credentials: Arc<RwLock<CodexCredentials>>,
-    request: Value,
+    request: &Value,
     tx: mpsc::Sender<Result<StreamEvent>>,
     persistent_ws: Arc<Mutex<Option<PersistentWsState>>>,
     input_item_count: usize,
@@ -1166,38 +1172,28 @@ pub(super) async fn stream_response_websocket_persistent(
         }))
         .await;
 
-    let mut request_event = request;
-    if !request_event.is_object() {
+    let Some(fields) = request.as_object() else {
         return Err(OpenAIStreamFailure::Other(anyhow::anyhow!(
             "Invalid websocket request payload shape; expected an object"
         )));
-    }
-    {
-        let Some(obj) = request_event.as_object_mut() else {
-            return Err(OpenAIStreamFailure::Other(anyhow::anyhow!(
-                "Invalid websocket request payload shape; expected an object"
-            )));
-        };
-        obj.insert(
-            "type".to_string(),
-            serde_json::Value::String("response.create".to_string()),
-        );
-        obj.remove("stream");
-        obj.remove("background");
-    }
+    };
 
-    let request_input_stats = request_event
+    let request_input_stats = request
         .get("input")
         .and_then(|value| value.as_array())
         .map(|items| summarize_ws_input(items))
         .unwrap_or_default();
 
-    let request_text = serde_json::to_string(&request_event).map_err(|err| {
-        OpenAIStreamFailure::Other(anyhow::anyhow!(
-            "Failed to serialize OpenAI websocket request: {}",
-            err
-        ))
-    })?;
+    let request_text = {
+        let event_type = Value::String("response.create".into());
+        let mut event: std::collections::BTreeMap<&str, &Value> = fields
+            .iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "stream" | "background" | "type"))
+            .map(|(key, value)| (key.as_str(), value))
+            .collect();
+        event.insert("type", &event_type);
+        serde_json::to_string(&event).context("Failed to serialize OpenAI websocket request")?
+    };
     let request_send_started_at = Instant::now();
     emit_connection_phase(&tx, ConnectionPhase::SendingRequest).await;
     crate::alphacode_provider_core::request_audit::record_operation(
@@ -1227,7 +1223,7 @@ pub(super) async fn stream_response_websocket_persistent(
     let mut response_id: Option<String> = None;
     let connected_at = Instant::now();
     let mut logged_first_server_event = false;
-    let ws_completion_timeout_secs = effective_ws_completion_timeout_secs(&request_event);
+    let ws_completion_timeout_secs = effective_ws_completion_timeout_secs(request);
 
     loop {
         if !saw_response_completed
@@ -1287,7 +1283,6 @@ pub(super) async fn stream_response_websocket_persistent(
         match result {
             Ok(message) => match message {
                 WsMessage::Text(text) => {
-                    let text = text.to_string();
                     if !logged_first_server_event {
                         emit_connection_phase(&tx, ConnectionPhase::Streaming).await;
                         crate::alphacode_base::logging::info(&format!(
@@ -1579,6 +1574,7 @@ fn classify_unavailable_model_error(status: StatusCode, body: &str) -> Option<St
 pub(super) fn is_retryable_error(error_str: &str) -> bool {
     if error_str.starts_with("rate limited")
         || crate::alphacode_provider_core::retry::embedded_http_status(error_str) == Some(429)
+        || crate::alphacode_provider_core::retry::is_hard_quota_error(error_str)
     {
         return false;
     }

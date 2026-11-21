@@ -253,7 +253,7 @@ pub struct Agent {
     /// Locked tool list: once the first API request is sent, freeze the tool list
     /// to avoid cache invalidation when MCP tools arrive asynchronously.
     /// Cleared on compaction/reset.
-    locked_tools: Option<Vec<ToolDefinition>>,
+    locked_tools: Option<Arc<Vec<ToolDefinition>>>,
     /// One-shot guard for the async MCP-registration race (#206).
     ///
     /// MCP servers connect on a background task and register `mcp__*` tools

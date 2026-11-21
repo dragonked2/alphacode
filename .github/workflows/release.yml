@@ -34,11 +34,28 @@ jobs:
     # avoids a race where all six jobs try to create the same release at once.
     steps:
       - uses: actions/checkout@v5
+      - name: Extract changelog for this release
+        id: changelog
+        shell: bash
+        env:
+          RELEASE_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/alphacode-release-notes.md"
+          awk -v heading="## [${RELEASE_REF#v}]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > "$notes"
+          if grep -q '[^[:space:]]' "$notes"; then
+            printf 'path=%s\n' "$notes" >> "$GITHUB_OUTPUT"
+          fi
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: ${{ steps.changelog.outputs.path }}
+          generate_release_notes: ${{ steps.changelog.outputs.path == '' }}
           draft: true
           fail_on_unmatched_files: false
 

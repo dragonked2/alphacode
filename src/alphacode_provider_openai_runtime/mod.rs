@@ -1235,8 +1235,8 @@ impl OpenAIProvider {
     fn build_response_request(
         model_id: &str,
         instructions: String,
-        input: &[Value],
-        api_tools: &[Value],
+        input: Vec<Value>,
+        mut tools: Vec<Value>,
         is_chatgpt_mode: bool,
         max_output_tokens: Option<u32>,
         reasoning_effort: Option<&str>,
@@ -1245,7 +1245,6 @@ impl OpenAIProvider {
         prompt_cache_retention: Option<&str>,
         native_compaction_threshold: Option<usize>,
     ) -> Value {
-        let mut tools = api_tools.to_vec();
         // The hosted `image_generation` tool is only available to general
         // ChatGPT/GPT models on the Responses backend. Codex models
         // (`*-codex*`) reject unknown hosted tools, so don't attach it for them.
@@ -1255,15 +1254,20 @@ impl OpenAIProvider {
 
         let mut request = serde_json::json!({
             "model": model_id,
-            "instructions": instructions,
-            "input": input,
-            "tools": tools,
+            "instructions": null,
+            "input": null,
+            "tools": null,
             "tool_choice": "auto",
             "parallel_tool_calls": false,
             "stream": true,
             "store": false,
             "include": ["reasoning.encrypted_content"],
         });
+        // Move the large fields into the request. Passing them through json!
+        // would serialize them back into a second tree of owned JSON values.
+        request["instructions"] = Value::String(instructions);
+        request["input"] = Value::Array(input);
+        request["tools"] = Value::Array(tools);
 
         if !is_chatgpt_mode && let Some(max_output_tokens) = max_output_tokens {
             request["max_output_tokens"] = serde_json::json!(max_output_tokens);

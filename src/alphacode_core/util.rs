@@ -111,6 +111,30 @@ pub fn sse_data_line(line: &str) -> Option<&str> {
         .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
 }
 
+/// Return the next frame's end and the start of the following frame. Keep a
+/// scan cursor so a frame split across many network reads is only scanned once.
+pub(crate) fn sse_frame_end(
+    buffer: &str,
+    start: usize,
+    scan: &mut usize,
+) -> Option<(usize, usize)> {
+    let scan_start = (*scan).max(start);
+    let bytes = &buffer.as_bytes()[scan_start..];
+    for pos in memchr::memchr2_iter(b'\r', b'\n', bytes) {
+        let separator_len = if bytes[pos..].starts_with(b"\n\n") {
+            2
+        } else if bytes[pos..].starts_with(b"\r\n\r\n") {
+            4
+        } else {
+            continue;
+        };
+        let end = scan_start + pos;
+        return Some((end, end + separator_len));
+    }
+    *scan = buffer.len().saturating_sub(3).max(start);
+    None
+}
+
 /// Incremental UTF-8 decoder for byte streams whose chunk boundaries are not
 /// guaranteed to fall on character boundaries.
 ///
@@ -135,41 +159,38 @@ impl Utf8StreamDecoder {
 
     /// Decode the next chunk, holding back any incomplete trailing character.
     pub fn decode(&mut self, chunk: &[u8]) -> String {
-        let bytes: &[u8] = if self.carry.is_empty() {
+        let mut text = String::new();
+        self.decode_into(chunk, &mut text);
+        text
+    }
+
+    /// Append directly to an existing buffer, avoiding a temporary string per read.
+    pub(crate) fn decode_into(&mut self, chunk: &[u8], output: &mut String) {
+        let mut carried;
+        let mut bytes: &[u8] = if self.carry.is_empty() {
             chunk
         } else {
-            self.carry.extend_from_slice(chunk);
-            &self.carry
+            carried = std::mem::take(&mut self.carry);
+            carried.extend_from_slice(chunk);
+            &carried
         };
 
-        match std::str::from_utf8(bytes) {
-            Ok(text) => {
-                let out = text.to_string();
-                self.carry.clear();
-                out
-            }
-            Err(error) => {
-                let valid_up_to = error.valid_up_to();
-                // `valid_up_to` is by definition the length of the valid prefix,
-                // so this conversion is exact and never actually substitutes.
-                let good = String::from_utf8_lossy(&bytes[..valid_up_to]).into_owned();
-                let rest = bytes[valid_up_to..].to_vec();
-                match error.error_len() {
-                    // Truncated but potentially valid: keep it for the next chunk.
-                    None => {
-                        self.carry = rest;
-                        good
-                    }
-                    // Genuinely invalid bytes: emit a replacement char and keep going
-                    // rather than discarding the rest of the chunk.
-                    Some(invalid_len) => {
-                        self.carry.clear();
-                        let mut out = good;
-                        out.push('\u{FFFD}');
-                        out.push_str(&self.decode(&rest[invalid_len..]));
-                        out
-                    }
+        loop {
+            let error = match std::str::from_utf8(bytes) {
+                Ok(text) => {
+                    output.push_str(text);
+                    return;
                 }
+                Err(error) => error,
+            };
+            let (valid, rest) = bytes.split_at(error.valid_up_to());
+            output.push_str(&String::from_utf8_lossy(valid));
+            if let Some(invalid_len) = error.error_len() {
+                output.push('\u{FFFD}');
+                bytes = &rest[invalid_len..];
+            } else {
+                self.carry.extend_from_slice(rest);
+                return;
             }
         }
     }

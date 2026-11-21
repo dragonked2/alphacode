@@ -6,7 +6,83 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.1.14] - Pending release
+## [1.1.15] - 2026-11-21
+
+### Added
+
+- **Recurring workspace jobs.** `alphacode schedule` can create one-shot jobs
+  and repeat jobs at a fixed interval, with an optional RFC 3339 start time.
+  List jobs as text or JSON, or pause, resume, and cancel future runs. Jobs run
+  in fresh sessions in the selected workspace. The shared server starts on
+  demand, stays available for queued jobs, and coalesces missed intervals after
+  downtime. Schedule edits and claims are serialized, and each claim is saved
+  before execution to avoid automatic replay after an interruption.
+- **Windows desktop chat resumption.** Resume a saved native chat in its
+  original workspace from the desktop. The app restores recent conversation
+  history and tracks drafts by conversation. Imported chats continue through
+  the terminal.
+- **Headless prompt sources.** `alphacode run --prompt-file` and `--stdin`
+  accept multiline UTF-8 prompts with the existing text, JSON, and NDJSON
+  outputs.
+- **Plugin packages.** Install an exact Git revision with `alphacode plugin
+  install --git --rev`. Skill discovery honors relative directories listed in
+  `plugin.json`, as well as the default `skills/` layout when the list is omitted.
+
+### Changed
+
+- **Prompt and tool context.** Conversational turns use a smaller base prompt.
+  Task tiers retain project and user instructions, and the standard tier adds
+  the skill catalog. The capability brief lists deferred tools without repeating
+  advertised schemas. Cached tool definitions and skill indexes share snapshots
+  and copy only when changed. Tool-size estimates serialize definitions directly.
+- **Memory reranking.** When unanimous agreement is required, a valid empty
+  first ballot settles the result without additional judge calls. Failed ballots
+  and other voting thresholds continue through the remaining judges.
+- **Provider streaming.** OpenAI and OpenRouter share an incremental SSE frame
+  scanner and decode UTF-8 into reusable buffers. OpenAI moves request data into
+  the outgoing payload and reuses the encoded HTTPS body across retries. Its
+  WebSocket activity classifier reads the event header without building a full
+  JSON tree.
+- **Terminal streaming.** The first visible response paints promptly. Later
+  deltas use the redraw timer, and local debug text is copied only when a debug
+  listener is present. Remote reads parse complete frames in the socket buffer
+  and retain a cancellation-safe buffer for partial frames.
+- **Release notes.** GitHub drafts use the matching version's changelog entry
+  when available.
+
+### Fixed
+
+- **Windows reload process buildup.** The original launcher waits for the
+  active client on behalf of Command Prompt. Successive reloads transfer the
+  wait back to that launcher so intermediate clients can exit.
+- **Desktop chat isolation.** Starting or resuming a chat gives the new
+  connection its own state. A late disconnect from the previous chat cannot
+  overwrite the new conversation.
+- **Plugin upgrades.** Stage and validate the replacement before swapping it
+  in. Restore the previous version if publication fails or an upgrade is
+  interrupted. Plugin management validates names and keeps declared skills
+  inside the package.
+- **Scheduling feedback.** The legacy `cron` tool lists, pauses, and removes
+  stored entries without reporting execution that never occurred. The in-chat
+  `schedule` tool continues to deliver one-shot tasks.
+- **Provider retry and cancellation.** Explicit billing-quota errors stop
+  retrying, and cooldown hints from error bodies and headers survive retry
+  handling. OpenAI cancels abandoned stream tasks and caches WebSocket
+  continuations again only after they complete. Compatible OpenRouter endpoints
+  remember rejected streaming-usage options per model across rounds and forks,
+  while honoring explicit request overrides.
+- **Empty provider responses after tools.** Recovery runs at most once and
+  records its prompt as a system reminder. It distinguishes current tool output
+  from older results and standalone reminders.
+- **Evidence freshness.** Reports consult the current hunt evidence ledger
+  instead of drawing on a cached snapshot that could contain retracted findings.
+  The challenge ledger remains bounded and treated as untrusted data.
+- **Skill fixtures.** The invocation test fixture uses the registry's
+  copy-on-write path for inserting skills.
+
+[Full changelog](https://github.com/dragonked2/alphacode/compare/v1.1.14...v1.1.15)
+
+## [1.1.14] - 2026-11-20
 
 ### Added
 

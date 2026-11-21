@@ -666,10 +666,9 @@ impl Agent {
             );
         }
 
-        // One snapshot, used for both consumers. `current_skills_snapshot`
-        // deep-clones the whole skill registry and re-scans the project
-        // overlay directories, so calling it twice per prompt build cost two
-        // full registry clones plus two disk scans for the same data.
+        let resolved_tier = tier.unwrap_or_else(|| self.infer_prompt_tier_from_history());
+
+        // Use the same overlay snapshot for active skill context and discovery.
         let skills = self.current_skills_snapshot();
         let (skill_prompt, evidence) = routed_skill_context(
             &skills,
@@ -678,22 +677,24 @@ impl Agent {
             observed_node_stack,
         );
 
-        let available_skills: Vec<crate::prompt::SkillInfo> = skills
-            .list()
-            .iter()
-            .map(|skill| crate::prompt::SkillInfo {
-                name: skill.name.clone(),
-                description: skill.description.clone(),
-            })
-            .collect();
+        let available_skills = if resolved_tier == crate::prompt::PromptTier::Standard {
+            skills
+                .list()
+                .into_iter()
+                .map(|skill| crate::prompt::SkillInfo {
+                    name: skill.name.clone(),
+                    description: skill.description.clone(),
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
 
         let working_dir = self
             .session
             .working_dir
             .as_ref()
             .map(std::path::PathBuf::from);
-
-        let resolved_tier = tier.unwrap_or_else(|| self.infer_prompt_tier_from_history());
 
         let (mut split, _context_info) = crate::prompt::build_system_prompt_split_with_tier(
             resolved_tier,

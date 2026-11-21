@@ -22,28 +22,9 @@ fn truncated_stream_payload_context(data: &str) -> String {
 /// Advance a cursor instead of moving the remaining network chunk per event.
 /// A chunk containing N events is consumed without quadratic suffix copies.
 fn take_sse_event(buffer: &mut String, start: &mut usize, scan: &mut usize) -> Option<String> {
-    let scan_start = (*scan).max(*start).min(buffer.len());
-    // Search both delimiter forms together. Two separate `find` calls scan
-    // the entire suffix for absent CRLF delimiters on LF-only streams.
-    let bytes = &buffer.as_bytes()[scan_start..];
-    let delimiter = bytes.iter().enumerate().find_map(|(pos, byte)| {
-        if *byte == b'\n' && bytes[pos..].starts_with(b"\n\n") {
-            Some((pos, 2))
-        } else if *byte == b'\r' && bytes[pos..].starts_with(b"\r\n\r\n") {
-            Some((pos, 4))
-        } else {
-            None
-        }
-    });
-    let Some((pos, sep_len)) = delimiter else {
-        // Only a delimiter straddling the refill boundary can begin in the
-        // last three inspected bytes. Do not rescan the whole partial event.
-        *scan = buffer.len().saturating_sub(3).max(*start);
-        return None;
-    };
-    let pos = scan_start + pos;
-    let event = buffer[*start..pos].to_string();
-    *start = pos + sep_len;
+    let (end, next) = crate::alphacode_core::util::sse_frame_end(buffer, *start, scan)?;
+    let event = buffer[*start..end].to_string();
+    *start = next;
     *scan = *start;
     if *start == buffer.len() {
         buffer.clear();
@@ -249,7 +230,8 @@ impl OpenRouterStream {
             // Collect every `data:` line in the event. Keeping only the last one
             // silently dropped content whenever multiple events landed in a
             // single parsed chunk (see #565).
-            let mut data_lines = Vec::new();
+            let mut first_data = None;
+            let mut requeued = String::new();
             let mut saw_done = false;
             for line in event_str.lines() {
                 if let Some(d) =
@@ -257,30 +239,27 @@ impl OpenRouterStream {
                 {
                     if d.trim() == "[DONE]" {
                         saw_done = true;
+                    } else if first_data.is_none() {
+                        first_data = Some(d);
                     } else {
-                        data_lines.push(d);
+                        requeued.push_str("data: ");
+                        requeued.push_str(d);
+                        requeued.push_str("\n\n");
                     }
                 }
             }
 
-            if data_lines.is_empty() {
+            let Some(first_data) = first_data else {
                 if saw_done {
                     self.queue_message_end();
                     return self.pending.pop_front();
                 }
                 continue;
-            }
+            };
 
             // Each `data:` line is its own JSON payload here. Push the extras
             // back onto the front of the buffer as standalone events so none of
             // them is dropped, then handle the first one now.
-            let data = data_lines[0].to_string();
-            let mut requeued = String::new();
-            for extra in &data_lines[1..] {
-                requeued.push_str("data: ");
-                requeued.push_str(extra);
-                requeued.push_str("\n\n");
-            }
             if saw_done {
                 requeued.push_str("data: [DONE]\n\n");
             }
@@ -289,14 +268,14 @@ impl OpenRouterStream {
                 self.buffer_scan = self.buffer_start;
             }
             // Re-join a JSON object the proxy split across two SSE events.
-            let data = match self.partial_json.take() {
-                Some(mut partial) => {
-                    partial.push_str(&data);
-                    partial
-                }
-                None => data,
+            let joined;
+            let data: &str = if let Some(mut partial) = self.partial_json.take() {
+                partial.push_str(first_data);
+                joined = partial;
+                &joined
+            } else {
+                first_data
             };
-            let data = data.as_str();
 
             let parsed: Value = match serde_json::from_str(data) {
                 Ok(v) => v,
@@ -493,15 +472,15 @@ impl Stream for OpenRouterStream {
 
             match self.inner.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(bytes))) => {
-                    let text = self.utf8.decode(&bytes);
+                    let stream = self.as_mut().get_mut();
                     // Compact once per refill, rather than once per SSE event.
-                    let start = self.buffer_start;
-                    if start > 0 && start >= self.buffer.len() / 2 {
-                        self.buffer.drain(..start);
-                        self.buffer_start = 0;
-                        self.buffer_scan = self.buffer_scan.saturating_sub(start);
+                    let start = stream.buffer_start;
+                    if start > 0 && start >= stream.buffer.len() / 2 {
+                        stream.buffer.drain(..start);
+                        stream.buffer_start = 0;
+                        stream.buffer_scan -= start;
                     }
-                    self.buffer.push_str(&text);
+                    stream.utf8.decode_into(&bytes, &mut stream.buffer);
                 }
                 Poll::Ready(Some(Err(e))) => {
                     return Poll::Ready(Some(Err(anyhow::anyhow!("Stream error: {}", e))));

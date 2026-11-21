@@ -236,13 +236,17 @@ impl Bridge {
         {
             return;
         }
+        self.start_owned_chat(None);
+    }
+
+    fn start_owned_chat(&mut self, client: Option<Client>) {
         let (tx, rx) = mpsc::channel(1);
         let (cancel_tx, cancel_rx) = mpsc::channel(1);
         self.prompt_tx = Some(tx);
         self.cancel_tx = Some(cancel_tx);
         let state = Arc::clone(&self.owned);
         tokio::spawn(async move {
-            if let Err(error) = run_owned_chat(Arc::clone(&state), rx, cancel_rx).await {
+            if let Err(error) = run_owned_chat(Arc::clone(&state), rx, cancel_rx, client).await {
                 let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
                 state.busy = false;
                 state.input_request = None;
@@ -569,13 +573,7 @@ impl Bridge {
         Ok(value)
     }
 
-    /// Start a brand-new chat.
-    ///
-    /// The GUI's own chat is the only session it can create and drive, so
-    /// "New chat" resets that session instead of spawning a headless session on
-    /// the server (which the desktop has no connection to and could never
-    /// select). The next prompt subscribes fresh, so the new chat gets a new
-    /// session id and an empty transcript, exactly like the terminal's `/new`.
+    /// Replace the companion conversation with a fresh session.
     async fn submit_new_chat(&mut self, working_dir: Option<&str>) -> Result<Value> {
         {
             let state = self.owned.lock().unwrap_or_else(|error| error.into_inner());
@@ -583,30 +581,84 @@ impl Bridge {
                 bail!("Finish or cancel the current turn before starting a new chat");
             }
         }
-        // Dropping the sender closes the prompt channel, so `run_owned_chat`
-        // finishes its loop and its client connection is released before the
-        // next prompt opens a new one.
+        // Dropping the senders releases the old connection. Give the new worker
+        // its own state so a late disconnect cannot overwrite the new chat.
         self.prompt_tx = None;
         self.cancel_tx = None;
         let normalized_dir = working_dir
             .map(str::trim)
             .filter(|dir| !dir.is_empty())
             .map(str::to_string);
-        let mut state = self.owned.lock().unwrap_or_else(|error| error.into_inner());
-        state.session_id = None;
-        state.reply.clear();
-        state.transcript.clear();
-        state.title = None;
-        state.saved = false;
-        state.error = None;
-        state.input_request = None;
-        state.detail = "New chat ready. Send a prompt to begin.".to_string();
-        state.working_dir = normalized_dir.clone();
+        self.owned = Arc::new(Mutex::new(OwnedChat {
+            detail: "New chat ready. Send a prompt to begin.".to_string(),
+            working_dir: normalized_dir.clone(),
+            ..OwnedChat::default()
+        }));
+        self.runtime_for = None;
         Ok(json!({
             "ok": true,
             "new_chat": true,
             "working_dir": normalized_dir,
         }))
+    }
+
+    async fn resume_stored_chat(&mut self, id: &str) -> Result<Value> {
+        if !self.stored_ids.contains(id) || self.sessions.contains_key(id) {
+            bail!("Select a local AlphaCode chat from saved history to resume it");
+        }
+        {
+            let state = self.owned.lock().unwrap_or_else(|error| error.into_inner());
+            if state.busy {
+                bail!("Finish or cancel the current desktop turn before resuming another chat");
+            }
+        }
+
+        let id = id.to_string();
+        let mut restored = tokio::task::spawn_blocking(move || {
+            let session = crate::session::Session::load(&id)?;
+            let working_dir = session.working_dir.clone();
+            if let Some(path) = &working_dir
+                && !std::path::Path::new(path).is_dir()
+            {
+                bail!("The saved workspace is unavailable: {path}");
+            }
+            let mut transcript = String::new();
+            let history = crate::session::render_messages(&session);
+            let count = history.len();
+            for message in history.into_iter().skip(count.saturating_sub(40)) {
+                let role = match message.role.as_str() {
+                    "user" => "You",
+                    "assistant" => "AlphaCode",
+                    _ => "Session",
+                };
+                let body = display_text(&message.content, 4000);
+                if !body.trim().is_empty() {
+                    append_reply(&mut transcript, &format!("{role}\n{body}\n\n"));
+                }
+            }
+            Ok::<_, anyhow::Error>(OwnedChat {
+                session_id: Some(id),
+                working_dir,
+                title: Some(session.display_title_or_name().to_string()),
+                saved: session.saved,
+                transcript,
+                detail: "Resumed chat. Ready for your next task.".to_string(),
+                ..OwnedChat::default()
+            })
+        })
+        .await
+        .context("Could not read the saved chat")??;
+        let (client, session_id) =
+            connect_owned_chat(restored.working_dir.clone(), restored.session_id.take()).await?;
+        restored.session_id = Some(session_id);
+
+        // Keep the previous conversation available until the daemon confirms
+        // that the new connection is attached to the requested session.
+        self.owned = Arc::new(Mutex::new(restored));
+        self.runtime_for = None;
+        self.start_owned_chat(Some(client));
+        let snapshot = self.snapshot(Some(OWN_CHAT)).await;
+        Ok(json!({"ok": true, "snapshot": snapshot}))
     }
 
     /// Tools/skills available to the selected chat, so the desktop shows the
@@ -943,11 +995,10 @@ impl Bridge {
     }
 }
 
-async fn run_owned_chat(
-    state: Arc<Mutex<OwnedChat>>,
-    mut prompts: mpsc::Receiver<DesktopInput>,
-    mut cancels: mpsc::Receiver<()>,
-) -> Result<()> {
+async fn connect_owned_chat(
+    working_dir: Option<String>,
+    resume: Option<String>,
+) -> Result<(Client, String)> {
     if !crate::server_spawn::is_running().await {
         tokio::time::timeout(
             Duration::from_secs(30),
@@ -959,40 +1010,51 @@ async fn run_owned_chat(
     let mut client = Client::connect()
         .await
         .context("Could not connect to AlphaCode")?;
-    let resume = state
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .session_id
-        .clone();
-    let working_dir = state
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .working_dir
-        .clone();
-    client
-        .subscribe_with_info(working_dir, Some(false), resume, false, false)
+    let request_id = client
+        .subscribe_with_info(working_dir, Some(false), resume.clone(), false, false)
         .await?;
     let session_id = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             match client.read_event().await? {
-                ServerEvent::SessionId { session_id } | ServerEvent::History { session_id, .. } => {
+                ServerEvent::SessionId { session_id } | ServerEvent::History { session_id, .. }
+                    if resume
+                        .as_ref()
+                        .is_none_or(|expected| expected == &session_id) =>
+                {
                     return Ok::<_, anyhow::Error>(session_id);
                 }
-                ServerEvent::Error { message, .. } => bail!("{message}"),
+                ServerEvent::Error { id, message, .. } if id == request_id => bail!("{message}"),
                 _ => {}
             }
         }
     })
     .await
     .context("AlphaCode GUI session startup timed out")??;
-    {
+    Ok((client, session_id))
+}
+
+async fn run_owned_chat(
+    state: Arc<Mutex<OwnedChat>>,
+    mut prompts: mpsc::Receiver<DesktopInput>,
+    mut cancels: mpsc::Receiver<()>,
+    client: Option<Client>,
+) -> Result<()> {
+    let mut client = if let Some(client) = client {
+        client
+    } else {
+        let (working_dir, resume) = {
+            let state = state.lock().unwrap_or_else(|error| error.into_inner());
+            (state.working_dir.clone(), state.session_id.clone())
+        };
+        let (client, session_id) = connect_owned_chat(working_dir, resume).await?;
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
         state.session_id = Some(session_id);
         state.error = None;
         if !state.busy {
             state.detail = "Connected. Ready for your next task.".to_string();
         }
-    }
+        client
+    };
     while let Some(prompt) = prompts.recv().await {
         let request_id = match client.send_message(&prompt.content).await {
             Ok(id) => id,
@@ -1269,10 +1331,20 @@ pub(crate) async fn run(once: bool, preview: bool, bridge: bool, no_update: bool
                 }
                 Ok(request) if request.action == "new_chat" => {
                     match state.submit_new_chat(request.working_dir.as_deref()).await {
-                        Ok(value) => {
+                        Ok(mut value) => {
                             state.ensure_owned_chat();
+                            value["snapshot"] = state.snapshot(Some(OWN_CHAT)).await;
                             value
                         }
+                        Err(error) => json!({"ok": false, "error": format!("{error:#}")}),
+                    }
+                }
+                Ok(request) if request.action == "resume_chat" => {
+                    match state
+                        .resume_stored_chat(request.session_id.as_deref().unwrap_or(""))
+                        .await
+                    {
+                        Ok(value) => value,
                         Err(error) => json!({"ok": false, "error": format!("{error:#}")}),
                     }
                 }

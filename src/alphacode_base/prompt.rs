@@ -28,12 +28,16 @@ impl PromptCapabilities {
     }
 }
 
-fn base_system_prompt_parts(capabilities: PromptCapabilities) -> Vec<String> {
-    let mut parts = vec![DEFAULT_SYSTEM_PROMPT.to_string()];
+fn base_system_prompt_parts(base: &str, capabilities: PromptCapabilities) -> Vec<String> {
+    let mut parts = vec![base.to_string()];
     if capabilities.mermaid {
         parts.push(MERMAID_PROMPT.to_string());
     }
     parts
+}
+
+fn prompt_parts_len(parts: &[String]) -> usize {
+    parts.iter().map(String::len).sum::<usize>() + 2 * parts.len().saturating_sub(1)
 }
 
 /// Built-in default swarm prompt: model-routing guidance for spawned swarm
@@ -372,9 +376,9 @@ pub fn build_system_prompt_full_with_capabilities(
     working_dir: Option<&Path>,
     capabilities: PromptCapabilities,
 ) -> (String, ContextInfo) {
-    let mut parts = base_system_prompt_parts(capabilities);
+    let mut parts = base_system_prompt_parts(DEFAULT_SYSTEM_PROMPT, capabilities);
     let mut info = ContextInfo {
-        system_prompt_chars: parts.join("\n\n").len(),
+        system_prompt_chars: prompt_parts_len(&parts),
         ..Default::default()
     };
 
@@ -627,63 +631,26 @@ pub fn build_system_prompt_split_with_tier(
     working_dir: Option<&Path>,
     capabilities: PromptCapabilities,
 ) -> (SplitSystemPrompt, ContextInfo) {
-    let mut static_parts = base_system_prompt_parts(capabilities);
+    let base = match tier {
+        PromptTier::Minimal => MINIMAL_IDENTITY_PROMPT,
+        PromptTier::Compact => COMPACT_AGENT_PROMPT,
+        PromptTier::Standard => DEFAULT_SYSTEM_PROMPT,
+    };
+    let mut static_parts = base_system_prompt_parts(base, capabilities);
     let mut dynamic_parts = Vec::new();
     let mut info = ContextInfo {
-        system_prompt_chars: static_parts.join("\n\n").len(),
+        system_prompt_chars: prompt_parts_len(&static_parts),
         ..Default::default()
     };
 
     // === STATIC CONTENT (cacheable) ===
 
-    // Minimal tier drops everything that exists only to steer the model
-    // toward tool use / project-specific behavior. A short identity block
-    // compact identity is plenty for "hi" / "ok" / "thanks" turns and lets
-    // those turns ride the prompt cache without shipping project guidance.
-    if tier == PromptTier::Minimal {
-        // Replace the full base prompt with the compact identity.
-        static_parts.clear();
-        static_parts.push(MINIMAL_IDENTITY_PROMPT.to_string());
-        if capabilities.mermaid {
-            static_parts.push(MERMAID_PROMPT.to_string());
-        }
-        info.system_prompt_chars = static_parts.join("\n\n").len();
-    } else if tier == PromptTier::Compact {
-        // Small local models cannot carry the full operating manual alongside
-        // tool schemas and conversation history. Keep explicit project and
-        // user instructions while omitting the bundled playbook and skill list.
-        static_parts.clear();
-        static_parts.push(COMPACT_AGENT_PROMPT.to_string());
-        if capabilities.mermaid {
-            static_parts.push(MERMAID_PROMPT.to_string());
-        }
-
-        let (md_content, md_info) = load_agents_md_files_from_dir(working_dir);
-        if let Some(content) = md_content {
-            static_parts.push(content);
-        }
-        info.has_project_agents_md = md_info.has_project_agents_md;
-        info.project_agents_md_chars = md_info.project_agents_md_chars;
-        info.has_global_agents_md = md_info.has_global_agents_md;
-        info.global_agents_md_chars = md_info.global_agents_md_chars;
-
-        let (overlay_content, overlay_chars) = load_prompt_overlay_files_from_dir(working_dir);
-        if let Some(content) = overlay_content {
-            info.prompt_overlay_chars = overlay_chars;
-            static_parts.push(content);
-        }
-
-        let (preferred_tools_content, preferred_tools_chars) =
-            load_preferred_tools_files_from_dir(working_dir);
-        if let Some(content) = preferred_tools_content {
-            static_parts.push(content);
-            info.preferred_tools_chars = preferred_tools_chars;
-        }
-        info.system_prompt_chars = static_parts.join("\n\n").len();
-    } else {
+    // Conversational turns use the identity alone. Both task tiers keep
+    // project and user instructions, and Standard adds the full skill catalog.
+    if tier != PromptTier::Minimal {
         // Add self-dev guidance only in active self-dev sessions. Normal sessions
         // learn about the on-ramp from the mode-aware `selfdev` tool schema.
-        if is_selfdev {
+        if tier == PromptTier::Standard && is_selfdev {
             let selfdev_prompt = build_selfdev_prompt_static_for_working_dir(working_dir);
             info.selfdev_chars = selfdev_prompt.len();
             static_parts.push(selfdev_prompt);
@@ -714,21 +681,20 @@ pub fn build_system_prompt_split_with_tier(
             static_parts.push(content);
         }
 
-        // Add available skills list (fairly static).
-        //
-        // Keep a short capability hint: names alone are often ambiguous and
-        // do not give the model enough information to select the right skill.
-        if !available_skills.is_empty() {
+        if tier == PromptTier::Compact {
+            info.system_prompt_chars = prompt_parts_len(&static_parts);
+        } else if !available_skills.is_empty() {
+            // Keep a short description to clarify ambiguous skill names.
             let mut skills_section =
                 "# Skills (load on demand)\nUse `skill_manage` (load/info) when relevant.\n"
                     .to_string();
             for skill in available_skills {
-                let description = skill
+                let hint: String = skill
                     .description
                     .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let hint: String = description.chars().take(40).collect();
+                    .flat_map(|word| word.chars().chain(std::iter::once(' ')))
+                    .take(40)
+                    .collect();
                 skills_section.push_str(&format!("- `{}`: {}\n", skill.name, hint.trim_end()));
             }
             info.skills_chars = skills_section.len();

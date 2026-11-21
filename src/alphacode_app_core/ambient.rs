@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 mod directives;
@@ -99,11 +100,13 @@ pub enum ScheduleTarget {
     Session { session_id: String },
     /// Spawn a single new session derived from the originating session.
     Spawn { parent_session_id: String },
+    /// Start a fresh session in a workspace selected by the user.
+    Workspace,
 }
 
 impl ScheduleTarget {
     pub fn is_direct_delivery(&self) -> bool {
-        matches!(self, Self::Session { .. } | Self::Spawn { .. })
+        !matches!(self, Self::Ambient)
     }
 }
 
@@ -112,6 +115,10 @@ impl ScheduleTarget {
 pub struct ScheduledItem {
     pub id: String,
     pub scheduled_for: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_every_minutes: Option<NonZeroU32>,
+    #[serde(default)]
+    pub paused: bool,
     pub context: String,
     pub priority: Priority,
     #[serde(default)]

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
+use std::num::NonZeroU32;
 
 use super::paths::{ambient_dir, queue_path, transcripts_dir};
 use super::{
@@ -23,7 +24,7 @@ impl AmbientManager {
         let _ = transcripts_dir()?;
 
         let state = AmbientState::load()?;
-        let queue = ScheduledQueue::load(queue_path()?);
+        let queue = ScheduledQueue::load(queue_path()?)?;
 
         Ok(Self { state, queue })
     }
@@ -59,19 +60,27 @@ impl AmbientManager {
     }
 
     /// Remove and return all ready scheduled items.
-    pub fn take_ready_items(&mut self) -> Vec<ScheduledItem> {
+    pub fn take_ready_items(&mut self) -> Result<Vec<ScheduledItem>> {
         self.queue.pop_ready()
     }
 
     /// Remove and return only ready items targeted at direct delivery into a
     /// specific resumed or spawned session.
-    pub fn take_ready_direct_items(&mut self) -> Vec<ScheduledItem> {
+    pub fn take_ready_direct_items(&mut self) -> Result<Vec<ScheduledItem>> {
         self.queue.take_ready_direct_items()
     }
 
     /// Add a schedule request to the queue. Returns the item ID.
     pub fn schedule(&mut self, request: ScheduleRequest) -> Result<String> {
-        let id = format!("sched_{:08x}", rand::random::<u32>());
+        self.schedule_with_interval(request, None)
+    }
+
+    pub fn schedule_with_interval(
+        &mut self,
+        request: ScheduleRequest,
+        repeat_every_minutes: Option<NonZeroU32>,
+    ) -> Result<String> {
+        let id = format!("sched_{}", uuid::Uuid::new_v4().simple());
         let scheduled_for = request.wake_at.unwrap_or_else(|| {
             Utc::now() + chrono::Duration::minutes(request.wake_in_minutes.unwrap_or(30) as i64)
         });
@@ -79,6 +88,8 @@ impl AmbientManager {
         let item = ScheduledItem {
             id: id.clone(),
             scheduled_for,
+            repeat_every_minutes,
+            paused: false,
             context: request.context,
             priority: request.priority,
             target: request.target,
@@ -91,13 +102,21 @@ impl AmbientManager {
             additional_context: request.additional_context,
         };
 
-        self.queue.push(item);
+        self.queue.push(item)?;
         Ok(id)
     }
 
     /// Cancel a queued scheduled item by ID.
     pub fn cancel_schedule(&mut self, id: &str) -> Result<Option<ScheduledItem>> {
         self.queue.remove_by_id(id)
+    }
+
+    pub(crate) fn cancel_session_schedule(&mut self, id: &str) -> Result<Option<ScheduledItem>> {
+        self.queue.remove_session_schedule(id)
+    }
+
+    pub fn pause_schedule(&mut self, id: &str, paused: bool) -> Result<Option<ScheduledItem>> {
+        self.queue.set_paused(id, paused)
     }
 
     pub fn state(&self) -> &AmbientState {

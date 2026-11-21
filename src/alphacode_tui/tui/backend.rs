@@ -215,15 +215,6 @@ pub enum RemoteRead {
     Disconnected(RemoteDisconnectReason),
 }
 
-/// Classification of a single decoded protocol line read from the server
-/// stream. Used by [`RemoteConnection::next_event`] to keep the cancellation-
-/// safe read loop readable. The event is boxed because [`ServerEvent`] is large.
-enum LineOutcome {
-    Event(Box<ServerEvent>),
-    Skip,
-    Disconnect(RemoteDisconnectReason),
-}
-
 /// Information about the backend's provider
 #[derive(Debug, Clone)]
 pub struct BackendInfo {
@@ -1304,11 +1295,15 @@ impl RemoteConnection {
             // socket. This drains backlog left by a previous (possibly
             // cancelled) call before issuing a new read.
             if let Some(line) = self.take_buffered_line() {
-                match self.classify_protocol_line(line, &mut stray_lines) {
-                    LineOutcome::Event(event) => return RemoteRead::Event(*event),
-                    LineOutcome::Skip => continue,
-                    LineOutcome::Disconnect(reason) => return RemoteRead::Disconnected(reason),
+                if let Some(event) = Self::classify_protocol_line(
+                    &line,
+                    &mut stray_lines,
+                    self.session_id.as_deref(),
+                    self.client_instance_id.as_deref(),
+                ) {
+                    return event;
                 }
+                continue;
             }
 
             // No complete line yet: pull more bytes. `fill_buf` is cancel safe,
@@ -1350,10 +1345,8 @@ impl RemoteConnection {
                 }
                 return RemoteRead::Disconnected(RemoteDisconnectReason::PeerClosed);
             }
-            let len = chunk
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map_or(chunk.len(), |index| index + 1);
+            let newline = memchr::memchr(b'\n', chunk);
+            let len = newline.map_or(chunk.len(), |index| index + 1);
             if remote_protocol_frame_exceeds_limit(self.read_buffer.len(), len) {
                 self.reader.consume(len);
                 self.read_buffer.clear();
@@ -1362,6 +1355,24 @@ impl RemoteConnection {
                     "remote protocol frame exceeded {} bytes",
                     MAX_REMOTE_PROTOCOL_FRAME_BYTES
                 )));
+            }
+            // Most streaming events are already complete in the socket buffer.
+            // Parse in place and consume before the next await. Partial frames
+            // still go through the persistent, cancellation-safe read buffer.
+            if let Some(end) = newline
+                && self.read_buffer.is_empty()
+            {
+                let event = Self::classify_protocol_line(
+                    &chunk[..end],
+                    &mut stray_lines,
+                    self.session_id.as_deref(),
+                    self.client_instance_id.as_deref(),
+                );
+                self.reader.consume(len);
+                if let Some(event) = event {
+                    return event;
+                }
+                continue;
             }
             self.read_buffer.extend_from_slice(&chunk[..len]);
             self.reader.consume(len);
@@ -1377,7 +1388,7 @@ impl RemoteConnection {
         // causes roughly 45 GB of redundant memory scanning.
         let scan_start = self.read_buffer_scan_start.min(self.read_buffer.len());
         let unscanned = &self.read_buffer[scan_start..];
-        let relative_newline = unscanned.iter().position(|&b| b == b'\n');
+        let relative_newline = memchr::memchr(b'\n', unscanned);
         #[cfg(test)]
         {
             self.protocol_bytes_scanned += relative_newline.map_or(unscanned.len(), |i| i + 1);
@@ -1418,39 +1429,43 @@ impl RemoteConnection {
 
     /// Decide what a single decoded protocol line means: a real event, a line
     /// to skip (blank/stray), or a fatal protocol/transport error.
-    fn classify_protocol_line(&self, line: Vec<u8>, stray_lines: &mut usize) -> LineOutcome {
-        let text = match String::from_utf8(line) {
+    fn classify_protocol_line(
+        line: &[u8],
+        stray_lines: &mut usize,
+        session_id: Option<&str>,
+        client_instance_id: Option<&str>,
+    ) -> Option<RemoteRead> {
+        let text = match std::str::from_utf8(line) {
             Ok(text) => text,
-            Err(error) => {
+            Err(_) => {
                 *stray_lines += 1;
-                let preview: String =
-                    String::from_utf8_lossy(&error.as_bytes()[..error.as_bytes().len().min(1024)])
-                        .chars()
-                        .take(240)
-                        .collect();
+                let preview: String = String::from_utf8_lossy(&line[..line.len().min(1024)])
+                    .chars()
+                    .take(240)
+                    .collect();
                 crate::logging::warn(&format!(
                     "RemoteConnection::next_event: skipping stray non-UTF-8 protocol line {}/{} preview={:?} (session_id={:?}, client_instance_id={:?})",
                     *stray_lines,
                     MAX_STRAY_REMOTE_PROTOCOL_LINES,
                     preview,
-                    self.session_id,
-                    self.client_instance_id
+                    session_id,
+                    client_instance_id
                 ));
                 if *stray_lines >= MAX_STRAY_REMOTE_PROTOCOL_LINES {
-                    return LineOutcome::Disconnect(RemoteDisconnectReason::Protocol(
+                    return Some(RemoteRead::Disconnected(RemoteDisconnectReason::Protocol(
                         "too many stray non-JSON protocol lines".to_string(),
-                    ));
+                    )));
                 }
-                return LineOutcome::Skip;
+                return None;
             }
         };
         let trimmed = text.trim_start();
-        if trimmed.trim().is_empty() {
+        if trimmed.is_empty() {
             crate::logging::warn(&format!(
                 "RemoteConnection::next_event: skipping blank line (session_id={:?}, client_instance_id={:?})",
-                self.session_id, self.client_instance_id
+                session_id, client_instance_id
             ));
-            return LineOutcome::Skip;
+            return None;
         }
         if !trimmed.starts_with('{') {
             *stray_lines += 1;
@@ -1460,18 +1475,18 @@ impl RemoteConnection {
                 *stray_lines,
                 MAX_STRAY_REMOTE_PROTOCOL_LINES,
                 preview,
-                self.session_id,
-                self.client_instance_id
+                session_id,
+                client_instance_id
             ));
             if *stray_lines >= MAX_STRAY_REMOTE_PROTOCOL_LINES {
-                return LineOutcome::Disconnect(RemoteDisconnectReason::Protocol(
+                return Some(RemoteRead::Disconnected(RemoteDisconnectReason::Protocol(
                     "too many stray non-JSON protocol lines".to_string(),
-                ));
+                )));
             }
-            return LineOutcome::Skip;
+            return None;
         }
-        match serde_json::from_str(&text) {
-            Ok(event) => LineOutcome::Event(Box::new(event)),
+        match serde_json::from_str(text) {
+            Ok(event) => Some(RemoteRead::Event(event)),
             Err(error) => {
                 // A single unparseable JSON line (e.g. the tail half of a frame
                 // split by a lost write, or an event variant this client build
@@ -1488,16 +1503,15 @@ impl RemoteConnection {
                     MAX_STRAY_REMOTE_PROTOCOL_LINES,
                     error,
                     preview,
-                    self.session_id,
-                    self.client_instance_id
+                    session_id,
+                    client_instance_id
                 ));
                 if *stray_lines >= MAX_STRAY_REMOTE_PROTOCOL_LINES {
-                    return LineOutcome::Disconnect(RemoteDisconnectReason::Protocol(format!(
-                        "too many unparseable protocol lines; last error: {}",
-                        error
+                    return Some(RemoteRead::Disconnected(RemoteDisconnectReason::Protocol(
+                        format!("too many unparseable protocol lines; last error: {}", error),
                     )));
                 }
-                LineOutcome::Skip
+                None
             }
         }
     }

@@ -37,6 +37,7 @@ pub(crate) fn initial_title(args: &Args) -> String {
             AmbientCommand::RunVisible => "alphacode ambient visible".to_string(),
             _ => "alphacode ambient".to_string(),
         },
+        Some(Command::Schedule(_)) => "alphacode schedule".to_string(),
         Some(Command::Cloud(_)) => "alphacode cloud".to_string(),
         Some(Command::Plugin(_)) => "alphacode plugin".to_string(),
         Some(Command::Pair { .. }) => "alphacode pair".to_string(),

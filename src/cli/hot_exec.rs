@@ -71,6 +71,10 @@ fn terminate_other_alphacode_sessions() -> usize {
         .map(|presence| presence.pid)
         .filter(|pid| *pid != self_pid && *pid != 0)
         .collect();
+    #[cfg(windows)]
+    if let Some(supervisor) = crate::platform::console_supervisor_pid() {
+        targets.retain(|pid| *pid != supervisor);
+    }
     targets.sort_unstable();
     targets.dedup();
 
@@ -224,18 +228,8 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
         crate::logging::info(&format!("Reloading with binary built {}...", age));
     }
 
-    // Hand the console to the replacement by spawning it directly and waiting
-    // for it to exit. An earlier design routed this through a detached
-    // "console-handoff helper" that waited for this process to exit first;
-    // that broke the shell's wait chain. The shell that launched this TUI
-    // blocks on *this* process, so the moment it exits the shell prints its
-    // prompt and starts reading the console — while the helper's replacement
-    // TUI is also reading it. Keystrokes then split between the two and the
-    // replacement looks frozen ("update finished, now I cannot type"). Waiting
-    // here keeps the shell blocked for the entire replacement session, which
-    // is the closest Windows gets to exec semantics. The target is a complete
-    // file at a stable path (the installer swaps via rename), so there is no
-    // partial-image race to serialize.
+    // Transfer the console to the replacement while keeping the shell blocked
+    // on the original launcher. The installer publishes whole binaries by rename.
     terminate_other_alphacode_sessions();
     restore_terminal_for_handoff();
     for attempt in 0..3 {

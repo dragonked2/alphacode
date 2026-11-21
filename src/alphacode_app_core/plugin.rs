@@ -22,8 +22,8 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::fs::{self, File, OpenOptions};
+use std::path::{Component, Path, PathBuf};
 
 /// Plugin manifest format. Stored as `plugin.json` inside each plugin
 /// directory.
@@ -105,6 +105,7 @@ pub fn plugins_dir() -> Result<PathBuf> {
 /// List all installed plugins.
 pub fn list_plugins() -> Result<Vec<PluginInfo>> {
     let plugins_dir = plugins_dir()?;
+    recover_interrupted_plugin_upgrades(&plugins_dir)?;
     let mut plugins = Vec::new();
 
     if !plugins_dir.exists() {
@@ -155,7 +156,9 @@ pub fn list_plugins() -> Result<Vec<PluginInfo>> {
 
 /// Get info about a specific plugin by name.
 pub fn get_plugin(name: &str) -> Result<PluginInfo> {
+    validate_plugin_name(name)?;
     let plugins_dir = plugins_dir()?;
+    recover_interrupted_plugin_upgrades(&plugins_dir)?;
     let plugin_dir = plugins_dir.join(name);
 
     if !plugin_dir.exists() {
@@ -184,44 +187,44 @@ pub fn install_new_plugin(source_dir: &Path) -> Result<InstallResult> {
 }
 
 fn install_new_plugin_into(source_dir: &Path, root: &Path) -> Result<InstallResult> {
-    let manifest = load_manifest(&source_dir.join("plugin.json"))?;
-    fs::create_dir_all(root)?;
-    let target_dir = root.join(&manifest.name);
-    if target_dir.try_exists()? {
-        anyhow::bail!("Plugin '{}' is already installed", manifest.name);
-    }
-    let staging = tempfile::tempdir_in(root)?;
-    copy_dir_recursive(source_dir, staging.path())?;
-    // Claim the destination exclusively; a racing import cannot trigger upgrade.
-    fs::create_dir(&target_dir)?;
-    if let Err(error) = copy_dir_recursive(staging.path(), &target_dir) {
-        let _ = fs::remove_dir_all(&target_dir);
-        return Err(error);
-    }
-    let skills_added = discover_skill_names(&target_dir, &manifest);
-    Ok(InstallResult {
-        plugin: PluginInfo {
-            manifest,
-            path: target_dir,
-            skill_count: skills_added.len(),
-        },
-        skills_added,
-    })
+    install_plugin_into(source_dir, root, false)
 }
 
 /// Install or upgrade a plugin from a local directory.
 pub fn install_plugin(source_dir: &Path) -> Result<InstallResult> {
-    let manifest_path = source_dir.join("plugin.json");
-    if !manifest_path.exists() {
-        anyhow::bail!("No plugin.json found in {}", source_dir.display());
+    install_plugin_into(source_dir, &plugins_dir()?, true)
+}
+
+fn lock_plugin_store(root: &Path) -> Result<File> {
+    fs::create_dir_all(root)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(".mutation.lock"))?;
+    file.lock().context("Could not lock the plugin store")?;
+    Ok(file)
+}
+
+fn install_plugin_into(source_dir: &Path, root: &Path, upgrade: bool) -> Result<InstallResult> {
+    let _lock = lock_plugin_store(root)?;
+    if root.canonicalize()?.starts_with(source_dir.canonicalize()?) {
+        anyhow::bail!("Choose a plugin source outside the plugin store's parent directories");
     }
+    let manifest = load_manifest(&source_dir.join("plugin.json"))?;
+    let target_dir = root.join(&manifest.name);
+    let transactions = root.join(".transactions");
+    fs::create_dir_all(&transactions)?;
+    plugin_dir_exists(&transactions)?;
+    let backup = transactions.join(&manifest.name);
+    recover_plugin_install(&target_dir, &backup)?;
+    let exists = plugin_dir_exists(&target_dir)?;
 
-    let manifest = load_manifest(&manifest_path)?;
-    let plugins_dir = plugins_dir()?;
-    let target_dir = plugins_dir.join(&manifest.name);
-
-    // Check if already installed
-    if target_dir.exists() {
+    if exists {
+        if !upgrade {
+            anyhow::bail!("Plugin '{}' is already installed", manifest.name);
+        }
         let existing = load_manifest(&target_dir.join("plugin.json"))?;
         if existing.version == manifest.version {
             anyhow::bail!(
@@ -230,20 +233,40 @@ pub fn install_plugin(source_dir: &Path) -> Result<InstallResult> {
                 manifest.version
             );
         }
-        // Upgrade: remove old version first
-        fs::remove_dir_all(&target_dir)
-            .with_context(|| format!("Failed to remove old plugin: {}", target_dir.display()))?;
     }
 
-    // Copy plugin directory
-    copy_dir_recursive(source_dir, &target_dir)
-        .with_context(|| format!("Failed to copy plugin to {}", target_dir.display()))?;
+    let staging = tempfile::tempdir_in(&transactions)?;
+    let payload = staging.path().join("payload");
+    copy_dir_recursive(source_dir, &payload).context("Could not stage the plugin")?;
+    let staged_manifest = load_manifest(&payload.join("plugin.json"))?;
+    if staged_manifest.name != manifest.name || staged_manifest.version != manifest.version {
+        anyhow::bail!("Plugin manifest changed during installation. Retry the install.");
+    }
+    let skills_added = discover_skill_names(&payload, &staged_manifest);
+    if !staged_manifest.skills.is_empty() && skills_added.len() != staged_manifest.skills.len() {
+        anyhow::bail!("Each manifest skill must point to a distinct SKILL.md within the plugin");
+    }
 
-    // Discover skills
-    let skills_added = discover_skill_names(&target_dir, &manifest);
+    if exists {
+        fs::rename(&target_dir, &backup).context("Could not back up the installed plugin")?;
+    }
+    if let Err(error) = fs::rename(&payload, &target_dir) {
+        recover_plugin_install(&target_dir, &backup).with_context(|| {
+            format!(
+                "Installation failed ({error}). Recovery copy is at {}",
+                backup.display()
+            )
+        })?;
+        return Err(error).context("Could not publish the staged plugin");
+    }
+    if exists {
+        // The replacement is already active. A later mutation can retire the
+        // backup if another process still has a file from it open.
+        let _ = fs::remove_dir_all(&backup);
+    }
 
     let plugin = PluginInfo {
-        manifest,
+        manifest: staged_manifest,
         path: target_dir,
         skill_count: skills_added.len(),
     };
@@ -254,40 +277,145 @@ pub fn install_plugin(source_dir: &Path) -> Result<InstallResult> {
     })
 }
 
+fn recover_plugin_install(target: &Path, backup: &Path) -> Result<()> {
+    if plugin_dir_exists(backup)? {
+        if plugin_dir_exists(target)? {
+            fs::remove_dir_all(backup).context("Could not retire the previous plugin backup")?;
+        } else {
+            fs::rename(backup, target).context("Could not restore the previous plugin")?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn recover_interrupted_plugin_upgrades(root: &Path) -> Result<()> {
+    let transactions = root.join(".transactions");
+    if !plugin_dir_exists(&transactions)? {
+        return Ok(());
+    }
+    let entries = fs::read_dir(transactions).context("Could not read plugin recovery directory")?;
+    let pending: Vec<_> = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().into_string().ok()?;
+            validate_plugin_name(&name).ok()?;
+            let target = root.join(name);
+            (!target.exists()).then(|| (target, entry.path()))
+        })
+        .collect();
+    if !pending.is_empty() {
+        let _lock = lock_plugin_store(root)?;
+        for (target, backup) in pending {
+            if !target.try_exists()? {
+                recover_plugin_install(&target, &backup)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn plugin_dir_exists(path: &Path) -> Result<bool> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("Could not inspect {}", path.display()));
+        }
+    };
+    if !metadata.is_dir() {
+        anyhow::bail!("Expected a regular plugin directory at {}", path.display());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            anyhow::bail!("Expected a regular plugin directory at {}", path.display());
+        }
+    }
+    Ok(true)
+}
+
 /// Install a plugin from a Git repository URL.
 ///
 /// Clones the repo into a temporary directory, validates the manifest,
 /// then copies it into the plugins directory.
 pub async fn install_plugin_from_git(url: &str) -> Result<InstallResult> {
+    install_plugin_from_git_revision(url, None).await
+}
+
+/// Install the default branch or fetch a particular immutable Git commit.
+pub async fn install_plugin_from_git_revision(
+    url: &str,
+    revision: Option<&str>,
+) -> Result<InstallResult> {
+    let candidate = Path::new(url);
+    let local = if candidate.is_relative() && candidate.try_exists().unwrap_or(false) {
+        Some(
+            std::path::absolute(candidate)?
+                .to_string_lossy()
+                .into_owned(),
+        )
+    } else {
+        None
+    };
+    let url = local.as_deref().unwrap_or(url);
     let temp_dir =
         tempfile::tempdir().context("Failed to create temporary directory for plugin clone")?;
 
-    // Clone the repository
-    let status = tokio::process::Command::new("git")
-        .args([
-            "clone",
-            "--depth",
-            "1",
-            url,
-            &temp_dir.path().to_string_lossy(),
-        ])
-        .status()
-        .await
-        .context("Failed to run git clone")?;
-
-    if !status.success() {
-        anyhow::bail!("Failed to clone plugin repository: {}", url);
+    if let Some(commit) = revision {
+        if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            anyhow::bail!("--rev requires the full SHA-1 or SHA-256 commit hash");
+        }
+        let object_format = if commit.len() == 40 {
+            "--object-format=sha1"
+        } else {
+            "--object-format=sha256"
+        };
+        run_plugin_git(temp_dir.path(), &["init", "--quiet", object_format]).await?;
+        run_plugin_git(
+            temp_dir.path(),
+            &["fetch", "--depth", "1", "--", url, commit],
+        )
+        .await?;
+        run_plugin_git(
+            temp_dir.path(),
+            &["checkout", "--detach", "--quiet", commit],
+        )
+        .await?;
+    } else {
+        run_plugin_git(temp_dir.path(), &["clone", "--depth", "1", "--", url, "."]).await?;
     }
 
     install_plugin(temp_dir.path())
 }
 
+async fn run_plugin_git(directory: &Path, args: &[&str]) -> Result<()> {
+    let status = tokio::process::Command::new("git")
+        .current_dir(directory)
+        .args(args)
+        .status()
+        .await
+        .with_context(|| format!("Could not start git {}", args[0]))?;
+    if !status.success() {
+        anyhow::bail!("git {} failed ({status})", args[0]);
+    }
+    Ok(())
+}
+
 /// Remove an installed plugin.
 pub fn remove_plugin(name: &str) -> Result<PluginInfo> {
+    validate_plugin_name(name)?;
     let plugins_dir = plugins_dir()?;
+    let _lock = lock_plugin_store(&plugins_dir)?;
     let plugin_dir = plugins_dir.join(name);
+    let transactions = plugins_dir.join(".transactions");
+    if plugin_dir_exists(&transactions)? {
+        recover_plugin_install(&plugin_dir, &transactions.join(name))?;
+    }
 
-    if !plugin_dir.exists() {
+    if !plugin_dir_exists(&plugin_dir)? {
         anyhow::bail!("Plugin '{}' is not installed", name);
     }
 
@@ -392,14 +520,11 @@ pub fn format_plugin_info(plugin: &PluginInfo) -> String {
     }
 
     // List discovered skills
-    let skills_dir = plugin.path.join("skills");
-    if skills_dir.exists() {
-        let skills = discover_skill_names(&plugin.path, &plugin.manifest);
-        if !skills.is_empty() {
-            output.push_str("\n\nProvided skills:\n");
-            for skill in &skills {
-                output.push_str(&format!("  /{}\n", skill));
-            }
+    let skills = discover_skill_names(&plugin.path, &plugin.manifest);
+    if !skills.is_empty() {
+        output.push_str("\n\nProvided skills:\n");
+        for skill in &skills {
+            output.push_str(&format!("  /{}\n", skill));
         }
     }
 
@@ -416,15 +541,7 @@ fn load_manifest(path: &Path) -> Result<PluginManifest> {
     let manifest: PluginManifest = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse manifest: {}", path.display()))?;
 
-    // Validate required fields
-    if manifest.name.is_empty()
-        || !manifest
-            .name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        anyhow::bail!("Plugin name must use letters, digits, hyphens or underscores");
-    }
+    validate_plugin_name(&manifest.name)?;
     if manifest.version.is_empty() {
         anyhow::bail!("Plugin manifest has empty version");
     }
@@ -432,63 +549,71 @@ fn load_manifest(path: &Path) -> Result<PluginManifest> {
     Ok(manifest)
 }
 
-/// Count skills provided by a plugin.
-fn count_skills_in_plugin(plugin_dir: &Path, manifest: &PluginManifest) -> usize {
-    if !manifest.skills.is_empty() {
-        // Use explicit skill list from manifest
-        manifest
-            .skills
-            .iter()
-            .filter(|skill_path| plugin_dir.join(skill_path).join("SKILL.md").exists())
-            .count()
-    } else {
-        // Auto-discover from skills/ directory
-        let skills_dir = plugin_dir.join("skills");
-        if !skills_dir.exists() {
-            return 0;
-        }
-        fs::read_dir(&skills_dir)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|e| e.path().join("SKILL.md").exists())
-                    .count()
-            })
-            .unwrap_or(0)
+fn validate_plugin_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        anyhow::bail!("Plugin name must use letters, digits, hyphens or underscores");
     }
+    Ok(())
 }
 
-/// Discover skill names from a plugin.
-fn discover_skill_names(plugin_dir: &Path, manifest: &PluginManifest) -> Vec<String> {
-    if !manifest.skills.is_empty() {
-        return manifest
-            .skills
-            .iter()
-            .filter_map(|skill_path| {
-                let dir = plugin_dir.join(skill_path);
-                if dir.join("SKILL.md").exists() {
-                    dir.file_name().map(|n| n.to_string_lossy().into_owned())
-                } else {
-                    None
-                }
-            })
-            .collect();
-    }
+/// Resolve the same skill files for the registry and plugin management UI.
+pub(crate) fn installed_skill_files(plugin_dir: &Path) -> Result<Vec<PathBuf>> {
+    let manifest_path = plugin_dir.join("plugin.json");
+    let manifest = manifest_path
+        .try_exists()?
+        .then(|| load_manifest(&manifest_path))
+        .transpose()?;
+    Ok(plugin_skill_files(plugin_dir, manifest.as_ref()))
+}
 
-    let skills_dir = plugin_dir.join("skills");
-    if !skills_dir.exists() {
+fn plugin_skill_files(plugin_dir: &Path, manifest: Option<&PluginManifest>) -> Vec<PathBuf> {
+    let Ok(root) = plugin_dir.canonicalize() else {
         return Vec::new();
-    }
-
-    fs::read_dir(&skills_dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| e.path().join("SKILL.md").exists())
-                .filter_map(|e| e.file_name().into_string().ok())
+    };
+    let directories: Vec<_> =
+        if let Some(manifest) = manifest.filter(|value| !value.skills.is_empty()) {
+            manifest
+                .skills
+                .iter()
+                .map(Path::new)
+                .filter(|path| {
+                    !path.as_os_str().is_empty()
+                        && path.components().all(|component| {
+                            matches!(component, Component::Normal(_) | Component::CurDir)
+                        })
+                })
+                .map(|path| plugin_dir.join(path))
                 .collect()
-        })
-        .unwrap_or_default()
+        } else {
+            fs::read_dir(plugin_dir.join("skills"))
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .collect()
+        };
+    let mut files: Vec<_> = directories
+        .into_iter()
+        .filter_map(|dir| dir.join("SKILL.md").canonicalize().ok())
+        .filter(|path| path.starts_with(&root) && path.is_file())
+        .collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
+fn count_skills_in_plugin(plugin_dir: &Path, manifest: &PluginManifest) -> usize {
+    plugin_skill_files(plugin_dir, Some(manifest)).len()
+}
+
+fn discover_skill_names(plugin_dir: &Path, manifest: &PluginManifest) -> Vec<String> {
+    plugin_skill_files(plugin_dir, Some(manifest))
+        .iter()
+        .filter_map(|skill| skill.parent()?.file_name()?.to_str().map(str::to_string))
+        .collect()
 }
 
 /// Recursively copy a directory.
@@ -507,6 +632,9 @@ fn copy_dir_bounded(src: &Path, dst: &Path, depth: usize) -> Result<()> {
 
     for entry in fs::read_dir(src)? {
         let entry = entry?;
+        if depth == 0 && entry.file_name() == ".git" {
+            continue;
+        }
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
 

@@ -1,6 +1,6 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
@@ -181,38 +181,30 @@ pub(crate) async fn run_plugin_command(cmd: super::args::PluginCommand) -> Resul
                 );
             }
         }
-        PluginCommand::Install { path, git } => {
-            if git {
-                let result =
-                    crate::alphacode_app_core::plugin::install_plugin_from_git(&path).await?;
-                println!(
-                    "Installed plugin '{}' v{}",
-                    result.plugin.manifest.name, result.plugin.manifest.version
-                );
-                if !result.skills_added.is_empty() {
-                    println!(
-                        "Added {} skills: {}",
-                        result.skills_added.len(),
-                        result.skills_added.join(", ")
-                    );
-                }
+        PluginCommand::Install { path, git, rev } => {
+            let result = if git {
+                crate::alphacode_app_core::plugin::install_plugin_from_git_revision(
+                    &path,
+                    rev.as_deref(),
+                )
+                .await?
             } else {
                 let source = std::path::Path::new(&path);
                 if !source.exists() {
                     anyhow::bail!("Path does not exist: {}", path);
                 }
-                let result = crate::alphacode_app_core::plugin::install_plugin(source)?;
+                crate::alphacode_app_core::plugin::install_plugin(source)?
+            };
+            println!(
+                "Installed plugin '{}' v{}",
+                result.plugin.manifest.name, result.plugin.manifest.version
+            );
+            if !result.skills_added.is_empty() {
                 println!(
-                    "Installed plugin '{}' v{}",
-                    result.plugin.manifest.name, result.plugin.manifest.version
+                    "Added {} skills: {}",
+                    result.skills_added.len(),
+                    result.skills_added.join(", ")
                 );
-                if !result.skills_added.is_empty() {
-                    println!(
-                        "Added {} skills: {}",
-                        result.skills_added.len(),
-                        result.skills_added.join(", ")
-                    );
-                }
             }
         }
         PluginCommand::Remove { name } => {
@@ -1472,6 +1464,116 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable_file(path: &Path) -> bool {
     path.is_file()
+}
+
+pub(crate) fn run_schedule_command(cmd: super::args::ScheduleCommand) -> Result<()> {
+    use super::args::ScheduleCommand;
+    use crate::ambient::{AmbientManager, Priority, ScheduleRequest, ScheduleTarget};
+    use chrono::{TimeDelta, Utc};
+
+    let mut manager = AmbientManager::new()?;
+    match cmd {
+        ScheduleCommand::Create {
+            in_minutes,
+            at,
+            every_minutes,
+            prompt_file,
+            stdin,
+            message,
+        } => {
+            let prompt = match message {
+                Some(message) => message,
+                None => super::dispatch::read_run_prompt(prompt_file, stdin)?,
+            };
+            anyhow::ensure!(!prompt.trim().is_empty(), "The task prompt is empty");
+            let now = Utc::now();
+            let wake_at = match at {
+                Some(at) => chrono::DateTime::parse_from_rfc3339(&at)
+                    .context("--at requires an RFC 3339 timestamp with an explicit offset")?
+                    .with_timezone(&Utc),
+                None => {
+                    let minutes = in_minutes
+                        .or(every_minutes)
+                        .context("Specify when the first run is due")?;
+                    now + TimeDelta::minutes(i64::from(minutes.get()))
+                }
+            };
+            anyhow::ensure!(wake_at > now, "The first run must be in the future");
+            let workspace = std::env::current_dir()?
+                .into_os_string()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("The workspace path must be valid Unicode"))?;
+            let id = manager.schedule_with_interval(
+                ScheduleRequest {
+                    wake_in_minutes: None,
+                    wake_at: Some(wake_at),
+                    context: prompt,
+                    priority: Priority::Normal,
+                    target: ScheduleTarget::Workspace,
+                    created_by_session: String::new(),
+                    working_dir: Some(workspace),
+                    task_description: None,
+                    relevant_files: Vec::new(),
+                    git_branch: None,
+                    additional_context: None,
+                },
+                every_minutes,
+            )?;
+            println!("Scheduled {id} for {}", wake_at.to_rfc3339());
+        }
+        ScheduleCommand::List { json } => {
+            let mut items: Vec<_> = manager.queue().items().iter().collect();
+            items.sort_by_key(|item| (item.paused, item.scheduled_for));
+            if json {
+                println!("{}", serde_json::to_string_pretty(&items)?);
+            } else if items.is_empty() {
+                println!("No scheduled jobs.");
+            } else {
+                for item in items {
+                    let status = if item.paused { "paused" } else { "active" };
+                    let recurrence = item.repeat_every_minutes.map_or_else(
+                        || "once".to_string(),
+                        |minutes| {
+                            format!(
+                                "every {}",
+                                crate::ambient::format_minutes_human(minutes.get())
+                            )
+                        },
+                    );
+                    let prompt = item.task_description.as_deref().unwrap_or(&item.context);
+                    let preview =
+                        crate::util::truncate_str(prompt.lines().next().unwrap_or_default(), 90);
+                    println!(
+                        "{}  {}  {}  {}  {}",
+                        item.id,
+                        status,
+                        item.scheduled_for.to_rfc3339(),
+                        recurrence,
+                        preview
+                    );
+                }
+            }
+        }
+        ScheduleCommand::Pause { id } => {
+            manager
+                .pause_schedule(&id, true)?
+                .with_context(|| format!("Schedule {id} was not found"))?;
+            println!("Paused future runs of {id}");
+        }
+        ScheduleCommand::Resume { id } => {
+            manager
+                .pause_schedule(&id, false)?
+                .with_context(|| format!("Schedule {id} was not found"))?;
+            println!("Resumed {id}");
+        }
+        ScheduleCommand::Cancel { id } => {
+            manager
+                .cancel_schedule(&id)?
+                .with_context(|| format!("Schedule {id} was not found"))?;
+            println!("Cancelled future runs of {id}");
+        }
+    }
+    Ok(())
 }
 
 pub async fn run_ambient_command(cmd: AmbientSubcommand) -> Result<()> {

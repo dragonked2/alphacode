@@ -44,6 +44,7 @@ impl Provider for OpenAIProvider {
         let input = build_responses_input(messages);
         let input_item_count = input.len();
         let api_tools = build_tools(tools);
+        let api_tool_count = api_tools.len();
         let model_id = self.model_id().await;
         let (instructions, is_chatgpt_mode) = {
             let credentials = self.credentials.read().await;
@@ -70,8 +71,8 @@ impl Provider for OpenAIProvider {
         let request = Self::build_response_request(
             &model_id,
             instructions,
-            &input,
-            &api_tools,
+            input,
+            api_tools,
             is_chatgpt_mode,
             self.max_output_tokens,
             api_reasoning_effort.as_deref(),
@@ -95,14 +96,12 @@ impl Provider for OpenAIProvider {
             OpenAITransportMode::WebSocket => true,
             OpenAITransportMode::Auto => Self::should_prefer_websocket(&model_id),
         };
-        // The tool count is needed by the lifecycle log below, so compute it
-        // without cloning the whole tools array. The array copy itself is only
-        // needed for the fingerprint diagnostic, which is off by default.
+        // Count the actual wire tools, including any hosted additions.
         let request_tool_count = request
             .get("tools")
             .and_then(|tools| tools.as_array())
             .map(|tools| tools.len())
-            .unwrap_or(api_tools.len());
+            .unwrap_or(api_tool_count);
         // Used by the lifecycle log below, so it is computed unconditionally.
         // Hashing one short string is cheap; the expensive part of the
         // fingerprint (the canonical payload) is gated.
@@ -110,15 +109,14 @@ impl Provider for OpenAIProvider {
             .get("prompt_cache_key")
             .map(crate::alphacode_provider_core::fingerprint::stable_hash_json);
         if crate::alphacode_provider_core::fingerprint::fingerprint_enabled() {
-            let request_tools = request
-                .get("tools")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!([]));
-            let request_instructions = request.get("instructions").cloned();
+            let input = request["input"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             let canonical_payload = serde_json::json!({
                 "model": request.get("model"),
                 "instructions": request.get("instructions"),
-                "input": &input,
+                "input": input,
                 "tools": request.get("tools"),
                 "tool_choice": request.get("tool_choice"),
                 "parallel_tool_calls": request.get("parallel_tool_calls"),
@@ -134,9 +132,9 @@ impl Provider for OpenAIProvider {
                 &model_id,
                 "openai_responses_full",
                 &canonical_payload,
-                &input,
-                request_instructions.as_ref(),
-                Some(&request_tools),
+                input,
+                request.get("instructions"),
+                request.get("tools"),
                 Some(request_tool_count),
                 &[
                     (
@@ -235,6 +233,10 @@ impl Provider for OpenAIProvider {
             let stream_task = async move {
                 // Attempt persistent WebSocket continuation first
                 if use_websocket_transport {
+                    let input = request["input"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
                     // Track output: a continuation that streams partial output
                     // and then fails falls through to a fresh-connection replay
                     // from the top, which must roll the partial output back.
@@ -245,7 +247,7 @@ impl Provider for OpenAIProvider {
                     let continuation_result = try_persistent_ws_continuation(
                         &persistent_ws,
                         &request,
-                        &input,
+                        input,
                         input_item_count,
                         &attempt_tx,
                     )
@@ -310,8 +312,6 @@ impl Provider for OpenAIProvider {
                                     }))
                                     .await;
                             }
-                            let mut guard = persistent_ws.lock().await;
-                            *guard = None;
                             log_openai_stream_lifecycle(
                                 crate::alphacode_base::logging::LogLevel::Warn,
                                 "persistent_state_reset",
@@ -326,6 +326,7 @@ impl Provider for OpenAIProvider {
 
                 // Normal path: fresh connection with full input (with retry logic)
                 let mut last_error = None;
+                let mut https_request_body = None;
                 let mut force_https_for_request = false;
                 let mut skip_backoff_once = false;
                 let mut next_retry_delay = None;
@@ -430,7 +431,7 @@ impl Provider for OpenAIProvider {
                     let result = if use_websocket {
                         stream_response_websocket_persistent(
                             Arc::clone(&credentials),
-                            request.clone(),
+                            &request,
                             attempt_tx,
                             Arc::clone(&persistent_ws),
                             input_item_count,
@@ -453,7 +454,8 @@ impl Provider for OpenAIProvider {
                         stream_response(
                             attempt_client,
                             Arc::clone(&credentials),
-                            request.clone(),
+                            &request,
+                            &mut https_request_body,
                             if force_https_for_request {
                                 let reason = last_error
                                     .as_ref()
@@ -665,7 +667,11 @@ impl Provider for OpenAIProvider {
                 }
             };
 
-            let result = AssertUnwindSafe(stream_task).catch_unwind().await;
+            let result = tokio::select! {
+                biased;
+                _ = panic_tx.closed() => return,
+                result = AssertUnwindSafe(stream_task).catch_unwind() => result,
+            };
 
             if let Err(panic_payload) = result {
                 let msg = if let Some(text) = panic_payload.downcast_ref::<&str>() {

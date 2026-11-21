@@ -1,28 +1,23 @@
 use crate::alphacode_tool_core::{Tool, ToolContext};
 use crate::alphacode_tool_types::ToolOutput;
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
-use std::path::PathBuf;
-
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Persistent cron job store.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CronJob {
-    pub id: String,
-    pub name: String,
-    pub schedule: String,
-    pub prompt: String,
-    pub workdir: Option<String>,
-    pub created_at: u64,
-    pub last_run: Option<u64>,
-    pub next_run: u64,
-    pub enabled: bool,
-    pub run_count: u64,
-    pub one_shot: bool,
+#[derive(Deserialize, Serialize)]
+struct LegacyCronJob {
+    id: String,
+    name: String,
+    schedule: String,
+    enabled: bool,
+    // Keep the rest of the original record intact when disabling jobs.
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
 }
 
 fn cron_store_path() -> PathBuf {
@@ -32,94 +27,45 @@ fn cron_store_path() -> PathBuf {
         .join("cron_jobs.json")
 }
 
-fn load_jobs() -> Vec<CronJob> {
-    let path = cron_store_path();
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|data| serde_json::from_str(&data).ok())
-        .unwrap_or_default()
+fn load_jobs(path: &Path) -> Result<Vec<LegacyCronJob>> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).context("Invalid legacy cron store"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error).context("Could not read the legacy cron store"),
+    }
 }
 
-fn save_jobs(jobs: &[CronJob]) -> Result<()> {
-    let path = cron_store_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+fn update_jobs(path: &Path, job_id: &str, delete: bool) -> Result<()> {
+    let directory = path.parent().context("Legacy cron store has no parent")?;
+    fs::create_dir_all(directory)?;
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join(".cron_jobs.lock"))?;
+    lock.lock()?;
+
+    let mut jobs = load_jobs(path)?;
+    if !jobs.iter().any(|job| job.id == job_id) {
+        bail!("Legacy cron entry '{job_id}' was not found");
     }
-    let data = serde_json::to_string_pretty(jobs)?;
-    std::fs::write(&path, data)?;
-    Ok(())
-}
-
-fn parse_schedule(schedule: &str, reference: u64) -> Result<(u64, bool)> {
-    let s = schedule.trim().to_lowercase();
-    let now = reference;
-
-    // One-shot: "in 30m", "in 2h", "in 1d"
-    if let Some(rest) = s.strip_prefix("in ") {
-        let secs = parse_duration_secs(rest)?;
-        return Ok((now + secs, true));
-    }
-
-    // Recurring: "every 30m", "every 2h", "every 1d"
-    if let Some(rest) = s.strip_prefix("every ") {
-        let secs = parse_duration_secs(rest)?;
-        return Ok((now + secs, false));
-    }
-
-    // Simple time-of-day: "09:00" (daily at 9am)
-    if let Some((h, m)) = parse_time_of_day(&s) {
-        let today = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let day_secs = 86400u64;
-        let target_today = (today / day_secs) * day_secs + (h as u64 * 3600) + (m as u64 * 60);
-        let next = if target_today > now {
-            target_today
-        } else {
-            target_today + day_secs
-        };
-        return Ok((next, false));
-    }
-
-    Err(anyhow::anyhow!(
-        "Cannot parse schedule '{schedule}'. Use 'every 30m', 'every 2h', 'in 5m', or 'HH:MM'."
-    ))
-}
-
-fn parse_duration_secs(s: &str) -> Result<u64> {
-    let s = s.trim();
-    if let Some(n) = s.strip_suffix("s") {
-        Ok(n.parse::<u64>()?)
-    } else if let Some(n) = s.strip_suffix("m") {
-        Ok(n.parse::<u64>()? * 60)
-    } else if let Some(n) = s.strip_suffix("h") {
-        Ok(n.parse::<u64>()? * 3600)
-    } else if let Some(n) = s.strip_suffix("d") {
-        Ok(n.parse::<u64>()? * 86400)
+    if delete {
+        jobs.retain(|job| job.id != job_id);
     } else {
-        // Try bare number as minutes
-        Ok(s.parse::<u64>()? * 60)
-    }
-}
-
-fn parse_time_of_day(s: &str) -> Option<(u32, u32)> {
-    let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() == 2 {
-        let h: u32 = parts[0].parse().ok()?;
-        let m: u32 = parts[1].parse().ok()?;
-        if h < 24 && m < 60 {
-            return Some((h, m));
+        for job in jobs.iter_mut().filter(|job| job.id == job_id) {
+            job.enabled = false;
         }
     }
-    None
-}
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    serde_json::to_writer_pretty(&mut temporary, &jobs)?;
+    temporary.write_all(b"\n")?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(path)
+        .context("Could not replace the legacy cron store")?;
+    Ok(())
 }
 
 pub struct CronTool;
@@ -131,7 +77,7 @@ impl Tool for CronTool {
     }
 
     fn description(&self) -> &str {
-        "Schedule automated recurring or one-shot tasks. Create, list, pause, resume, run, and delete cron jobs. Tasks run in fresh agent sessions on schedule."
+        "List, pause, or delete legacy cron entries. Use schedule for executable one-shot tasks."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -141,235 +87,61 @@ impl Tool for CronTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "list", "pause", "resume", "run", "delete"],
-                    "description": "Action to perform on cron jobs."
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Human-readable name for the job (required for create)."
-                },
-                "schedule": {
-                    "type": "string",
-                    "description": "Schedule expression: 'every 30m', 'every 2h', 'every 1d', 'in 5m' (one-shot), or 'HH:MM' (daily at that time)."
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "The task prompt to execute on schedule."
+                    "enum": ["list", "pause", "delete"],
+                    "description": "Action to perform on the legacy store."
                 },
                 "job_id": {
                     "type": "string",
-                    "description": "Job ID for pause/resume/run/delete actions."
+                    "description": "Legacy entry ID for pause or delete."
                 }
             }
         })
     }
 
-    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
         let action = input
             .get("action")
-            .and_then(|v| v.as_str())
+            .and_then(Value::as_str)
             .unwrap_or("list");
-
+        let path = cron_store_path();
         match action {
-            "create" => self.create_job(input, ctx).await,
-            "list" => self.list_jobs().await,
-            "pause" => self.pause_job(input).await,
-            "resume" => self.resume_job(input).await,
-            "run" => self.run_job_now(input).await,
-            "delete" => self.delete_job(input).await,
-            _ => Ok(ToolOutput::new(format!(
-                "Unknown action '{action}'. Use: create, list, pause, resume, run, delete."
-            ))),
-        }
-    }
-}
+            "list" => {
+                let jobs = load_jobs(&path)?;
+                if jobs.is_empty() {
+                    return Ok(ToolOutput::new("No legacy cron entries."));
+                }
 
-impl CronTool {
-    async fn create_job(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let name = match input.get("name").and_then(|v| v.as_str()) {
-            Some(n) => n.to_string(),
-            None => {
-                return Ok(ToolOutput::new(
-                    "Error: 'name' is required for create.".to_string(),
-                ));
+                let mut output =
+                    String::from("Legacy cron entries (no executor reads this store):\n");
+                for job in jobs {
+                    let status = if job.enabled { "inactive" } else { "paused" };
+                    output.push_str(&format!(
+                        "- {} | {} | {} | {}\n",
+                        job.id, job.name, job.schedule, status
+                    ));
+                    if let Some(prompt) = job.extra.get("prompt").and_then(Value::as_str) {
+                        let preview = crate::alphacode_core::util::truncate_str(prompt, 80);
+                        output.push_str(&format!("  Prompt: {preview}\n"));
+                    }
+                }
+                Ok(ToolOutput::new(output))
             }
-        };
-        let schedule = match input.get("schedule").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(),
-            None => {
-                return Ok(ToolOutput::new(
-                    "Error: 'schedule' is required for create.".to_string(),
-                ));
+            "pause" | "delete" => {
+                let job_id = input
+                    .get("job_id")
+                    .and_then(Value::as_str)
+                    .context("job_id is required for pause or delete")?;
+                let delete = action == "delete";
+                update_jobs(&path, job_id, delete)?;
+                let verb = if delete { "Deleted" } else { "Paused" };
+                Ok(ToolOutput::new(format!(
+                    "{verb} legacy cron entry '{job_id}'."
+                )))
             }
-        };
-        let prompt = match input.get("prompt").and_then(|v| v.as_str()) {
-            Some(p) => p.to_string(),
-            None => {
-                return Ok(ToolOutput::new(
-                    "Error: 'prompt' is required for create.".to_string(),
-                ));
+            "create" | "resume" | "run" => {
+                bail!("The legacy cron store has no executor. Use schedule for a one-shot task.")
             }
-        };
-
-        let now = now_secs();
-        let (next_run, one_shot) = match parse_schedule(&schedule, now) {
-            Ok(v) => v,
-            Err(e) => return Ok(ToolOutput::new(format!("Schedule error: {e}"))),
-        };
-
-        let id = format!("cron_{}", now);
-        let job = CronJob {
-            id: id.clone(),
-            name: name.clone(),
-            schedule: schedule.clone(),
-            prompt: prompt.clone(),
-            workdir: ctx.working_dir.map(|p| p.to_string_lossy().to_string()),
-            created_at: now,
-            last_run: None,
-            next_run,
-            enabled: true,
-            run_count: 0,
-            one_shot,
-        };
-
-        let mut jobs = load_jobs();
-        jobs.push(job);
-        if let Err(e) = save_jobs(&jobs) {
-            return Ok(ToolOutput::new(format!("Failed to save: {e}")));
+            _ => bail!("Unknown cron action '{action}'. Use list, pause, or delete."),
         }
-
-        let next_run_str = format_next_run(next_run);
-        let saved_schedule = jobs.last().unwrap().schedule.clone();
-        Ok(ToolOutput::new(format!(
-            "Created cron job '{name}' (id: {id}).\nSchedule: {saved_schedule}\nNext run: {next_run_str}\nOne-shot: {one_shot}"
-        )))
-    }
-
-    async fn list_jobs(&self) -> Result<ToolOutput> {
-        let jobs = load_jobs();
-        if jobs.is_empty() {
-            return Ok(ToolOutput::new(
-                "No cron jobs scheduled. Use 'create' to add one.".to_string(),
-            ));
-        }
-
-        let mut output = String::from(format!("{} cron job(s):\n\n", jobs.len()));
-        for job in &jobs {
-            let status = if job.enabled { "active" } else { "paused" };
-            let next = format_next_run(job.next_run);
-            output.push_str(&format!(
-                "  [{}] {} (id: {})\n    Schedule: {} | Next: {next} | Runs: {}\n    Prompt: {}\n\n",
-                status, job.name, job.id, job.schedule, job.run_count,
-                truncate_str(&job.prompt, 80)
-            ));
-        }
-
-        Ok(ToolOutput::new(output))
-    }
-
-    async fn pause_job(&self, input: Value) -> Result<ToolOutput> {
-        let job_id = match input.get("job_id").and_then(|v| v.as_str()) {
-            Some(id) => id.to_string(),
-            None => return Ok(ToolOutput::new("Error: 'job_id' required.".to_string())),
-        };
-
-        let mut jobs = load_jobs();
-        let mut found = false;
-        let mut job_name = String::new();
-        if let Some(job) = jobs.iter_mut().find(|j| j.id == job_id) {
-            job.enabled = false;
-            found = true;
-            job_name = job.name.clone();
-        }
-        if found {
-            save_jobs(&jobs)?;
-            Ok(ToolOutput::new(format!("Paused job '{job_name}'.")))
-        } else {
-            Ok(ToolOutput::new(format!("Job '{job_id}' not found.")))
-        }
-    }
-
-    async fn resume_job(&self, input: Value) -> Result<ToolOutput> {
-        let job_id = match input.get("job_id").and_then(|v| v.as_str()) {
-            Some(id) => id.to_string(),
-            None => return Ok(ToolOutput::new("Error: 'job_id' required.".to_string())),
-        };
-
-        let mut jobs = load_jobs();
-        let mut found = false;
-        let mut job_name = String::new();
-        if let Some(job) = jobs.iter_mut().find(|j| j.id == job_id) {
-            job.enabled = true;
-            if let Ok((next, _)) = parse_schedule(&job.schedule, now_secs()) {
-                job.next_run = next;
-            }
-            found = true;
-            job_name = job.name.clone();
-        }
-        if found {
-            save_jobs(&jobs)?;
-            Ok(ToolOutput::new(format!("Resumed job '{job_name}'.")))
-        } else {
-            Ok(ToolOutput::new(format!("Job '{job_id}' not found.")))
-        }
-    }
-
-    async fn run_job_now(&self, input: Value) -> Result<ToolOutput> {
-        let job_id = match input.get("job_id").and_then(|v| v.as_str()) {
-            Some(id) => id.to_string(),
-            None => return Ok(ToolOutput::new("Error: 'job_id' required.".to_string())),
-        };
-
-        let jobs = load_jobs();
-        if let Some(job) = jobs.iter().find(|j| j.id == job_id) {
-            Ok(ToolOutput::new(format!(
-                "Triggered job '{}' immediately.\nPrompt: {}\nNote: The job will execute in a background agent session. Check results with 'list' action.",
-                job.name, job.prompt
-            )))
-        } else {
-            Ok(ToolOutput::new(format!("Job '{job_id}' not found.")))
-        }
-    }
-
-    async fn delete_job(&self, input: Value) -> Result<ToolOutput> {
-        let job_id = match input.get("job_id").and_then(|v| v.as_str()) {
-            Some(id) => id.to_string(),
-            None => return Ok(ToolOutput::new("Error: 'job_id' required.".to_string())),
-        };
-
-        let mut jobs = load_jobs();
-        let before = jobs.len();
-        jobs.retain(|j| j.id != job_id);
-        if jobs.len() == before {
-            return Ok(ToolOutput::new(format!("Job '{job_id}' not found.")));
-        }
-        save_jobs(&jobs)?;
-        Ok(ToolOutput::new(format!("Deleted job '{job_id}'.")))
-    }
-}
-
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        // Char-boundary safe: raw `&s[..max]` panics on multibyte input.
-        format!("{}...", crate::alphacode_core::util::truncate_str(s, max))
-    }
-}
-
-fn format_next_run(secs: u64) -> String {
-    let now = now_secs();
-    if secs <= now {
-        return "due now".to_string();
-    }
-    let diff = secs - now;
-    if diff < 60 {
-        format!("in {diff}s")
-    } else if diff < 3600 {
-        format!("in {}m", diff / 60)
-    } else if diff < 86400 {
-        format!("in {}h", diff / 3600)
-    } else {
-        format!("in {}d", diff / 86400)
     }
 }
