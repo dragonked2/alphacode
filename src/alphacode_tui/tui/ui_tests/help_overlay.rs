@@ -296,10 +296,8 @@ fn narrow_busy_composer_keeps_the_stop_action_visible_in_the_buffer() {
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
-    assert!(
-        help_review_text(buffer).contains("Esc stops"),
-        "{}",
-        help_review_text(buffer)
-    );
+    let text = help_review_text(buffer);
+    assert!(text.contains("Enter send now · Esc stop"), "{text}");
+    assert_eq!(text.matches("Esc stop").count(), 1, "{text}");
     save_help_review_buffer("composer-busy-narrow", buffer);
 }

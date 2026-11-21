@@ -461,39 +461,26 @@ impl Agent {
 
     pub(super) fn build_memory_prompt_nonblocking_shared(
         &self,
-        messages: std::sync::Arc<[Message]>,
-        _memory_event_tx: Option<crate::memory::MemoryEventSink>,
+        messages: &std::sync::Arc<[Message]>,
+        memory_context_queued: &mut bool,
     ) -> Option<crate::memory::PendingMemory> {
-        if !self.memory_enabled {
+        if !self.memory_enabled
+            || *memory_context_queued
+            || !crate::message::ends_with_fresh_user_turn(messages)
+        {
             return None;
         }
 
+        // Recovery can reach the same fresh user message again. Consume the
+        // pending result and schedule retrieval only once per turn.
+        *memory_context_queued = true;
         let session_id = &self.session.id;
-
-        let fresh_user_turn = crate::message::ends_with_fresh_user_turn(&messages);
-        let pending = if fresh_user_turn {
-            crate::memory::take_pending_memory(session_id)
-        } else {
-            None
-        };
-
-        // Use the persistent memory-agent pipeline as the single source of truth.
-        // Running both this and the legacy MemoryManager background retrieval path
-        // can prepare overlapping pending prompts for the same turn, which makes
-        // memory injection feel overly aggressive.
-        // Relevance results are consumed only at the start of a fresh user turn.
-        // Enqueuing again after every tool result runs the local embedding model
-        // for each provider continuation without creating an additional injection
-        // opportunity. One update per user turn keeps memory current while avoiding
-        // redundant 512-token inference during tool-heavy agent loops.
-        if fresh_user_turn {
-            crate::memory_agent::update_context_sync_with_dir(
-                session_id,
-                messages,
-                self.session.working_dir.clone(),
-            );
-        }
-
+        let pending = crate::memory::take_pending_memory(session_id);
+        crate::memory_agent::update_context_sync_with_dir(
+            session_id,
+            std::sync::Arc::clone(messages),
+            self.session.working_dir.clone(),
+        );
         pending
     }
 
@@ -710,88 +697,12 @@ impl Agent {
         split.dynamic_part.push_str(&evidence);
         self.detect_verification_loop(&mut split);
         self.detect_probe_burst(&mut split);
-        self.append_prompt_autopilot_briefing(&mut split, resolved_tier);
         crate::prompt::append_swarm_effort_directive(
             &mut split,
             self.provider.reasoning_effort().as_deref(),
         );
 
         (split, resolved_tier)
-    }
-
-    /// Prompt Autopilot: when the fresh user request is underspecified (short,
-    /// vague, no files/errors/acceptance criteria), append a compact task
-    /// briefing to the dynamic system context so the model expands the request
-    /// itself — restates the concrete requirement, infers missing details from
-    /// the codebase, defines "done", and verifies before reporting. The user's
-    /// stored text is never modified, so transcripts, prompt history, and
-    /// replay stay verbatim.
-    fn append_prompt_autopilot_briefing(
-        &self,
-        split: &mut crate::prompt::SplitSystemPrompt,
-        tier: crate::prompt::PromptTier,
-    ) {
-        // Trivial greeting turns never need a briefing, and the compact tier
-        // serves small-context models that cannot spare the tokens.
-        if tier != crate::prompt::PromptTier::Standard {
-            return;
-        }
-        if !crate::config::config().features.prompt_autopilot {
-            return;
-        }
-        let Some(latest) = self.latest_fresh_user_text() else {
-            return;
-        };
-        let assessment = crate::prompt_enhance::assess(&latest);
-        if !assessment.vague {
-            return;
-        }
-        logging::info(&format!(
-            "Prompt autopilot: underspecified request detected (kind={}, reasons={:?})",
-            assessment.task_kind.label(),
-            assessment.reasons
-        ));
-        if !split.dynamic_part.is_empty() {
-            split.dynamic_part.push_str("\n\n");
-        }
-        split
-            .dynamic_part
-            .push_str(&crate::prompt_enhance::briefing_for_assessment(&assessment));
-    }
-
-    /// Text of the newest user message when it is the *current* turn request
-    /// (the last stored message is a user text message). Returns `None` once
-    /// the turn moves past the user's own words — assistant replies, tool
-    /// results, injected reminders, and auto-pokes — so the briefing never
-    /// fires on continuations or automation messages.
-    fn latest_fresh_user_text(&self) -> Option<String> {
-        let last = self.session.messages.last()?;
-        if last.role != Role::User {
-            return None;
-        }
-        let mut out = String::new();
-        for block in &last.content {
-            if let crate::alphacode_app_core::message::ContentBlock::Text { text, .. } = block {
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(text);
-            }
-        }
-        let trimmed = out.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        // Skip injected automation messages: dynamic system reminders, soft
-        // interrupts, auto-pokes, and previously attached briefings.
-        if trimmed.starts_with("<system-reminder>")
-            || trimmed.starts_with('[')
-            || trimmed.contains("<auto-enhanced by Alphacode>")
-            || crate::todo::is_auto_poke_message(trimmed)
-        {
-            return None;
-        }
-        Some(trimmed.to_string())
     }
 
     /// Inspect the most recent user message to decide whether the upcoming

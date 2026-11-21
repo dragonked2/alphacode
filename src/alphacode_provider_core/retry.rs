@@ -75,7 +75,7 @@ use crate::alphacode_provider_core::transport::{
 };
 
 /// Maximum number of attempts (initial + retries) for a single request.
-pub const MAX_ATTEMPTS: u32 = 5;
+pub const MAX_ATTEMPTS: u32 = 3;
 
 /// Stream runtimes attach this context when their attempt budget runs out.
 pub(crate) const STREAM_RETRY_LIMIT_PREFIX: &str = "Provider request retry limit reached";
@@ -84,6 +84,12 @@ pub(crate) fn stream_retry_limit_reached(error: Error, attempts: u32) -> Error {
     error.context(format!(
         "{STREAM_RETRY_LIMIT_PREFIX} after {attempts} attempts"
     ))
+}
+
+pub(crate) fn stream_retry_exhausted(error: &str) -> bool {
+    error
+        .split(": ")
+        .any(|cause| cause.starts_with(STREAM_RETRY_LIMIT_PREFIX))
 }
 
 /// Hard cap on a server-supplied or backoff-derived retry delay. Anything
@@ -151,7 +157,7 @@ impl RetryPolicy {
         }
     }
 
-    /// Provider-streaming policy: 5 attempts, treats `POST` as retryable
+    /// Provider-streaming policy: 3 attempts, treats `POST` as retryable
     /// because every shipped provider supports either resuming from a
     /// `previous_*_id` or replaying the same body twice. Strict callers
     /// should pass `retry_non_idempotent = false`.
@@ -214,38 +220,22 @@ impl fmt::Display for RetryReason {
 }
 
 /// Extract an explicit HTTP status code embedded in an error string
-/// as `status: NNN` (the formatted provider-error diagnostic line)
-/// or `"status":NNN` (JSON error bodies). Matching is
+/// as `status: NNN`, `"status":NNN`, or in a provider's
+/// `HTTP NNN` / `API error NNN` error. Matching is
 /// case-insensitive and bounded by non-digit boundaries so model
 /// versions like "gpt-5" do not register as status codes.
 pub fn embedded_http_status(error_str: &str) -> Option<u16> {
     let lower = error_str.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
-    for needle in ["status:", "\"status\":"] {
-        let mut search_from = 0;
-        while let Some(rel) = lower[search_from..].find(needle) {
-            let start = search_from + rel + needle.len();
-            let after = &lower[start..];
-            let skipped = after.len() - after.trim_start().len();
-            let digits_start = start + skipped;
-            let digits: String = after
-                .trim_start()
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if digits.len() == 3
+    for needle in ["status:", "\"status\":", "http ", "api error "] {
+        for (start, _) in lower.match_indices(needle) {
+            let after = lower[start + needle.len()..].trim_start();
+            if let Some(digits) = after.get(..3)
+                && !after.as_bytes().get(3).is_some_and(u8::is_ascii_digit)
                 && let Ok(code) = digits.parse::<u16>()
+                && (100..600).contains(&code)
             {
-                // Bounded by non-digit boundaries so model
-                // versions like "gpt-5" never register.
-                let digit_end = digits_start + digits.len();
-                let before_ok = digits_start == 0 || !bytes[digits_start - 1].is_ascii_digit();
-                let after_ok = digit_end >= bytes.len() || !bytes[digit_end].is_ascii_digit();
-                if before_ok && after_ok {
-                    return Some(code);
-                }
+                return Some(code);
             }
-            search_from = start;
         }
     }
     None
@@ -342,13 +332,13 @@ pub fn is_retryable_message(error_str: &str) -> bool {
     false
 }
 
-/// Explicit billing exhaustion codes. A request or token rate limit can
-/// reset shortly, but replaying a request cannot replenish account credit.
+/// Account quota responses that require an external reset or more credit.
 pub(crate) fn is_hard_quota_error(lower: &str) -> bool {
     [
         "insufficient_quota",
         "billing_hard_limit_reached",
         "credit_balance_too_low",
+        "usage_limit_reached",
     ]
     .iter()
     .any(|code| lower.contains(code))
@@ -858,6 +848,9 @@ mod tests {
         assert_eq!(embedded_http_status("status: 400 bad request"), Some(400));
         assert_eq!(embedded_http_status("\"status\":404"), Some(404));
         assert_eq!(embedded_http_status("STATUS: 503"), Some(503));
+        assert_eq!(embedded_http_status("Gemini failed: HTTP 429"), Some(429));
+        assert_eq!(embedded_http_status("OpenAI API error 400"), Some(400));
+        assert_eq!(embedded_http_status("HTTP 5000"), None);
         // Model versions must not register as statuses.
         assert_eq!(embedded_http_status("model gpt-5.2 failed"), None);
         assert_eq!(embedded_http_status("you have 1200 tokens"), None);

@@ -186,6 +186,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         Some(Command::Connect) => {
             tui_launch::run_client().await?;
         }
+        Some(Command::Support { action }) => crate::alphacode_github_star::open_support(action),
         Some(Command::Server { action }) => match action {
             ServerCommand::Start { json } => {
                 spawn_server(

@@ -1018,13 +1018,16 @@ fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
                 || lower.contains("'.' is not recognized")
             {
                 output.push_str(
-                    "\nHint: This shell is Git Bash (POSIX). Use: ls, cat, grep, find, \\\n                     wc, head, tail, sort, uniq. Do NOT use cmd.exe commands (dir, \\\n                     type, copy, del, move, findstr) or PowerShell syntax.",
+                    "\nHint: Check whether the command is installed and on PATH. Use cmd.exe syntax in the Windows fallback shell and POSIX syntax in Git Bash. Use webfetch for a simple HTTP read.",
                 );
             }
         }
         // Cross-platform actionable hints for common failures.
         // Group by exit code ranges for more specific guidance.
-        if lower.contains("command not found") || lower.contains("no such file or directory") {
+        if lower.contains("unexpected eof") || lower.contains("unterminated quoted string") {
+            output.push_str("\nHint: Check that shell quotes and heredoc delimiters are paired. Put multiline code in a separate script to avoid nested shell quoting.");
+        } else if lower.contains("command not found") || lower.contains("no such file or directory")
+        {
             output.push_str(
                 "\nHint: Command or path not found. Check spelling, ensure the \
                  program is installed and in PATH, or use an absolute path.",

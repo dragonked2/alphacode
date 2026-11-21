@@ -71,6 +71,91 @@ fn test_remote_done_shows_footer_after_final_tool_result_without_trailing_text()
 }
 
 #[test]
+fn test_remote_done_offers_manual_resume_when_the_updated_plan_is_unfinished() {
+    with_temp_alphacode_home(|| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        for (status, reply, plan_updated, expect_notice) in [
+            ("in_progress", "I will read the sample now.", true, true),
+            ("completed", "I read the sample.", true, false),
+            ("in_progress", "What's your preferred sample?", true, false),
+            ("in_progress", "Hello again.", false, false),
+        ] {
+            let mut app = create_test_app();
+            let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+            remote.mark_history_loaded();
+            crate::todo::save_todos(
+                &app.session.id,
+                &[crate::todo::TodoItem {
+                    group: None,
+                    id: "sample".to_string(),
+                    content: "Read the sample".to_string(),
+                    status: status.to_string(),
+                    priority: "high".to_string(),
+                    blocked_by: Vec::new(),
+                    assigned_to: None,
+                    confidence: None,
+                    completion_confidence: None,
+                    confidence_history: Vec::new(),
+                }],
+            )
+            .expect("save synthetic plan");
+            app.auto_poke_incomplete_todos = false;
+            app.is_processing = true;
+            app.current_message_id = Some(42);
+            app.input = "unsent draft".to_string();
+
+            let tool_done = crate::protocol::ServerEvent::ToolDone {
+                id: "fixture-plan".to_string(),
+                name: "todo".to_string(),
+                output: "Saved one task".to_string(),
+                error: None,
+            };
+            if plan_updated {
+                app.push_display_message(DisplayMessage::user("Read a sample greeting"));
+                app.handle_server_event(tool_done, &mut remote);
+            } else {
+                app.handle_server_event(tool_done, &mut remote);
+                app.push_display_message(DisplayMessage::user("Hello again"));
+            }
+            app.handle_server_event(
+                crate::protocol::ServerEvent::TextDelta {
+                    text: reply.to_string(),
+                },
+                &mut remote,
+            );
+            app.handle_server_event(
+                crate::protocol::ServerEvent::MessageEnd {
+                    stop_reason: Some("stop".to_string()),
+                },
+                &mut remote,
+            );
+            let ops = app.stream_buffer.flush();
+            app.apply_stream_ops(ops);
+            assert!(
+                app.handle_server_event(crate::protocol::ServerEvent::Done { id: 42 }, &mut remote)
+            );
+            let messages = app.display_messages();
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| message.content.contains(reply))
+            );
+            assert_eq!(
+                messages.iter().any(|message| message.role == "system"
+                    && message.content.contains("Send Continue to resume")),
+                expect_notice,
+                "unexpected recovery hint for {reply:?} ({status})",
+            );
+            assert!(!app.is_processing);
+            assert!(app.queued_messages().is_empty());
+            assert_eq!(app.input, "unsent draft");
+        }
+    });
+}
+
+#[test]
 fn test_remote_auto_poke_followup_preserves_visible_timer_and_stays_hidden() {
     with_temp_alphacode_home(|| {
         let mut app = create_test_app();

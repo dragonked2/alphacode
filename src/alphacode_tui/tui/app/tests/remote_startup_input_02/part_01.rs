@@ -1247,17 +1247,17 @@ fn test_ctrl_tab_is_inert_after_queue_mode_removal() {
 }
 
 #[test]
-fn test_auto_poke_starts_enabled_by_default() {
-    let app = create_test_app();
-
-    assert!(app.auto_poke_incomplete_todos);
+fn auto_poke_starts_disabled_by_default() {
+    with_temp_alphacode_home(|| {
+        let app = create_test_app();
+        assert!(!app.auto_poke_incomplete_todos);
+    });
 }
 
 #[test]
 fn test_ctrl_p_toggles_auto_poke_locally() {
     let mut app = create_test_app();
-
-    assert!(app.auto_poke_incomplete_todos);
+    app.auto_poke_incomplete_todos = true;
 
     app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
         .unwrap();

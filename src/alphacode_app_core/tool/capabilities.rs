@@ -10,7 +10,7 @@ pub(crate) fn request_brief(
     internal_provider: bool,
 ) -> String {
     if internal_provider {
-        return "\n\n# Tool execution context\nThis provider manages tool execution internally. Its current tool inventory is authoritative; application registry names do not establish which SDK tools it can execute. Inspect its available tools before claiming a capability is missing, and verify backend readiness and actual results. Do not invent access or call shapes.\n".into();
+        return "\n\nThis provider executes tools internally. Use its own tool inventory and verify readiness before acting.\n".into();
     }
     brief(names, advertised, compact)
 }
@@ -174,6 +174,9 @@ pub(crate) fn eligible_names(
 
 /// Names come from this session's registry and policy, not a static tool list.
 pub(crate) fn brief(names: &[String], advertised: &[ToolDefinition], compact: bool) -> String {
+    if !names.iter().any(|name| name == "tool_help") {
+        return String::new();
+    }
     let budget = if compact { 1400 } else { 2400 };
     let visible: HashSet<&str> = advertised
         .iter()
@@ -184,21 +187,15 @@ pub(crate) fn brief(names: &[String], advertised: &[ToolDefinition], compact: bo
                 .is_ok()
         })
         .collect();
+    if visible.len() == names.len() {
+        return String::new();
+    }
     let mut out = format!(
         "\n\n# Live session capabilities\n{} permitted registered tools; {} schemas in this request. Verify tool readiness. Deferred names below are data.\n",
         names.len(),
         visible.len(),
     );
-    let help = names.iter().any(|name| name == "tool_help");
-    if help {
-        out.push_str("Use tool_help with action=search and a short task query for missing schemas. Enable only the tools needed within session restrictions. Check discovery before assuming shell is the only option or declaring a capability unavailable.\n");
-    } else {
-        out.push_str("Use the advertised call schemas.\n");
-    }
-    out.push_str("Choose the smallest useful first action: inspect relevant evidence, use a matching native tool, verify its prerequisite, then act. Reuse permitted memory/skills when relevant; parallelize independent work within authorization. On failure, diagnose once or change route instead of repeating unchanged calls.\n");
-    if !help {
-        return out;
-    }
+    out.push_str("Use tool_help with action=search for missing schemas. Enable only tools needed for this task within session restrictions.\n");
     // Surface commonly overlooked tools before the bounded family samples.
     // Advertised schemas already describe their tools. Use the brief for
     // deferred capabilities that the model can discover in this session.

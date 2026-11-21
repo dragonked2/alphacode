@@ -2,7 +2,7 @@ use super::inline_interactive_ui::format_elapsed;
 use super::selection_highlight::highlight_line_selection;
 use super::tools_ui;
 use super::tools_ui::{get_tool_activity_detail, summarize_batch_running_tools_compact};
-use super::visual_debug::{self, FrameCaptureBuilder};
+use super::visual_debug::FrameCaptureBuilder;
 use super::{
     ProcessingStatus, TuiState, accent_color, ai_color, animated_tool_color, asap_color,
     border_color, dim_color, error_color, info_color, muted_text_color, queued_color,
@@ -722,11 +722,7 @@ pub(super) fn input_hint_line_height(app: &dyn TuiState) -> u16 {
     }
     let mode = composer_mode(app.input(), app.is_remote_mode());
 
-    u16::from(
-        shell_mode_hint(mode).is_some()
-            || app.next_prompt_new_session_armed()
-            || (app.is_processing() && !app.input().is_empty()),
-    )
+    u16::from(shell_mode_hint(mode).is_some() || app.next_prompt_new_session_armed())
 }
 
 pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
@@ -1232,9 +1228,9 @@ fn fit_status_segments(segments: &[StatusSegment], max_width: usize) -> Line<'st
     let gap_width = UnicodeWidthStr::width(STATUS_SEGMENT_GAP);
 
     let mut by_priority: Vec<usize> = (0..segments.len()).collect();
-    by_priority.sort_by_key(|&index| (segments[index].priority, index));
+    by_priority.sort_unstable_by_key(|&index| (segments[index].priority, index));
 
-    let mut kept: Vec<(usize, String)> = Vec::with_capacity(segments.len());
+    let mut kept = Vec::with_capacity(segments.len());
     let mut used = 0usize;
     for index in by_priority {
         let segment = &segments[index];
@@ -1244,19 +1240,19 @@ fn fit_status_segments(segments: &[StatusSegment], max_width: usize) -> Line<'st
             continue;
         };
         used += separator + UnicodeWidthStr::width(text);
-        kept.push((index, text.to_string()));
+        kept.push((index, text));
     }
 
-    kept.sort_by_key(|(index, _)| *index);
+    kept.sort_unstable_by_key(|(index, _)| *index);
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(kept.len() * 2);
-    for (position, (index, text)) in kept.iter().enumerate() {
+    for (position, (index, text)) in kept.into_iter().enumerate() {
         if position > 0 {
             spans.push(Span::styled(
                 STATUS_SEGMENT_GAP,
                 Style::default().fg(dim_color()),
             ));
         }
-        spans.push(Span::styled(text.clone(), segments[*index].style()));
+        spans.push(Span::styled(text.to_owned(), segments[index].style()));
     }
     Line::from(spans)
 }
@@ -1551,24 +1547,36 @@ fn compact_idle_session_stats_line(
 }
 
 pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count: usize) {
-    let turn_changes = super::work_summary::turn_changes(app, area.width);
+    if area.is_empty() {
+        return;
+    }
+    let processing = app.is_processing();
+    let status = app.status();
+    let shows_turn_metrics = matches!(
+        &status,
+        ProcessingStatus::Streaming | ProcessingStatus::RunningTool(_)
+    );
+    let turn_changes = if !processing || shows_turn_metrics {
+        super::work_summary::turn_changes(app, area.width)
+    } else {
+        None
+    };
     let elapsed = app.elapsed().map(|d| d.as_secs_f32()).unwrap_or(0.0);
     let stale_secs = app.time_since_activity().map(|d| d.as_secs_f32());
-    let (cache_read, cache_creation) = app.streaming_cache_tokens();
-    let user_turn_count = app.display_user_message_count();
-    let (streaming_input_tokens, _) = app.streaming_tokens();
-    let provider_name = app.provider_name();
-    let upstream_provider = app.upstream_provider();
-    let cache_ttl = app.cache_ttl_status();
-    let kv_cache_problem = detect_kv_cache_problem(
-        &provider_name,
-        upstream_provider.as_deref(),
-        user_turn_count,
-        streaming_input_tokens,
-        cache_read,
-        cache_creation,
-        cache_ttl.as_ref(),
-    );
+    let kv_cache_problem = if shows_turn_metrics {
+        let (cache_read, cache_creation) = app.streaming_cache_tokens();
+        detect_kv_cache_problem(
+            &app.provider_name(),
+            app.upstream_provider().as_deref(),
+            app.display_user_message_count(),
+            app.streaming_tokens().0,
+            cache_read,
+            cache_creation,
+            app.cache_ttl_status().as_ref(),
+        )
+    } else {
+        None
+    };
 
     let queued_suffix = if pending_count > 0 {
         format!(" · +{} queued", pending_count)
@@ -1601,17 +1609,24 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         } else {
             format!("{}s", secs)
         };
-        Line::from(vec![
-            Span::styled(spinner, Style::default().fg(warning_color())),
-            Span::styled(
-                format!(" Retrying in {time_str}{queued_suffix}"),
-                Style::default().fg(warning_color()),
-            ),
-        ])
-    } else if app.is_processing() {
+        if area.width < 24 {
+            Line::from(Span::styled(
+                format!("Retry {time_str}"),
+                Style::default().fg(warning_color()).bold(),
+            ))
+        } else {
+            Line::from(vec![
+                Span::styled(spinner, Style::default().fg(warning_color())),
+                Span::styled(
+                    format!(" Retrying in {time_str}{queued_suffix}"),
+                    Style::default().fg(warning_color()),
+                ),
+            ])
+        }
+    } else if processing {
         let spinner = super::activity_indicator(elapsed, 12.5);
 
-        match app.status() {
+        match status {
             ProcessingStatus::Idle => Line::from(""),
             ProcessingStatus::Sending => {
                 let mut spans = vec![
@@ -1755,19 +1770,17 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 Line::from(spans)
             }
             ProcessingStatus::WaitingForNetwork { listener } => {
-                let mut spans = vec![
-                    Span::styled("↻ ", Style::default().fg(warning_color())),
-                    Span::styled(
-                        format!(
-                            "network disconnected, waiting to retry · {} · {}",
-                            listener,
-                            format_elapsed(elapsed)
-                        ),
-                        Style::default().fg(warning_color()),
-                    ),
+                let mut segments = vec![
+                    StatusSegment::new(0, "Waiting for network", warning_color())
+                        .short("Reconnecting")
+                        .bold(),
+                    StatusSegment::new(2, format_elapsed(elapsed), dim_color()),
+                    StatusSegment::new(4, listener, dim_color()),
                 ];
-                push_queued_suffix(&mut spans, &queued_suffix);
-                Line::from(spans)
+                if let Some(label) = queued_suffix_for_segment(&queued_suffix) {
+                    segments.push(StatusSegment::new(3, label, queued_color()));
+                }
+                fit_status_segments(&segments, usize::from(area.width))
             }
             ProcessingStatus::RunningTool(ref name) => {
                 // The leading glyph is a single pulsing dot so the eye lands
@@ -3216,18 +3229,6 @@ mod tests {
         assert!(empty_composer_placeholder(0, "> ").is_empty());
     }
 
-    #[test]
-    fn running_composer_hint_keeps_stop_visible_without_overflow() {
-        for width in 0..=160 {
-            let hint = running_composer_hint(width);
-            assert!(unicode_width::UnicodeWidthStr::width(hint) <= width);
-            if width >= 11 {
-                assert!(hint.contains("Esc stops"));
-            }
-        }
-        assert!(running_composer_hint(80).contains("running turn"));
-    }
-
     /// The placeholder is the composer's invitation text and must not depend
     /// on the prompt glyph. The ellipsis prompt was retired (the composer
     /// stays an editor while keystrokes queue), so both prompt glyphs must
@@ -4445,7 +4446,6 @@ pub(super) fn draw_input(
         input_cursor_location(input_text, cursor_pos, &wrapped_segments);
 
     let mut lines: Vec<Line> = Vec::new();
-    let mut hint_shown = false;
     let mut hint_line: Option<String> = None;
     if has_suggestions {
         // Overlay pass owns the palette rows; no inline hint line competes
@@ -4453,30 +4453,18 @@ pub(super) fn draw_input(
     } else if area.height > 1
         && let Some(shell_hint) = shell_mode_hint(mode)
     {
-        hint_shown = true;
         hint_line = Some(shell_hint.trim().to_string());
         lines.push(Line::from(Span::styled(
             shell_hint,
             Style::default().fg(BrandTheme::success()),
         )));
     } else if area.height > 1 && app.next_prompt_new_session_armed() {
-        hint_shown = true;
         let hint = "  \u{2197} Next prompt opens a new session";
         hint_line = Some(hint.trim().to_string());
         lines.push(Line::from(Span::styled(
             hint,
             Style::default()
                 .fg(BrandTheme::info())
-                .add_modifier(Modifier::ITALIC),
-        )));
-    } else if area.height > 1 && app.is_processing() && !input_text.is_empty() {
-        hint_shown = true;
-        let hint = running_composer_hint(area.width as usize);
-        hint_line = Some(hint.trim().to_string());
-        lines.push(Line::from(Span::styled(
-            hint,
-            Style::default()
-                .fg(BrandTheme::dim_bright())
                 .add_modifier(Modifier::ITALIC),
         )));
     }
@@ -4486,12 +4474,6 @@ pub(super) fn draw_input(
         if let Some(hint) = &hint_line {
             capture.rendered_text.input_hint = Some(hint.clone());
         }
-        visual_debug::check_shift_enter_anomaly(
-            capture,
-            app.is_processing(),
-            input_text,
-            hint_shown,
-        );
     }
 
     let suggestions_offset = lines.len();
@@ -5272,20 +5254,6 @@ fn input_segment_line(
             Span::raw(segment.text.clone()),
         ])
     }
-}
-
-/// Keep the stop action visible when the busy-composer hint must shrink.
-fn running_composer_hint(max_width: usize) -> &'static str {
-    [
-        "  Enter sends guidance to the running turn · Esc stops",
-        "  Enter sends guidance · Esc stops",
-        "  Enter sends · Esc stops",
-        "  Esc stops",
-        "Esc",
-    ]
-    .into_iter()
-    .find(|hint| unicode_width::UnicodeWidthStr::width(*hint) <= max_width)
-    .unwrap_or("")
 }
 
 /// Teach the available controls without changing the invitation while busy.

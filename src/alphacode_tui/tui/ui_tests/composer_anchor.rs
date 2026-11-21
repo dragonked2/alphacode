@@ -107,7 +107,7 @@ fn top_composer_stays_above_the_live_transcript() {
             state.input = "draft".to_string();
             let (rows, layout) = draw_frame(&state, width, height);
             let input = layout.input_area.expect("input area");
-            assert_eq!(input.y, 0);
+            assert!(input.y > 0, "the banner stays above the composer");
             assert!(input.height > 0);
             assert!(input.bottom() <= layout.messages_area.y);
             assert!(
@@ -296,6 +296,38 @@ fn short_terminals_keep_composer_and_picker_visible() {
             rows.join("\n")
         );
     }
+}
+
+#[test]
+fn long_draft_leaves_room_for_model_identity_and_transcript() {
+    let _lock = viewport_snapshot_test_lock();
+    clear_flicker_frame_history_for_tests();
+    let mut state = working_state(vec![DisplayMessage::user(SENT_PROMPT)], None);
+    state.input = "draft line\n".repeat(20);
+    state.cursor_pos = 0;
+
+    let (rows, layout) = draw_frame(&state, 60, 8);
+    assert!(
+        rows[0].contains("AlphaCode") && rows[0].contains("GPT-5.6"),
+        "{}",
+        rows.join("\n")
+    );
+    assert!(layout.messages_area.height >= 2);
+    assert!(rows.iter().any(|row| row.contains("draft line")));
+}
+
+#[test]
+fn narrow_reconnect_frame_keeps_status_and_stop_action_visible() {
+    let _lock = viewport_snapshot_test_lock();
+    clear_flicker_frame_history_for_tests();
+    let mut state = working_state(Vec::new(), None);
+    state.status = ProcessingStatus::WaitingForNetwork {
+        listener: "checking the network connection".into(),
+    };
+
+    let (rows, _) = draw_frame(&state, 12, 6);
+    assert!(rows.iter().any(|row| row.contains("Reconnecting")));
+    assert!(rows.iter().any(|row| row.contains("Esc stop")));
 }
 
 #[test]

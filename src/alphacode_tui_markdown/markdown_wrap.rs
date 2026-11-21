@@ -21,6 +21,30 @@ pub fn wrap_line(
         }
     });
 
+    // Already-fitted printable ASCII needs no word splitting. Keep the
+    // original styled spans instead of allocating a token and rebuilt spans
+    // for every word in the transcript.
+    if repeated_prefix.is_none()
+        && line.style == Style::default()
+        && line
+            .spans
+            .iter()
+            .map(|span| span.content.len())
+            .sum::<usize>()
+            <= width
+        && line.spans.iter().all(|span| {
+            span.content
+                .bytes()
+                .all(|byte| byte == b' ' || byte.is_ascii_graphic())
+        })
+        && line
+            .spans
+            .iter()
+            .any(|span| span.content.bytes().any(|byte| byte.is_ascii_graphic()))
+    {
+        return vec![line];
+    }
+
     let seed_repeated_prefix =
         |current_spans: &mut Vec<Span<'static>>, current_width: &mut usize, pending: &mut bool| {
             if *pending {

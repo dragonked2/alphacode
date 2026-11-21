@@ -1385,6 +1385,23 @@ impl Registry {
         self.definitions_filtered(allowed_tools, |_| true).await
     }
 
+    /// Apply the same disclosure policy for daemon and standalone requests.
+    pub(crate) async fn advertised_definitions(
+        &self,
+        session_id: &str,
+        allowed_tools: Option<&HashSet<String>>,
+        disabled_tools: &HashSet<String>,
+    ) -> Vec<ToolDefinition> {
+        let policy = disclosure::DisclosurePolicy::parse(&crate::config::config().tools.disclosure);
+        let forced = allowed_tools.cloned().unwrap_or_default();
+        let promoted = tool_help::promoted_tools(session_id);
+        let selection = disclosure::DisclosureSelection::new();
+        self.definitions_filtered(allowed_tools, |name| {
+            !disabled_tools.contains(name) && selection.is_visible(name, policy, &forced, &promoted)
+        })
+        .await
+    }
+
     /// Avoid building schemas for tools excluded from this request.
     pub async fn definitions_filtered<F>(
         &self,

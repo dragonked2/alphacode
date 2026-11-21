@@ -1331,8 +1331,14 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     "client_turn_completed",
                     std::time::Duration::from_secs(30),
                 );
+                let offer_manual_resume = !app.auto_poke_incomplete_todos
+                    && !app.turn_guardrail_stopped
+                    && !app.repetition_stop_requested;
                 auto_poked = super::super::local::schedule_turn_end_followups_guarded(app);
                 if !auto_poked {
+                    if offer_manual_resume {
+                        app.show_unfinished_plan_notice();
+                    }
                     app.clear_visible_turn_started();
                     if app.queued_messages.is_empty() {
                         app.maybe_notify_turn_complete(turn_duration_secs);
@@ -1360,6 +1366,11 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             retry_after_secs,
         } => {
             if super::super::commands_copy::handle_session_copy_error(app, id, &message) {
+                return true;
+            }
+            if app.current_message_id.is_some_and(|active| id != active) {
+                // A failed control request must not end or resend the active turn.
+                app.push_display_message(DisplayMessage::error(message));
                 return true;
             }
             // The server rejects a Message request with this error while its
@@ -1390,48 +1401,57 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 );
                 return true;
             }
-            let is_failover_prompt =
-                crate::provider::parse_failover_prompt_message(&message).is_some();
-            // Snapshot the failed turn's payload before any retry-budget or
-            // terminal-error cleanup can clear it. This is required for both
-            // fallback offers and the retry paths below.
-            let failed_fallback_payload = app.rate_limit_pending_message.as_ref().map(|pending| {
-                app_mod::FallbackResendPayload {
-                    content: pending.content.clone(),
-                    images: pending.images.clone(),
+            let failover_prompt = crate::provider::parse_failover_prompt_message(&message);
+            app.current_message_id = None;
+            let lower = message.to_ascii_lowercase();
+            let provider_busy =
+                (crate::alphacode_provider_core::retry::embedded_http_status(&message)
+                    == Some(429)
+                    || lower.contains("rate limited")
+                    || lower.contains("rate limit exceeded")
+                    || lower.contains("too many requests"))
+                    && !crate::alphacode_provider_core::retry::is_hard_quota_error(&lower)
+                    && !crate::alphacode_app_core::agent::is_content_policy_rejection(&message);
+            let failed_fallback_payload = app
+                .rate_limit_pending_message
+                .take()
+                .filter(|_| !provider_busy && failover_prompt.is_none())
+                .map(|pending| app_mod::FallbackResendPayload {
+                    content: pending.content,
+                    images: pending.images,
                     is_system: pending.is_system,
                     auto_retry: pending.auto_retry,
-                    system_reminder: pending.system_reminder.clone(),
+                    system_reminder: pending.system_reminder,
                     raw_input: app.last_submitted_input.clone(),
                     pastes: app.last_submitted_pastes.clone(),
-                }
-            });
-            if app.current_message_id == Some(id) {
-                app.current_message_id = None;
-            }
-            let provider_busy =
-                crate::alphacode_provider_core::retry::embedded_http_status(&message) == Some(429)
-                    && !crate::alphacode_app_core::agent::is_content_policy_rejection(&message);
+                });
             if provider_busy {
                 crate::logging::warn(&format!("Provider rate limit: {message}"));
             }
-            app.push_display_message(DisplayMessage {
-                role: "error".to_string(),
-                content: if provider_busy {
-                    "Provider is temporarily busy. Retry later or use /model to switch.".to_string()
+            app.commit_pending_streaming_assistant_message();
+            app.clear_streaming_render_state();
+            app.streaming_tool_calls.clear();
+            app.batch_progress = None;
+            if failover_prompt.is_none() {
+                let content = if provider_busy {
+                    if let Some(seconds) = retry_after_secs.filter(|seconds| *seconds > 0) {
+                        format!(
+                            "Provider is temporarily busy. Try again in {seconds}s or use /model to switch."
+                        )
+                    } else {
+                        "Provider is temporarily busy. Retry later or use /model to switch."
+                            .to_string()
+                    }
                 } else {
                     message.clone()
-                },
-                tool_calls: vec![],
-                duration_secs: None,
-                title: None,
-                tool_data: None,
-            });
+                };
+                app.push_display_message(DisplayMessage::error(content));
+            }
             app.is_processing = false;
             app.status = ProcessingStatus::Idle;
-            app.stream_message_ended = false;
+            app.processing_started = None;
+            app.clear_visible_turn_started();
             let recovered_local = recover_local_interleave_to_queue(app, "request error");
-            crate::alphacode_tui::tui::mermaid::clear_streaming_preview_diagram();
             app.thought_line_inserted = false;
             app.thinking_prefix_emitted = false;
             app.thinking_buffer.clear();
@@ -1443,68 +1463,34 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             }
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
+            // A command error sent by the daemon is not a socket drop. The
+            // turn may already have run tools and the daemon owns provider
+            // recovery. Replaying the original submission here can duplicate
+            // those effects and reset the provider retry budget.
+            app.clear_pending_remote_retry();
+            app.restore_failed_input_to_box();
             if provider_busy {
-                // The agent already used its bounded retry budget. Resending
-                // the whole turn here would multiply requests on the same account.
-                app.clear_pending_remote_retry();
-                app.restore_failed_input_to_box();
-                return false;
+                crate::alphacode_tui::tui::app::commands::clear_queued_poke_messages(app);
+                return true;
+            }
+            if let Some(prompt) = failover_prompt {
+                crate::alphacode_tui::tui::app::commands::clear_queued_poke_messages(app);
+                app.handle_provider_failover_prompt(prompt);
+                return true;
             }
             if crate::alphacode_provider_core::error_classification::is_alphax_free_bad_request(
                 &message,
             ) {
-                app.clear_pending_remote_retry();
                 crate::alphacode_tui::tui::app::commands::stop_auto_poke_for_non_retryable_error(
                     app, &message,
                 );
                 app.stop_overnight_auto_poke_for_non_retryable_error(&message);
                 app.set_status_notice("Alphax Free rejected the request");
-                app.restore_failed_input_to_box();
                 app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
-                return false;
+                return true;
             }
-            if let Some(seconds) = retry_after_secs
-                && let Some(pending) = app.rate_limit_pending_message.as_mut()
-            {
-                // The server told us exactly how long to wait. Honor it instead
-                // of the generic backoff, and keep the payload so the retry can
-                // actually resend it.
-                let seconds = seconds.max(1);
-                pending.auto_retry = true;
-                let retry_at = Instant::now() + std::time::Duration::from_secs(seconds);
-                pending.retry_at = Some(retry_at);
-                app.rate_limit_reset = Some(retry_at);
-                let unit = if seconds == 1 { "second" } else { "seconds" };
-                let notice =
-                    format!("Rate limited by the server. Will auto-retry in {seconds} {unit}.");
-                app.push_display_message(DisplayMessage::system(notice.clone()));
-                app.set_status_notice(notice);
-                return false;
-            }
-            // Connectivity failures (DNS, connection reset, no route, transient
-            // TLS, timeouts) are always transient: the request never reached the
-            // provider. Hold the turn and resume when the network recovers,
-            // regardless of the pending message's auto_retry flag. This must run
-            // before the non-retryable auto-poke check so a transient disconnect
-            // is never misclassified as a permanent failure that stops auto-poke.
-            let is_connectivity_error =
-                crate::alphacode_tui::tui::app::commands::is_auto_poke_connectivity_error(&message)
-                    || crate::network_retry::classify_message(&message).is_some();
-            if is_connectivity_error
-                && app.schedule_pending_remote_network_wait_with_force(&message, true)
-            {
-                return false;
-            }
-            // Deterministic model/endpoint-capability failures (e.g. Volcengine
-            // Ark's coding-plan endpoint returning 404 UnsupportedModel, or a
-            // model-not-found) can never succeed by resending the identical
-            // request. This is checked *before* the transient-upstream branch:
-            // those error bodies usually contain generic wording such as "chat
-            // request failed", which the retry classifier would otherwise treat
-            // as a transient upstream failure and burn the retry budget on a
-            // guaranteed 4xx (#387).
+            // Show model/endpoint mismatch guidance even when auto-poke is off.
             if crate::alphacode_tui::tui::app::commands::is_fatal_model_endpoint_error(&message) {
-                app.clear_pending_remote_retry();
                 if app.auto_poke_incomplete_todos {
                     crate::alphacode_tui::tui::app::commands::stop_auto_poke_for_non_retryable_error(
                         app, &message,
@@ -1514,91 +1500,32 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     "🛑 Not retrying: the model is not valid for the configured endpoint (e.g. an Ark coding-plan endpoint rejecting a model without the coding plan feature, or a model-not-found). Check the model name and base URL (the coding endpoint `/api/coding/v3` only accepts coding-plan models; use `/api/v3` otherwise), then send again.".to_string(),
                 ));
                 app.set_status_notice("Stopped: model/endpoint mismatch");
-                app.restore_failed_input_to_box();
                 // Switching models is exactly the right fix for a
                 // model/endpoint mismatch: offer the next best route.
-                app.offer_fallback_after_error_with_payload(
-                    &message,
-                    failed_fallback_payload.clone(),
-                );
-                return false;
-            }
-            // Transient upstream provider failures (Nvidia overloaded, API
-            // temporarily unavailable, upstream timeout, etc.) are always
-            // retryable. The provider may recover in seconds, so schedule an
-            // auto-retry with a generous budget and keep the pending message
-            // alive rather than falling through to the generic error path
-            // which may not have a message to retry.
-            let is_transient_upstream_error =
-                crate::alphacode_provider_core::retry::is_retryable_message(&message)
-                    && !is_connectivity_error;
-            if is_transient_upstream_error && app.rate_limit_pending_message.is_some() {
-                app.schedule_pending_remote_retry_with_limit(
-                    &format!(
-                        "Transient upstream error ({}); retrying automatically",
-                        message.trim().chars().take(80).collect::<String>()
-                    ),
-                    5, // generous budget for transient upstream errors
-                );
-                return false;
+                app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
+                return true;
             }
             // Credential-failure circuit breaker: repeated auth failures mean
             // the login/API key is dead. Resending the identical request can
             // never succeed and (before this breaker) produced runaway retry
             // loops logging thousands of 401s per session. Stop every
             // automatic resend path and tell the user to /login or /model.
-            if !is_connectivity_error && app.note_error_for_credential_breaker(&message) {
+            if app.note_error_for_credential_breaker(&message) {
                 app.trip_credential_failure_breaker(&message);
-                app.offer_fallback_after_error_with_payload(
-                    &message,
-                    failed_fallback_payload.clone(),
-                );
-                return false;
+                app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
+                return true;
             }
-            if app.auto_poke_incomplete_todos
-                && crate::alphacode_tui::tui::app::commands::is_non_retryable_auto_poke_error(
-                    &message,
-                )
-            {
-                if app.schedule_pending_remote_retry_with_limit(
-                    "⚠ The request failed in a way a retry probably won't fix. Trying once more anyway.",
-                    2,
-                ) {
-                    return false;
-                }
+            let stopped_poke =
                 crate::alphacode_tui::tui::app::commands::stop_auto_poke_for_non_retryable_error(
                     app, &message,
                 );
-                // Terminal: no retry will fire. Offer a one-keypress switch to
-                // the next best model/auth-method (e.g. an expired OAuth login
-                // -> a working provider) with the failed payload staged.
-                app.offer_fallback_after_error_with_payload(
-                    &message,
-                    failed_fallback_payload.clone(),
-                );
-                return false;
+            let stopped_overnight = app.stop_overnight_auto_poke_for_non_retryable_error(&message);
+            crate::alphacode_tui::tui::app::commands::clear_queued_poke_messages(app);
+            app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
+            if !stopped_poke && !stopped_overnight {
+                app.schedule_queued_dispatch_after_interrupt();
             }
-            if app.stop_overnight_auto_poke_for_non_retryable_error(&message) {
-                app.offer_fallback_after_error_with_payload(
-                    &message,
-                    failed_fallback_payload.clone(),
-                );
-                return false;
-            }
-            if !is_failover_prompt && !app.schedule_pending_remote_retry("⚠ Remote request failed.")
-            {
-                app.clear_pending_remote_retry();
-                // No automatic retry will resend this turn, so restore the prompt the
-                // user typed back into the input box instead of dropping it.
-                app.restore_failed_input_to_box();
-                // Offer a one-keypress switch to the next best model/auth-method
-                // and resend (e.g. expired OpenAI OAuth session -> a provider
-                // that is known to work), instead of leaving the user to run
-                // /login or /model manually.
-                app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
-                return super::super::local::schedule_turn_end_followups_guarded(app);
-            }
-            false
+            true
         }
         ServerEvent::SessionId { session_id } => {
             remote.set_session_id(session_id.clone());

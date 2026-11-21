@@ -175,76 +175,7 @@ impl App {
     }
 
     pub(super) fn schedule_pending_remote_retry(&mut self, reason: &str) -> bool {
-        self.schedule_pending_remote_retry_with_limit(reason, Self::AUTO_RETRY_MAX_ATTEMPTS)
-    }
-
-    /// Hold the in-flight remote turn until the network recovers, then resume it.
-    ///
-    /// Connectivity failures (DNS, connection reset, no route, transient TLS,
-    /// timeouts) are always transient: the request never reached the provider,
-    /// so resending after the network comes back is both safe and correct. When
-    /// `force` is set we wait regardless of the pending message's `auto_retry`
-    /// flag and promote it to auto-retry so the tick-based resume re-sends it.
-    /// This prevents a transient disconnect from being misclassified as a
-    /// permanent, non-retryable failure that stops auto-poke.
-    pub(super) fn schedule_pending_remote_network_wait_with_force(
-        &mut self,
-        reason: &str,
-        force: bool,
-    ) -> bool {
-        let Some(pending) = self.rate_limit_pending_message.as_mut() else {
-            return false;
-        };
-        if !pending.auto_retry {
-            if force {
-                pending.auto_retry = true;
-            } else {
-                return false;
-            }
-        }
-
-        let plan = crate::network_retry::wait_plan();
-        let retry_at = Instant::now() + Duration::from_secs(5);
-        pending.retry_at = Some(retry_at);
-        self.rate_limit_reset = Some(retry_at);
-        self.status = ProcessingStatus::WaitingForNetwork {
-            listener: plan.listener_summary.clone(),
-        };
-        self.status_detail = Some("offline; waiting for network before retry".to_string());
-
-        let content = format!(
-            "📡 Network appears offline - waiting to retry automatically. {} - {}",
-            plan.listener_summary,
-            reason.trim().trim_end_matches('.')
-        );
-        if let Some(idx) = self.display_messages.iter().rposition(|message| {
-            message.role == "system"
-                && (message.title.as_deref() == Some("Connection")
-                    || message.content.starts_with("📡 Network appears offline"))
-        }) {
-            self.replace_display_message_title_and_content(
-                idx,
-                Some("Connection".to_string()),
-                content,
-            );
-        } else {
-            self.push_display_message(DisplayMessage {
-                role: "system".to_string(),
-                content,
-                tool_calls: Vec::new(),
-                duration_secs: None,
-                title: Some("Connection".to_string()),
-                tool_data: None,
-            });
-        }
-        true
-    }
-
-    pub(super) fn schedule_pending_remote_retry_with_limit(
-        &mut self,
-        reason: &str,
-        max_attempts: u8,
-    ) -> bool {
+        let max_attempts = Self::AUTO_RETRY_MAX_ATTEMPTS;
         let Some(pending) = self.rate_limit_pending_message.as_mut() else {
             return false;
         };

@@ -97,16 +97,17 @@ fn test_remote_error_without_retry_recovers_pending_followups() {
 }
 
 #[test]
-fn test_remote_error_with_retryable_pending_schedules_retry() {
+fn terminal_provider_error_preserves_partial_output_without_replaying_turn() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
 
+    app.last_submitted_input = Some("retry me".to_string());
     app.rate_limit_pending_message = Some(PendingRemoteMessage {
         content: "retry me".to_string(),
         images: vec![],
-        is_system: true,
+        is_system: false,
         system_reminder: None,
         auto_retry: true,
         retry_attempts: 0,
@@ -114,37 +115,22 @@ fn test_remote_error_with_retryable_pending_schedules_retry() {
     });
     app.is_processing = true;
     app.status = ProcessingStatus::Streaming;
+    app.current_message_id = Some(11);
+    app.replace_streaming_text("Partial provider response".to_string());
 
     app.handle_server_event(
         crate::protocol::ServerEvent::Error {
             id: 11,
-            message: "provider failed hard".to_string(),
-            retry_after_secs: None,
+            message: "HTTP 503 Service Unavailable: upstream timed out".to_string(),
+            retry_after_secs: Some(10),
         },
         &mut remote,
     );
 
-    let pending = app
-        .rate_limit_pending_message
-        .as_ref()
-        .expect("retryable continuation should remain pending");
-    assert!(pending.auto_retry);
-    assert_eq!(pending.retry_attempts, 1);
-    assert!(pending.retry_at.is_some());
-    assert!(app.rate_limit_reset.is_some());
-    let retry_notice = app
-        .display_messages()
-        .iter()
-        .find(|message| message.title.as_deref() == Some("Connection"))
-        .expect("retry should surface a connection status message");
-    assert_eq!(retry_notice.role, "system");
-    assert!(retry_notice.content.contains("Connection lost - retrying"));
-    assert!(
-        retry_notice
-            .content
-            .contains(&format!("attempt 1/{}", App::AUTO_RETRY_MAX_ATTEMPTS))
-    );
-    assert!(retry_notice.content.contains("Remote request failed"));
+    assert!(app.rate_limit_pending_message.is_none());
+    assert!(app.rate_limit_reset.is_none());
+    assert_eq!(app.input(), "retry me");
+    assert!(app.streaming.streaming_text.is_empty());
 
     let backend = ratatui::backend::TestBackend::new(120, 35);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -153,26 +139,30 @@ fn test_remote_error_with_retryable_pending_schedules_retry() {
         .unwrap();
     let buffer = terminal.backend().buffer();
     let rendered = (0..35)
-        .map(|y| (0..120).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .map(|y| {
+            (0..120)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(rendered.contains("Retrying in "), "{rendered}");
-    assert!(!rendered.contains("Rate limited"), "{rendered}");
+    assert!(rendered.contains("Partial provider response"), "{rendered}");
+    assert!(rendered.contains("503 Service Unavailable"), "{rendered}");
+    assert!(!rendered.contains("Retrying in "), "{rendered}");
 }
 
 #[test]
-fn test_remote_non_retryable_error_gets_short_auto_poke_retry() {
+fn remote_deterministic_error_stops_auto_poke_on_first_failure() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
 
     app.auto_poke_incomplete_todos = true;
-    app.queued_messages
-        .push("You have 1 incomplete todo. Continue working, or update the todo tool.".to_string());
+    let poke = "You have 1 incomplete todo. Continue working, or update the todo tool.";
+    app.queued_messages.push(poke.to_string());
     app.rate_limit_pending_message = Some(PendingRemoteMessage {
-        content: "You have 1 incomplete todo. Continue working, or update the todo tool."
-            .to_string(),
+        content: poke.to_string(),
         images: vec![],
         is_system: true,
         system_reminder: None,
@@ -185,75 +175,8 @@ fn test_remote_non_retryable_error_gets_short_auto_poke_retry() {
 
     app.handle_server_event(
         crate::protocol::ServerEvent::Error {
-            id: 12,
-            message: "OpenAI API error 400 Bad Request: {\"error\":{\"message\":\"Invalid 'input[0].encrypted_content': string too long. Expected a string with maximum length 10485760, but got a string with length 11237432 instead.\",\"type\":\"invalid_request_error\",\"code\":\"string_above_max_length\"}}".to_string(),
-            retry_after_secs: None,
-        },
-        &mut remote,
-    );
-
-    assert!(app.auto_poke_incomplete_todos);
-    let pending = app
-        .rate_limit_pending_message
-        .as_ref()
-        .expect("deterministic error should get a short retry budget");
-    assert_eq!(pending.retry_attempts, 1);
-    assert!(app.rate_limit_reset.is_some());
-    assert!(
-        app.display_messages()
-            .iter()
-            .any(|m| m.role == "system" && m.content.contains("attempt 1/2"))
-    );
-
-    app.handle_server_event(
-        crate::protocol::ServerEvent::Error {
-            id: 13,
-            message: "OpenAI API error 400 Bad Request: {\"error\":{\"type\":\"invalid_request_error\",\"code\":\"string_above_max_length\"}}".to_string(),
-            retry_after_secs: None,
-        },
-        &mut remote,
-    );
-
-    assert!(app.auto_poke_incomplete_todos);
-    let pending = app
-        .rate_limit_pending_message
-        .as_ref()
-        .expect("second deterministic error should still get final retry");
-    assert_eq!(pending.retry_attempts, 2);
-    assert!(
-        app.display_messages()
-            .iter()
-            .any(|m| m.role == "system" && m.content.contains("attempt 2/2"))
-    );
-}
-
-#[test]
-fn test_remote_non_retryable_error_stops_auto_poke_after_short_retry_budget() {
-    let mut app = create_test_app();
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
-
-    app.auto_poke_incomplete_todos = true;
-    app.queued_messages
-        .push("You have 1 incomplete todo. Continue working, or update the todo tool.".to_string());
-    app.rate_limit_pending_message = Some(PendingRemoteMessage {
-        content: "You have 1 incomplete todo. Continue working, or update the todo tool."
-            .to_string(),
-        images: vec![],
-        is_system: true,
-        system_reminder: None,
-        auto_retry: true,
-        retry_attempts: 2,
-        retry_at: None,
-    });
-    app.is_processing = true;
-    app.status = ProcessingStatus::Streaming;
-
-    app.handle_server_event(
-        crate::protocol::ServerEvent::Error {
             id: 14,
-            message: "OpenAI API error 400 Bad Request: {\"error\":{\"type\":\"invalid_request_error\",\"code\":\"string_above_max_length\"}}".to_string(),
+            message: "OpenAI API error 400 Bad Request: string_above_max_length".to_string(),
             retry_after_secs: None,
         },
         &mut remote,
@@ -266,7 +189,7 @@ fn test_remote_non_retryable_error_stops_auto_poke_after_short_retry_budget() {
     assert!(
         app.display_messages()
             .iter()
-            .any(|m| m.role == "system" && m.content.contains("we stopped poking"))
+            .any(|message| message.content.contains("we stopped poking"))
     );
 }
 
@@ -421,119 +344,28 @@ fn provider_busy_does_not_restart_retry_cycle_or_claim_network_is_offline() {
 }
 
 #[test]
-fn test_remote_connectivity_error_waits_for_network_without_retry_budget() {
+fn remote_control_error_leaves_active_turn_running() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
-
-    app.auto_poke_incomplete_todos = true;
-    app.queued_messages
-        .push("You have 1 incomplete todo. Continue working, or update the todo tool.".to_string());
-    app.rate_limit_pending_message = Some(PendingRemoteMessage {
-        content: "You have 1 incomplete todo. Continue working, or update the todo tool."
-            .to_string(),
-        images: vec![],
-        is_system: true,
-        system_reminder: None,
-        auto_retry: true,
-        retry_attempts: 0,
-        retry_at: None,
-    });
     app.is_processing = true;
     app.status = ProcessingStatus::Streaming;
+    app.current_message_id = Some(16);
+    app.replace_streaming_text("still streaming".into());
 
     app.handle_server_event(
         crate::protocol::ServerEvent::Error {
-            id: 15,
-            message: "Failed to send OpenAI-compatible chat request\n  endpoint: https://api.groq.com/openai/v1/chat/completions\n  model: llama-3.1-8b-instant\n  auth: GROQ_API_KEY\nHint: check network connectivity, DNS/TLS, that the base URL includes the API version (usually /v1), and that the model exists on the provider.: error sending request for url (https://api.groq.com/openai/v1/chat/completions): client error (Connect): dns error: failed to lookup address information: Name or service not known".to_string(),
+            id: 22,
+            message: "Could not change the session setting".to_string(),
             retry_after_secs: None,
         },
         &mut remote,
     );
 
-    assert!(app.auto_poke_incomplete_todos);
-    assert!(!app.queued_messages().is_empty());
-    let pending = app
-        .rate_limit_pending_message
-        .as_ref()
-        .expect("offline auto-poke should be held for network recovery");
-    assert_eq!(pending.retry_attempts, 0);
-    assert!(app.rate_limit_reset.is_some());
-    assert!(matches!(
-        app.status,
-        ProcessingStatus::WaitingForNetwork { .. }
-    ));
-    assert_eq!(
-        app.status_detail.as_deref(),
-        Some("offline; waiting for network before retry")
-    );
-    assert!(
-        app.display_messages()
-            .iter()
-            .any(|m| m.role == "system" && m.content.contains("Network appears offline"))
-    );
-    assert!(
-        !app.display_messages()
-            .iter()
-            .any(|m| m.role == "system" && m.content.contains("attempt 1/2"))
-    );
-}
-
-#[test]
-fn test_remote_connectivity_error_without_auto_retry_still_waits_for_network() {
-    // Regression: an auto-poke continuation that carries a visible message gets
-    // auto_retry=false. A transient DNS failure must still hold the turn for
-    // network recovery instead of permanently stopping auto-poke.
-    let mut app = create_test_app();
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
-
-    app.auto_poke_incomplete_todos = true;
-    app.queued_messages
-        .push("You have 1 incomplete todo. Continue working, or update the todo tool.".to_string());
-    app.rate_limit_pending_message = Some(PendingRemoteMessage {
-        content: "Continue working on the task.".to_string(),
-        images: vec![],
-        is_system: true,
-        system_reminder: None,
-        auto_retry: false,
-        retry_attempts: 0,
-        retry_at: None,
-    });
-    app.is_processing = true;
-    app.status = ProcessingStatus::Streaming;
-
-    app.handle_server_event(
-        crate::protocol::ServerEvent::Error {
-            id: 16,
-            message: "Failed to send request to Anthropic API: error sending request for url (https://api.anthropic.com/v1/messages): client error (Connect): dns error: failed to lookup address information: Name or service not known".to_string(),
-            retry_after_secs: None,
-        },
-        &mut remote,
-    );
-
-    // Auto-poke must stay enabled and queued work preserved.
-    assert!(app.auto_poke_incomplete_todos);
-    assert!(!app.queued_messages().is_empty());
-    let pending = app
-        .rate_limit_pending_message
-        .as_ref()
-        .expect("offline turn should be held for network recovery");
-    // Promoted to auto_retry so the tick-based resume re-sends it.
-    assert!(pending.auto_retry);
-    assert_eq!(pending.retry_attempts, 0);
-    assert!(app.rate_limit_reset.is_some());
-    assert!(matches!(
-        app.status,
-        ProcessingStatus::WaitingForNetwork { .. }
-    ));
-    assert!(
-        !app.display_messages()
-            .iter()
-            .any(|m| m.role == "system" && m.content.contains("we stopped poking"))
-    );
+    assert!(app.is_processing);
+    assert_eq!(app.current_message_id, Some(16));
+    assert_eq!(app.streaming.streaming_text, "still streaming");
 }
 
 fn openai_oauth_route(model: &str) -> crate::provider::ModelRoute {

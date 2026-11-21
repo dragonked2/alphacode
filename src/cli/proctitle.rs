@@ -18,6 +18,7 @@ pub(crate) fn initial_title(args: &Args) -> String {
         Some(Command::Acp) => "alphacode acp".to_string(),
         Some(Command::Server { .. }) => "alphacode server".to_string(),
         Some(Command::Connect) => "alphacode:client".to_string(),
+        Some(Command::Support { .. }) => "alphacode:support".to_string(),
         Some(Command::Run { .. }) => "alphacode run".to_string(),
         Some(Command::Login { .. }) => "alphacode login".to_string(),
         Some(Command::Account { .. }) => "alphacode account".to_string(),

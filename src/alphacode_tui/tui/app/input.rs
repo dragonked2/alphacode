@@ -2,8 +2,7 @@
 
 use super::{
     App, ContentBlock, DisplayMessage, Message, ProcessingStatus, Role, SendAction, commands,
-    ctrl_bracket_fallback_to_esc, is_context_limit_error, is_request_payload_too_large_error,
-    remote,
+    ctrl_bracket_fallback_to_esc, remote,
 };
 use crate::alphacode_tui::bus::{
     Bus, BusEvent, ClipboardPasteCompleted, ClipboardPasteContent, ClipboardPasteKind,
@@ -1798,6 +1797,38 @@ impl App {
         }
         self.schedule_auto_poke_followup_if_needed()
             || self.schedule_overnight_poke_followup_if_needed()
+    }
+
+    /// Show a manual recovery path when the provider stops after updating an
+    /// active plan. A todo from an earlier turn is not evidence of a stall.
+    pub(super) fn show_unfinished_plan_notice(&mut self) {
+        if self.pending_queued_dispatch || self.pending_turn || self.has_queued_followups() {
+            return;
+        }
+        let mut turn_messages = self
+            .display_messages
+            .iter()
+            .rev()
+            .take_while(|message| message.role != "user")
+            .filter(|message| matches!(message.role.as_str(), "assistant" | "tool"));
+        if !turn_messages.next().is_some_and(|message| {
+            message.role == "assistant"
+                && !message.content.trim().is_empty()
+                && !explicitly_waits_for_user(&message.content)
+        }) || !turn_messages.any(|message| {
+            message
+                .tool_data
+                .as_ref()
+                .is_some_and(|tool| tool.name == "todo")
+        }) || !commands::poke_todos(self)
+            .iter()
+            .any(|todo| todo.status == "in_progress" && todo.blocked_by.is_empty())
+        {
+            return;
+        }
+        self.push_display_message(DisplayMessage::system(
+            "The model ended its turn with a task still in progress. Send Continue to resume.",
+        ));
     }
 
     /// Deliver this turn's deferred quality-check reminder, if anything is
@@ -4387,26 +4418,12 @@ impl App {
                     self.last_submitted_pastes.clear();
                 }
                 Err(e) => {
-                    let err_str = crate::util::format_error_chain(&e);
-                    if is_request_payload_too_large_error(&err_str) {
-                        if !self
-                            .try_recover_payload_too_large_and_retry(terminal, event_stream)
-                            .await
-                        {
-                            self.handle_turn_error(err_str);
-                        }
-                    } else if is_context_limit_error(&err_str) {
-                        if self
-                            .try_auto_compact_and_retry(terminal, event_stream)
-                            .await
-                        {
-                            // Successfully recovered
-                        } else {
-                            self.handle_turn_error(err_str);
-                        }
-                    } else {
-                        self.handle_turn_error(err_str);
-                    }
+                    self.recover_or_report_local_turn_error(
+                        crate::util::format_error_chain(&e),
+                        terminal,
+                        event_stream,
+                    )
+                    .await;
                 }
             }
             self.current_turn_system_reminder = None;

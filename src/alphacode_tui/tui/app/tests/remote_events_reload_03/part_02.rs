@@ -342,7 +342,7 @@ fn test_compacted_history_event_applies_expanded_window() {
 }
 
 #[test]
-fn test_remote_error_with_retry_after_keeps_pending_for_auto_retry() {
+fn remote_rate_limit_hint_is_visible_without_automatic_replay() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -360,6 +360,7 @@ fn test_remote_error_with_retry_after_keeps_pending_for_auto_retry() {
     app.is_processing = true;
     app.status = ProcessingStatus::Streaming;
     app.current_message_id = Some(9);
+    app.last_submitted_input = Some("retry me".to_string());
 
     app.handle_server_event(
         crate::protocol::ServerEvent::Error {
@@ -373,15 +374,14 @@ fn test_remote_error_with_retry_after_keeps_pending_for_auto_retry() {
     assert!(!app.is_processing);
     assert!(matches!(app.status, ProcessingStatus::Idle));
     assert!(app.current_message_id.is_none());
-    assert!(app.rate_limit_reset.is_some());
-    assert!(app.rate_limit_pending_message.is_some());
+    assert!(app.rate_limit_reset.is_none());
+    assert!(app.rate_limit_pending_message.is_none());
+    assert_eq!(app.input(), "retry me");
 
     let last = app
         .display_messages()
         .last()
         .expect("missing rate-limit status message");
-    assert_eq!(last.role, "system");
-    assert!(last.content.contains("Will auto-retry in 3 seconds"));
+    assert_eq!(last.role, "error");
+    assert!(last.content.contains("Try again in 3s"));
 }
-
-

@@ -138,23 +138,13 @@ pub async fn get_openai_usage() -> OpenAIUsageData {
     current_data.display_snapshot()
 }
 
+/// Read the latest snapshot without starting provider traffic.
 pub fn get_openai_usage_sync() -> OpenAIUsageData {
-    if let Some(usage) = OPENAI_USAGE.get()
-        && let Ok(data) = usage.try_read()
-    {
-        if data.is_stale() {
-            try_spawn_openai_refresh(usage.clone());
-        }
-        return data.display_snapshot();
-    }
-
-    if tokio::runtime::Handle::try_current().is_ok() {
-        tokio::spawn(async {
-            let _ = get_openai_usage().await;
-        });
-    }
-
-    OpenAIUsageData::default()
+    OPENAI_USAGE
+        .get()
+        .and_then(|usage| usage.try_read().ok())
+        .map(|data| data.display_snapshot())
+        .unwrap_or_default()
 }
 
 /// Check if extra usage (1M context, etc.) is enabled for the account.
@@ -351,27 +341,13 @@ async fn fetch_usage_for_account(
     fetch_anthropic_usage_data(access_token, cache_key).await
 }
 
-/// Get usage data synchronously (returns cached data, triggers refresh if stale)
+/// Read the latest Claude usage snapshot without starting provider traffic.
 pub fn get_sync() -> UsageData {
-    // Try to get cached data
-    if let Some(usage) = USAGE.get() {
-        // Return current cached value (blocking read)
-        if let Ok(data) = usage.try_read() {
-            if data.is_stale() {
-                try_spawn_refresh(usage.clone());
-            }
-            return data.display_snapshot();
-        }
-    }
-
-    // Not initialized yet - trigger initialization
-    if tokio::runtime::Handle::try_current().is_ok() {
-        tokio::spawn(async {
-            let _ = get().await;
-        });
-    }
-
-    UsageData::default()
+    USAGE
+        .get()
+        .and_then(|usage| usage.try_read().ok())
+        .map(|data| data.display_snapshot())
+        .unwrap_or_default()
 }
 
 /// Drive `future` to completion from synchronous code that is already running

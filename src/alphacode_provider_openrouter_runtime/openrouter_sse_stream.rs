@@ -288,6 +288,7 @@ pub(super) async fn run_stream_with_retries(
     model: String,
 ) {
     let mut next_retry_delay = None;
+    let mut compatibility_repaired = false;
 
     for attempt in 0..MAX_RETRIES {
         if attempt > 0 {
@@ -352,14 +353,14 @@ pub(super) async fn run_stream_with_retries(
             api_base.clone(),
             auth.clone(),
             send_openrouter_headers,
-            &request,
-            request_body.clone(),
+            &mut request,
+            &mut request_body,
             stream_usage_support.as_deref(),
             &responses_fallback,
             attempt_tx,
             Arc::clone(&provider_pin),
             model.clone(),
-            false,
+            &mut compatibility_repaired,
         )
         .await
         {
@@ -425,14 +426,14 @@ async fn stream_response(
     api_base: String,
     auth: ProviderAuth,
     send_openrouter_headers: bool,
-    request: &Value,
-    request_body: bytes::Bytes,
+    request: &mut Value,
+    request_body: &mut bytes::Bytes,
     stream_usage_support: Option<&StreamUsageSupport>,
     responses_fallback: &super::openrouter_responses_fallback::ResponsesFallbackContext,
     tx: mpsc::Sender<Result<StreamEvent>>,
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
     model: String,
-    compatibility_repaired: bool,
+    compatibility_repaired: &mut bool,
 ) -> Result<()> {
     use crate::alphacode_message_types::ConnectionPhase;
     let _ = tx
@@ -505,7 +506,7 @@ async fn stream_response(
 
     let suppress_upstream_error_details = is_alphax_free_gateway(&api_base);
     let response = crate::alphacode_provider_core::transport::send_with_initial_response_timeout(
-        req.body(request_body),
+        req.body(request_body.clone()),
         stream_idle_timeout,
     )
     .await
@@ -554,8 +555,9 @@ async fn stream_response(
         }
 
         // A different payload can repair a schema rejection; repeating the
-        // identical HTTP 400 cannot. Allow exactly one repair per attempt.
-        if !compatibility_repaired
+        // identical HTTP 400 cannot. Keep the one repaired payload for the
+        // remainder of the round, including any transport retries.
+        if !*compatibility_repaired
             && let Some(repaired) =
                 repair_unsupported_optional_parameter(status, &upstream_body, request)
         {
@@ -565,7 +567,9 @@ async fn stream_response(
             {
                 support.remember_rejection(&model);
             }
-            let body = bytes::Bytes::from(serde_json::to_vec(&repaired)?);
+            *request_body = bytes::Bytes::from(serde_json::to_vec(&repaired)?);
+            *request = repaired;
+            *compatibility_repaired = true;
             crate::alphacode_base::logging::info(
                 "Provider rejected an optional request setting; retrying once without that setting",
             );
@@ -574,14 +578,14 @@ async fn stream_response(
                 api_base,
                 auth,
                 send_openrouter_headers,
-                &repaired,
-                body,
+                request,
+                request_body,
                 stream_usage_support,
                 responses_fallback,
                 tx,
                 provider_pin,
                 model,
-                true,
+                compatibility_repaired,
             ))
             .await;
         }
@@ -1094,6 +1098,9 @@ mod tests {
             "model": "compatibility-fixture", "messages": [{"role":"user", "content":"hello"}],
             "stream": true, "temperature": 1, "stream_options": {"include_usage": true},
         });
+        let mut repaired_request = request.clone();
+        let mut request_body = bytes::Bytes::from(serde_json::to_vec(&request).unwrap());
+        let mut compatibility_repaired = false;
         let fallback = super::super::openrouter_responses_fallback::ResponsesFallbackContext {
             messages: Vec::new(),
             system: String::new(),
@@ -1109,14 +1116,14 @@ mod tests {
                     label: "fixture".into(),
                 },
                 false,
-                &request,
-                bytes::Bytes::from(serde_json::to_vec(&request).unwrap()),
+                &mut repaired_request,
+                &mut request_body,
                 None,
                 &fallback,
                 tx,
                 Arc::new(Mutex::new(None)),
                 "compatibility-fixture".into(),
-                false,
+                &mut compatibility_repaired,
             ),
         )
         .await
@@ -1127,6 +1134,8 @@ mod tests {
         let mut expected = request;
         expected.as_object_mut().unwrap().remove("temperature");
         assert_eq!(bodies[1], expected);
+        assert_eq!(repaired_request, expected);
+        assert!(compatibility_repaired);
     }
 
     #[test]

@@ -299,24 +299,21 @@ impl Message {
                 if msg.role != Role::User || msg.should_skip_timestamp_injection() {
                     return msg.clone();
                 }
-                let text_tag = format!("[{}]", Self::format_timestamp(&ts));
-                let tool_result_tag = msg.tool_result_tag(&ts);
-                let mut msg = msg.clone();
-                let mut tagged = false;
-                for block in &mut msg.content {
+                let mut stamped = msg.clone();
+                for block in &mut stamped.content {
                     match block {
-                        ContentBlock::Text { text, .. } if !tagged => {
-                            *text = format!("{} {}", text_tag, text);
-                            tagged = true;
+                        ContentBlock::Text { text, .. } => {
+                            *text = format!("[{}] {text}", Self::format_timestamp(&ts));
+                            break;
                         }
-                        ContentBlock::ToolResult { content, .. } if !tagged => {
-                            *content = format!("{} {}", tool_result_tag, content);
-                            tagged = true;
+                        ContentBlock::ToolResult { content, .. } => {
+                            *content = format!("{} {content}", msg.tool_result_tag(&ts));
+                            break;
                         }
                         _ => {}
                     }
                 }
-                msg
+                stamped
             })
             .collect()
     }

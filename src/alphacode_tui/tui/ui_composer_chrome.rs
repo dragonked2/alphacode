@@ -52,6 +52,14 @@ fn actions(mode: ComposerMode, app: &dyn TuiState) -> Vec<(&'static str, &'stati
 }
 
 fn action_line(actions: &[(&str, &str)], width: usize) -> Line<'static> {
+    if let [("Enter", label), ("Esc", "stop"), ..] = actions
+        && width < "Enter  · Esc stop".width() + label.width()
+    {
+        if width >= "↵  · Esc stop".width() + label.width() {
+            return action_line(&[("↵", label), ("Esc", "stop")], width);
+        }
+        return action_line(&[("Esc", "stop")], width);
+    }
     let mut spans = Vec::new();
     let mut used = 0;
     for (index, (key, label)) in actions.iter().enumerate() {
@@ -109,12 +117,13 @@ pub(super) fn draw_footer(
     visible_rows: usize,
     total_rows: usize,
 ) {
-    // Six gutter cells plus the primary key still fit at eleven columns.
-    // Keep Enter discoverable in narrow splits instead of hiding all guidance.
     if area.height < 3 || area.width < 11 {
         return;
     }
-    let width = usize::from(area.width.saturating_sub(6));
+    // In a narrow split the border corners are enough of an inset. The
+    // reclaimed cells leave room for the full stop action.
+    let gutter = if area.width < 24 { 1 } else { 3 };
+    let width = usize::from(area.width - 2 * gutter);
     let position = if total_rows > visible_rows && visible_rows > 0 {
         format!(
             " {}-{}/{} ",
@@ -144,7 +153,9 @@ pub(super) fn draw_footer(
         .first()
         .map(|(key, label)| key.width() + label.width() + 1)
         .unwrap_or(0);
-    let show_position = !position.is_empty() && width >= position_width + primary_width + 2;
+    let stop_width = usize::from(actions.get(1) == Some(&("Esc", "stop"))) * " · Esc stop".width();
+    let show_position =
+        !position.is_empty() && width >= position_width + primary_width + stop_width + 2;
     let left_width = if show_position {
         width - position_width - 2
     } else {
@@ -154,13 +165,13 @@ pub(super) fn draw_footer(
     let row = area.bottom().saturating_sub(1);
     frame.render_widget(
         Paragraph::new(line),
-        Rect::new(area.x + 3, row, left_width as u16, 1),
+        Rect::new(area.x + gutter, row, left_width as u16, 1),
     );
     if show_position {
         frame.render_widget(
             Paragraph::new(position).style(Style::default().fg(BrandTheme::dim_bright())),
             Rect::new(
-                area.right() - 3 - position_width as u16,
+                area.right() - gutter - position_width as u16,
                 row,
                 position_width as u16,
                 1,
@@ -212,5 +223,15 @@ mod tests {
         let line = action_line(&actions, 24);
         assert!(line.spans.iter().any(|span| span.content == "F1"));
         assert!(!line.spans.iter().any(|span| span.content == "/"));
+    }
+
+    #[test]
+    fn running_footer_keeps_stop_visible_at_narrow_widths() {
+        let actions = [("Enter", "send now"), ("Esc", "stop"), ("F1", "help")];
+        for width in 5..=30 {
+            let line = action_line(&actions, width);
+            assert!(line.width() <= width);
+            assert!(line.spans.iter().any(|span| span.content == "Esc"));
+        }
     }
 }

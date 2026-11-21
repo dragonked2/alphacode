@@ -1,4 +1,4 @@
-use super::{App, DisplayMessage, ProcessingStatus, is_context_limit_error};
+use super::{App, DisplayMessage, ProcessingStatus};
 use crate::alphacode_tui::bus::{
     BackgroundTaskCompleted, BackgroundTaskProgressEvent, BusEvent, InputShellCompleted,
     ManualToolCompleted, UiActivity, UiActivityKind,
@@ -35,21 +35,12 @@ pub(super) async fn process_turn_with_input(
             app.last_submitted_pastes.clear();
         }
         Err(error) => {
-            let err_str = crate::util::format_error_chain(&error);
-            if super::is_request_payload_too_large_error(&err_str) {
-                if !app
-                    .try_recover_payload_too_large_and_retry(terminal, event_stream)
-                    .await
-                {
-                    app.handle_turn_error(err_str);
-                }
-            } else if is_context_limit_error(&err_str) {
-                if !app.try_auto_compact_and_retry(terminal, event_stream).await {
-                    app.handle_turn_error(err_str);
-                }
-            } else {
-                app.handle_turn_error(err_str);
-            }
+            app.recover_or_report_local_turn_error(
+                crate::util::format_error_chain(&error),
+                terminal,
+                event_stream,
+            )
+            .await;
         }
     }
 
@@ -547,11 +538,14 @@ pub(super) fn finish_turn(app: &mut App) {
     app.thought_line_inserted = false;
     app.thinking_prefix_emitted = false;
     app.thinking_buffer.clear();
-    app.note_runtime_memory_event_force("turn_completed", "local_turn_finished");
-    let followup_scheduled = schedule_turn_end_followups_guarded(app);
+    let succeeded = app.last_stream_error.is_none();
+    if succeeded {
+        app.note_runtime_memory_event_force("turn_completed", "local_turn_finished");
+    }
+    let followup_scheduled = succeeded && schedule_turn_end_followups_guarded(app);
     if !followup_scheduled {
         app.clear_visible_turn_started();
-        if !app.pending_queued_dispatch && app.queued_messages.is_empty() {
+        if succeeded && !app.pending_queued_dispatch && app.queued_messages.is_empty() {
             app.maybe_notify_turn_complete(turn_duration_secs);
         }
     }

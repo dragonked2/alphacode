@@ -30,6 +30,86 @@ impl App {
         }
     }
 
+    async fn wait_for_network_with_input(
+        &mut self,
+        reason: &str,
+        terminal: &mut DefaultTerminal,
+        event_stream: &mut EventStream,
+        bus_receiver: Option<&mut tokio::sync::broadcast::Receiver<crate::bus::BusEvent>>,
+        renderer: &mut super::run_shell::StatusSpinnerRenderer,
+    ) -> Result<bool> {
+        let plan = crate::network_retry::wait_plan();
+        self.push_display_message(DisplayMessage::system(format!(
+            "Stream interrupted, likely because {reason}. Waiting to retry: {}. Press Esc to stop.",
+            plan.listener_summary
+        )));
+        self.status = ProcessingStatus::WaitingForNetwork {
+            listener: plan.listener_summary,
+        };
+        renderer.draw_full(self, terminal)?;
+
+        let mut bus_receiver = bus_receiver;
+        let mut redraw =
+            super::run_shell::redraw_timer(crate::alphacode_tui::tui::redraw_interval(self));
+        let mut reconnect = std::pin::pin!(crate::network_retry::wait_until_probably_online());
+        loop {
+            tokio::select! {
+                event = event_stream.next_live() => match event {
+                    Some(Ok(Event::Key(key))) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                        self.update_copy_badge_key_event(key);
+                        self.handle_turn_key_burst(key, event_stream);
+                        if self.cancel_requested || self.should_quit {
+                            self.cancel_requested = false;
+                            self.interleave_message = None;
+                            self.pending_soft_interrupts.clear();
+                            self.pending_soft_interrupt_requests.clear();
+                            self.clear_streaming_render_state();
+                            self.stream_buffer.clear();
+                            self.streaming_tool_calls.clear();
+                            self.schedule_queued_dispatch_after_interrupt();
+                            self.push_display_message(DisplayMessage::system("Network wait interrupted."));
+                            return Ok(false);
+                        }
+                        renderer.draw_full(self, terminal)?;
+                    }
+                    Some(Ok(Event::Paste(text))) => {
+                        self.handle_paste(text);
+                        renderer.draw_full(self, terminal)?;
+                    }
+                    Some(Ok(Event::Mouse(mouse))) if !matches!(mouse.kind, MouseEventKind::Moved) => {
+                        self.handle_mouse_event(mouse);
+                        renderer.draw_full(self, terminal)?;
+                    }
+                    Some(Ok(Event::Resize(_, _))) if self.should_redraw_after_resize() => {
+                        renderer.draw_full(self, terminal)?;
+                    }
+                    None => return Ok(false),
+                    _ => {}
+                },
+                _ = redraw.tick() => {
+                    let _ = self.flush_pending_resize_redraw();
+                    renderer.draw_full(self, terminal)?;
+                }
+                bus_event = async {
+                    match bus_receiver.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if super::local::handle_bus_event(self, bus_event) {
+                        renderer.draw_full(self, terminal)?;
+                    }
+                }
+                _ = &mut reconnect => {
+                    self.push_display_message(DisplayMessage::system(
+                        "Network connectivity looks restored. Retrying request.",
+                    ));
+                    return Ok(true);
+                }
+            }
+        }
+    }
+
     pub(super) fn append_current_turn_system_reminder(
         &self,
         split: &mut crate::prompt::SplitSystemPrompt,
@@ -62,6 +142,8 @@ impl App {
         let mut redraw_interval = super::run_shell::redraw_timer(redraw_period);
         let mut status_spinner_interval = super::run_shell::status_spinner_interval();
         let mut status_spinner_renderer = super::run_shell::StatusSpinnerRenderer::default();
+        let mut network_retry_available = !self.provider.handles_tools_internally();
+        let mut memory_context_queued = false;
 
         'turn_loop: loop {
             // Mark the turn as in-flight work: from here until the turn ends,
@@ -103,16 +185,18 @@ impl App {
                 self.handle_compaction_event(event);
             }
 
-            let tools = self.registry.definitions(None).await;
+            let tools = self
+                .registry
+                .advertised_definitions(&self.session.id, None, &std::collections::HashSet::new())
+                .await;
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
-            let memory_pending = self.build_memory_prompt_nonblocking(&provider_messages);
+            let memory_pending = self
+                .build_memory_prompt_nonblocking(&provider_messages, &mut memory_context_queued);
             // Use split prompt for better caching - static content cached, dynamic not
             let mut split_prompt =
                 self.build_system_prompt_split(memory_pending.as_ref().map(|p| p.prompt.as_str()));
-            let capability_names = tools
-                .iter()
-                .map(|tool| tool.name.clone())
-                .collect::<Vec<_>>();
+            let mut capability_names = self.registry.tool_names().await;
+            capability_names.sort_unstable();
             split_prompt
                 .dynamic_part
                 .push_str(&crate::tool::capabilities::request_brief(
@@ -241,21 +325,15 @@ impl App {
                         match result {
                             Ok(stream) => break stream,
                             Err(err) => {
-                                if let Some(reason) = crate::network_retry::classify_network_interruption(err.as_ref()) {
-                                    let plan = crate::network_retry::wait_plan();
-                                    self.push_display_message(DisplayMessage::system(format!(
-                                        "Stream interrupted, likely because {reason}. Waiting to retry: {}.",
-                                        plan.listener_summary
-                                    )));
-                                    self.status = ProcessingStatus::WaitingForNetwork {
-                                        listener: plan.listener_summary.clone(),
-                                    };
-                                    status_spinner_renderer.draw_full(self, terminal)?;
-                                    super::run_shell::reset_status_spinner_interval(&mut status_spinner_interval, self);
-                                    crate::network_retry::wait_until_probably_online().await;
-                                    self.push_display_message(DisplayMessage::system(
-                                        "Network connectivity looks restored; retrying request.".to_string(),
-                                    ));
+                                if network_retry_available
+                                    && let Some(reason) = crate::network_retry::classify_network_interruption(err.as_ref())
+                                {
+                                    network_retry_available = false;
+                                    if !self.wait_for_network_with_input(
+                                        &reason, terminal, event_stream, bus_receiver.as_deref_mut(), &mut status_spinner_renderer,
+                                    ).await? {
+                                        return Ok(());
+                                    }
                                     continue 'turn_loop;
                                 }
                                 return Err(err);
@@ -826,22 +904,15 @@ impl App {
                                             && current_tool.is_none()
                                             && self.streaming.streaming_text.is_empty()
                                             && !saw_message_end;
-                                        if !provider_manages_tools && no_partial_output
+                                        if network_retry_available && !provider_manages_tools && no_partial_output
                                             && let Some(reason) = crate::network_retry::classify_message(&message)
                                         {
-                                            let plan = crate::network_retry::wait_plan();
-                                            self.push_display_message(DisplayMessage::system(format!(
-                                                "Stream interrupted, likely because {reason}. Waiting to retry: {}.",
-                                                plan.listener_summary
-                                            )));
-                                            self.status = ProcessingStatus::WaitingForNetwork {
-                                                listener: plan.listener_summary.clone(),
-                                            };
-                                            status_spinner_renderer.draw_full(self, terminal)?;
-                                            crate::network_retry::wait_until_probably_online().await;
-                                            self.push_display_message(DisplayMessage::system(
-                                                "Network connectivity looks restored; retrying request.".to_string(),
-                                            ));
+                                            network_retry_available = false;
+                                            if !self.wait_for_network_with_input(
+                                                &reason, terminal, event_stream, bus_receiver.as_deref_mut(), &mut status_spinner_renderer,
+                                            ).await? {
+                                                return Ok(());
+                                            }
                                             continue 'turn_loop;
                                         }
                                         self.commit_pending_streaming_assistant_message();
@@ -1096,22 +1167,15 @@ impl App {
                                     && current_tool.is_none()
                                     && self.streaming.streaming_text.is_empty()
                                     && !saw_message_end;
-                                if !provider_manages_tools && no_partial_output
+                                if network_retry_available && !provider_manages_tools && no_partial_output
                                     && let Some(reason) = crate::network_retry::classify_network_interruption(e.as_ref())
                                 {
-                                    let plan = crate::network_retry::wait_plan();
-                                    self.push_display_message(DisplayMessage::system(format!(
-                                        "Stream interrupted, likely because {reason}. Waiting to retry: {}.",
-                                        plan.listener_summary
-                                    )));
-                                    self.status = ProcessingStatus::WaitingForNetwork {
-                                        listener: plan.listener_summary.clone(),
-                                    };
-                                    status_spinner_renderer.draw_full(self, terminal)?;
-                                    crate::network_retry::wait_until_probably_online().await;
-                                    self.push_display_message(DisplayMessage::system(
-                                        "Network connectivity looks restored; retrying request.".to_string(),
-                                    ));
+                                    network_retry_available = false;
+                                    if !self.wait_for_network_with_input(
+                                        &reason, terminal, event_stream, bus_receiver.as_deref_mut(), &mut status_spinner_renderer,
+                                    ).await? {
+                                        return Ok(());
+                                    }
                                     continue 'turn_loop;
                                 }
                                 self.commit_pending_streaming_assistant_message();

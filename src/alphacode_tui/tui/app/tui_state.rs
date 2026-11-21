@@ -489,7 +489,7 @@ impl App {
                     cache_read_tokens: None,
                     cache_write_tokens: None,
                     output_tps,
-                    available: usage.last_error.is_none(),
+                    available: usage.fetched_at.is_some() && usage.last_error.is_none(),
                 })
             }
             WidgetProviderKind::OpenAI => {

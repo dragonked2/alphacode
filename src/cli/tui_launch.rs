@@ -38,7 +38,7 @@ pub async fn run_client() -> Result<()> {
     println!(
         "{}",
         os::colorized(
-            "Type your message, or 'quit' to exit. '/help' is not available in this mode.",
+            "Type your message, or 'quit' to exit. Run 'alphacode' for the full TUI and /help.",
             "\u{1b}[38;5;247m"
         )
     );

@@ -194,34 +194,72 @@ fn composer_mouse_mapping_does_not_reserve_a_hidden_hint_on_short_windows() {
 }
 
 #[test]
-fn conversation_header_reclaims_rows_and_keeps_identity_visible() {
-    let idle = TestState::default();
-    let welcome = header::conversation_banner_height(&idle, 120, 45);
-    assert!(welcome > 1);
-    let mut working = TestState {
-        status: ProcessingStatus::Streaming,
-        display_messages: vec![DisplayMessage::user("hello")],
-        provider_name: Some("Test Provider".into()),
-        provider_model: Some("gpt-5.2".into()),
-        working_dir: Some("C:/projects/世界-workspace".into()),
-        ..Default::default()
-    };
-    let rows = header::conversation_banner_height(&working, 120, 45);
-    assert!(rows < welcome);
-    assert_eq!(rows, 2);
-    working.status = ProcessingStatus::Idle;
-    assert_eq!(header::conversation_banner_height(&working, 120, 45), rows);
-    assert_eq!(header::conversation_banner_height(&working, 40, 10), 1);
-    use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
-    let mut terminal = Terminal::new(TestBackend::new(120, rows)).unwrap();
-    terminal.draw(|frame| {
-        let lines = header::build_banner_band_lines(&working, 120, rows);
-        frame.render_widget(Paragraph::new(lines), frame.area());
-    }).unwrap();
-    let rendered: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
-    assert!(rendered.contains("GPT-5.2") && rendered.contains("Test Provider"), "{rendered}");
-    assert!(rendered.contains("-workspace"), "{rendered}");
-    export_composer_review_frame(terminal.backend().buffer(), "conversation-banner-active");
+fn pinned_banner_stays_in_place_through_the_first_prompt() {
+    let _lock = viewport_snapshot_test_lock();
+    use ratatui::{Terminal, backend::TestBackend};
+
+    for (width, height) in [(40, 10), (80, 24), (120, 45)] {
+        let mut state = TestState {
+            provider_name: Some("Test Provider".into()),
+            provider_model: Some("gpt-5.2".into()),
+            working_dir: Some("C:/projects/世界-workspace".into()),
+            suppress_info_widgets: true,
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let mut first_banner = None;
+        for status in [
+            ProcessingStatus::Idle,
+            ProcessingStatus::Sending,
+            ProcessingStatus::Streaming,
+            ProcessingStatus::Idle,
+        ] {
+            state.status = status;
+            if matches!(state.status, ProcessingStatus::Sending) {
+                state.display_messages.push(DisplayMessage::user("Hello"));
+                state.messages_version += 1;
+            } else if matches!(state.status, ProcessingStatus::Streaming) {
+                state.streaming_text = "The first answer is streaming".into();
+            } else if !state.streaming_text.is_empty() {
+                state.streaming_text.clear();
+                state
+                    .display_messages
+                    .push(DisplayMessage::assistant("Hello there"));
+                state.messages_version += 1;
+            }
+
+            terminal.draw(|frame| draw(frame, &state)).unwrap();
+            let layout = last_layout_snapshot().expect("chat layout");
+            let buffer = terminal.backend().buffer();
+            let banner = (0..layout.messages_area.y)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>();
+            let rendered = banner.join("\n");
+            assert!(
+                rendered.contains("GPT-5.2") && rendered.contains("Test Provider"),
+                "{rendered}"
+            );
+            if height >= 24 {
+                assert!(rendered.contains("-workspace"), "{rendered}");
+                assert!(banner.len() > 2, "the full wordmark must stay visible");
+            } else {
+                assert!(rendered.contains("AlphaCode"), "{rendered}");
+            }
+            if let Some(first) = &first_banner {
+                assert_eq!(&banner, first, "{width}x{height} after the first prompt");
+            } else {
+                first_banner = Some(banner);
+            }
+        }
+        export_composer_review_frame(
+            terminal.backend().buffer(),
+            &format!("steady-banner-{width}x{height}"),
+        );
+    }
 }
 
 #[test]

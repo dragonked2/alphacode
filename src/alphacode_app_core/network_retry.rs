@@ -15,33 +15,25 @@ pub fn classify_network_interruption(error: &(dyn std::error::Error + 'static)) 
     let mut parts = Vec::new();
     let mut current = Some(error);
     while let Some(err) = current {
-        let text = err.to_string().to_ascii_lowercase();
+        let text = err.to_string();
         parts.push(text);
         current = err.source();
     }
-    classify_text(&parts.join(" | "))
+    classify_message(&parts.join(": "))
 }
 
 pub fn classify_message(message: &str) -> Option<String> {
+    use crate::alphacode_provider_core::retry::{embedded_http_status, stream_retry_exhausted};
+
+    // An HTTP response or an exhausted provider retry budget cannot be fixed
+    // by replaying the prompt after a connectivity probe.
+    if stream_retry_exhausted(message) || embedded_http_status(message).is_some() {
+        return None;
+    }
     classify_text(&message.to_ascii_lowercase())
 }
 
 fn classify_text(text: &str) -> Option<String> {
-    // An embedded HTTP status means the gateway successfully answered us —
-    // the network is obviously fine and the failure is a request-level
-    // verdict. Provider diagnostics routinely embed BOTH a `timeout: Ns`
-    // line (the request budget) and a `status: 4xx` line, and the `timeout`
-    // needle below would misread a permanent 400 as a dropped connection —
-    // sending recovery into a "network is offline" reconnect-probe loop even
-    // though connectivity never broke. A rate-limit 429 is a provider
-    // response, not an offline signal. Preserve the existing handling for
-    // timeout-shaped 408 and conflict 409 responses.
-    if let Some(status) = crate::alphacode_provider_core::retry::embedded_http_status(text)
-        && (400..500).contains(&status)
-        && !matches!(status, 408 | 409)
-    {
-        return None;
-    }
     let network_markers = [
         "connection reset",
         "connection aborted",
@@ -72,7 +64,6 @@ fn classify_text(text: &str) -> Option<String> {
         "host is unreachable",
         "operation timed out",
         "timed out",
-        "timeout",
         "error trying to connect",
         "connection closed before message completed",
         "unexpected eof",
@@ -298,16 +289,21 @@ mod tests {
         );
     }
 
-    /// The genuine timeout shapes must still classify even once the guard
-    /// exists, so recovery is not over-suppressed.
     #[test]
-    fn transport_timeouts_still_classify() {
+    fn gateway_timeout_and_exhausted_retries_do_not_start_network_reconnect() {
         assert!(
             classify_message(
                 "openai-compatible chat request failed\n  status: 504 gateway timeout\n  \
              timeout: 180s"
             )
-            .is_some()
+            .is_none()
+        );
+        assert!(classify_message("HTTP 503 Service Unavailable: upstream timed out").is_none());
+        assert!(
+            classify_message(
+                "Provider request retry limit reached after 3 attempts: connection reset"
+            )
+            .is_none()
         );
         assert!(classify_message("connection reset by peer").is_some());
     }

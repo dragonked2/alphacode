@@ -363,7 +363,10 @@ impl GeminiProvider {
         F: Fn(reqwest::Client) -> reqwest::RequestBuilder,
     {
         use crate::alphacode_provider_core::retry::{
-            MAX_ATTEMPTS, RetryReason, backoff_for, is_retryable_message,
+            MAX_ATTEMPTS, RetryReason, backoff_for, stream_retry_limit_reached,
+        };
+        use crate::alphacode_provider_core::retry_after::{
+            error_with_retry_after, requires_manual_retry, retry_after, retry_after_from_error,
         };
         let mut last_error: Option<anyhow::Error> = None;
         for attempt in 0..MAX_ATTEMPTS {
@@ -381,54 +384,39 @@ impl GeminiProvider {
                         return Ok(response);
                     }
                     // Non-2xx: drain the body, decide retry, possibly sleep.
-                    let parsed_hint = crate::alphacode_provider_core::retry_after::retry_after(
-                        response.headers(),
-                    );
-                    let hint = parsed_hint.as_ref().map(|h| h.remaining());
+                    let parsed_hint = retry_after(response.headers());
                     let body = response
                         .text()
                         .await
                         .unwrap_or_else(|_| String::from("<unreadable body>"));
-                    let combined = format!("HTTP {status}: {body}");
+                    let error = error_with_retry_after(
+                        format!("Gemini request to {url} failed: HTTP {status}: {body}"),
+                        parsed_hint,
+                    );
                     // The agent owns the bounded account-level rate-limit
                     // retry budget; nesting five retries here multiplies it.
-                    if status.as_u16() == 429
-                        || hint.is_some_and(|hint| {
-                            hint > crate::alphacode_provider_core::retry_after::MAX_AUTOMATIC_WAIT
-                        })
-                    {
-                        return Err(
-                            crate::alphacode_provider_core::retry_after::error_with_retry_after(
-                                format!("Gemini request to {url} failed: {combined}"),
-                                parsed_hint,
-                            ),
-                        );
+                    if status.as_u16() == 429 || requires_manual_retry(&error) {
+                        return Err(error);
                     }
 
-                    let retryable = if status.as_u16() == 429 {
-                        is_retryable_message(&combined)
-                    } else {
-                        status.is_server_error() || status.as_u16() == 408 || status.as_u16() == 409
-                    };
-                    if !retryable || attempt + 1 >= MAX_ATTEMPTS {
-                        return Err(anyhow::anyhow!(combined))
-                            .with_context(|| format!("Gemini request to {url} failed"));
+                    if !status.is_server_error() && !matches!(status.as_u16(), 408 | 409) {
+                        return Err(error);
                     }
-                    let reason = if status.as_u16() == 429 {
-                        RetryReason::RateLimited
-                    } else {
-                        RetryReason::ServerError
-                    };
-                    let delay = backoff_for(reason, attempt, hint);
+                    if attempt + 1 >= MAX_ATTEMPTS {
+                        return Err(stream_retry_limit_reached(error, MAX_ATTEMPTS));
+                    }
+                    let delay = backoff_for(
+                        RetryReason::ServerError,
+                        attempt,
+                        retry_after_from_error(&error),
+                    );
                     crate::alphacode_base::logging::warn(&format!(
-                        "[retry] Gemini {url}: attempt {} after {delay:?} ({reason})",
+                        "[retry] Gemini {url}: attempt {} after {delay:?} (server error)",
                         attempt + 1
                     ));
                     tokio::time::sleep(delay).await;
                 }
-                Err(err)
-                    if crate::alphacode_provider_core::retry_after::requires_manual_retry(&err) =>
-                {
+                Err(err) if requires_manual_retry(&err) => {
                     return Err(err);
                 }
                 Err(err)
@@ -456,7 +444,10 @@ impl GeminiProvider {
             }
         }
         let err = last_error.unwrap_or_else(|| anyhow::anyhow!("Gemini request failed"));
-        Err(err).with_context(|| format!("Gemini request to {url} failed"))
+        Err(stream_retry_limit_reached(
+            err.context(format!("Gemini request to {url} failed")),
+            MAX_ATTEMPTS,
+        ))
     }
     async fn post_json<T: DeserializeOwned>(
         &self,

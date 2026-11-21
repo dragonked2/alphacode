@@ -100,7 +100,7 @@ fn test_remote_ctrl_p_toggles_auto_poke() {
         let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
 
         app.is_remote = true;
-        assert!(app.auto_poke_incomplete_todos);
+        app.auto_poke_incomplete_todos = true;
 
         rt.block_on(app.handle_remote_key(KeyCode::Char('p'), KeyModifiers::CONTROL, &mut remote))
             .expect("Ctrl+P should disable poke remotely");

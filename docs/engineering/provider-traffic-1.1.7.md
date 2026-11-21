@@ -56,14 +56,14 @@ These are conditional reads, not an unconditional requests-per-minute loop:
 | OpenRouter endpoint metadata | 2-hour freshness; background attempt gap 1 hour per model, at most 8 concurrent |
 | Inactive standard OpenRouter catalog | 24-hour freshness, guarded refresh |
 | Free gateway pool discovery | Startup-triggered, at most once per process per hour |
-| OAuth usage widget | On stale reads, 5-minute cache/error backoff and an in-flight guard |
+| OAuth usage widget | Since 1.1.17, reads cached usage without fetching |
 | Explicit `/usage` report | 2-minute provider-report cache; calls depend on configured accounts and supported APIs |
 | OpenCode-compatible client version | GitHub release metadata, first relevant header build then once per hour per process |
 
-A warm direct provider does not poll its catalog once per prompt. **Zero idle
-catalog requests** does not imply zero total idle traffic when the OAuth usage
-widget, a scheduled agent task, or another process is active. Process-local
-refresh guards do not deduplicate independently launched processes.
+A warm direct provider does not poll its catalog once per prompt. In 1.1.17,
+the OAuth usage widget and request diagnostics read cached snapshots. Use
+`/usage` to query the connected provider. Scheduled agent tasks and other
+processes can still send requests while the current session is idle.
 
 ## Measure a real run
 

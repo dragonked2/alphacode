@@ -101,11 +101,12 @@ impl Agent {
         // (bounded by Agent::MAX_REFUSAL_ROTATIONS_PER_TURN so a policy that
         // keeps declining cannot cycle the whole pool in one request).
         let mut refusal_rotations = 0u32;
-        // Counter for retries injected after a transient provider / transport
+        // Counter for retries scheduled after a transient provider / transport
         // error (5xx, 429 with rate-limit words, network EOF, ...). Bounded
         // by Agent::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS so a permanently
         // broken provider cannot keep an autonomous session running forever.
         let mut provider_error_continuations = 0u32;
+        let mut memory_context_queued = false;
         // Cache the static system prompt and tool definitions across turn-loop
         // iterations. Within a single user turn, the model receives tool results
         // and decides the next action — the system prompt and tool list never
@@ -210,7 +211,7 @@ impl Agent {
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
             // Only rebuild memory prompt on fresh user turns (not every tool-result iteration)
             let memory_pending =
-                self.build_memory_prompt_nonblocking_shared(std::sync::Arc::clone(&messages), None);
+                self.build_memory_prompt_nonblocking_shared(&messages, &mut memory_context_queued);
             // Use split prompt for better caching - static content cached, dynamic not.
             // The tier is inferred from the latest user message; trivial greetings
             // get a compact identity prompt instead of the full task prompt.
@@ -306,12 +307,8 @@ impl Agent {
                 Ok(stream) => stream,
                 Err(e) => {
                     let err_text = super::response_recovery::provider_error_text_for_recovery(&e);
-                    // Transient provider / transport errors get an automatic
-                    // "continue" injection: the user asked the agent to keep
-                    // working instead of stalling on a single 429 / 5xx, and
-                    // the helper itself enforces the retry budget. Non-
-                    // transient errors fall through to the context-limit and
-                    // final-return paths below exactly as before.
+                    // Retry eligible transient failures within the turn budget.
+                    // No output arrived, so the conversation can be reused.
                     if let Some(delay) = self.maybe_continue_after_provider_error(
                         &err_text,
                         &mut provider_error_continuations,

@@ -442,10 +442,8 @@ fn with_temp_alphacode_home<T>(f: impl FnOnce() -> T) -> T {
 /// silently following a config default they do not control.
 fn with_reasoning_current_home<T>(f: impl FnOnce() -> T) -> T {
     with_temp_alphacode_home(|| {
-        crate::config::Config::set_reasoning_display(
-            crate::config::ReasoningDisplayMode::Current,
-        )
-        .expect("pin reasoning display to current for the test config");
+        crate::config::Config::set_reasoning_display(crate::config::ReasoningDisplayMode::Current)
+            .expect("pin reasoning display to current for the test config");
         crate::config::invalidate_config_cache();
         f()
     })
@@ -594,16 +592,17 @@ fn auto_poke_config_sets_the_session_default_and_poke_on_still_overrides() {
     });
 }
 
-/// The default is unchanged for everyone who does not opt out.
 #[test]
-fn auto_poke_defaults_on_when_config_does_not_disable_it() {
+fn auto_poke_honors_existing_opt_in_config() {
     with_temp_alphacode_home(|| {
+        let mut cfg = crate::config::Config::load();
+        cfg.features.auto_poke = true;
+        cfg.save().expect("save auto_poke = true");
         crate::config::invalidate_config_cache();
         let app = create_test_app();
         assert!(
             app.auto_poke_incomplete_todos,
-            "auto-poke must stay on by default"
+            "an existing auto_poke = true setting must still be honored"
         );
     });
 }
-

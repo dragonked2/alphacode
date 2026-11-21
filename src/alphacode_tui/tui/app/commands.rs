@@ -118,37 +118,6 @@ pub(super) fn disable_auto_poke(app: &mut App) -> usize {
 mod auto_poke_errors;
 pub(super) use auto_poke_errors::is_non_retryable_auto_poke_error;
 
-/// Whether `error` is a transient connectivity failure (DNS, name resolution,
-/// routing, unreachable host) that the agent itself cannot repair by resending
-/// immediately. These are NOT non-retryable: they resolve once the network
-/// environment recovers, so callers route them to a network-wait/resume path
-/// rather than stopping auto-poke. Kept separate from
-/// [`is_non_retryable_auto_poke_error`] precisely so a transient disconnect is
-/// never treated as a permanent failure.
-pub(super) fn is_auto_poke_connectivity_error(error: &str) -> bool {
-    if crate::alphacode_provider_core::retry::embedded_http_status(error) == Some(429) {
-        return false;
-    }
-    // Delegate to the shared connectivity classifier (alphacode-app-core's
-    // network_retry) so this list can never drift out of sync with the wait-
-    // for-network path, then add wrappers specific to this call site.
-    if crate::network_retry::classify_message(error).is_some() {
-        return true;
-    }
-
-    let lower = error.to_ascii_lowercase();
-
-    let connectivity_markers = [
-        "failed to send openai-compatible chat request",
-        "could not resolve host",
-        "couldn't resolve host",
-    ];
-
-    connectivity_markers
-        .iter()
-        .any(|marker| lower.contains(marker))
-}
-
 /// Whether `error` is a deterministic model/endpoint-capability failure that can
 /// never succeed by resending the identical request: the configured model is not
 /// valid for the configured endpoint (e.g. Volcengine Ark's coding-plan endpoint

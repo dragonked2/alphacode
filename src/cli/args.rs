@@ -197,8 +197,14 @@ pub(crate) enum Command {
         action: ServerCommand,
     },
 
-    /// Connect to a running server
+    /// Connect to a running server in a line REPL. Run `alphacode` for the full TUI.
     Connect,
+
+    /// Find ways to support the AlphaCode project
+    Support {
+        #[command(subcommand)]
+        action: SupportAction,
+    },
 
     /// Run a single message and exit
     Run {
@@ -667,6 +673,14 @@ pub(crate) enum AccountCommand {
     Manage,
     /// Revoke the current key when reachable, then securely clear local state
     Logout,
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum SupportAction {
+    /// Open the GitHub repository to star it manually
+    Github,
+    /// Open the project's donation page
+    Donate,
 }
 
 #[derive(Subcommand, Debug)]

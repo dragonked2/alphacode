@@ -781,19 +781,13 @@ impl Agent {
     /// against the full tool map, so a hidden tool remains callable if the model
     /// names it (and becomes advertised once promoted via `tool_help`).
     async fn build_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let policy = crate::tool::disclosure::DisclosurePolicy::parse(
-            &crate::config::config().tools.disclosure,
-        );
-        let forced: std::collections::HashSet<String> =
-            self.allowed_tools.iter().flatten().cloned().collect();
-        let promoted = crate::tool::tool_help::promoted_tools(&self.session.id);
-        let selection = crate::tool::disclosure::DisclosureSelection::new();
         let mut tools = self
             .registry
-            .definitions_filtered(self.allowed_tools.as_ref(), |name| {
-                !self.disabled_tools.contains(name)
-                    && selection.is_visible(name, policy, &forced, &promoted)
-            })
+            .advertised_definitions(
+                &self.session.id,
+                self.allowed_tools.as_ref(),
+                &self.disabled_tools,
+            )
             .await;
         Self::apply_selfdev_tool_surface(&mut tools, self.session.is_canary);
         tools

@@ -639,6 +639,9 @@ impl MultiProvider {
         }
 
         let usage = crate::usage::get_sync();
-        usage.five_hour >= 0.99 && usage.seven_day >= 0.99
+        usage.last_error.is_none()
+            && !usage.is_stale()
+            && usage.five_hour >= 0.99
+            && usage.seven_day >= 0.99
     }
 }

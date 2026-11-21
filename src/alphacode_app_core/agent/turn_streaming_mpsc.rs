@@ -126,11 +126,12 @@ impl Agent {
         // (bounded by Agent::MAX_REFUSAL_ROTATIONS_PER_TURN so a policy that
         // keeps declining cannot cycle the whole pool in one request).
         let mut refusal_rotations = 0u32;
-        // Counter for retries injected after a transient provider / transport
+        // Counter for retries scheduled after a transient provider / transport
         // error (5xx, 429 with rate-limit words, network EOF, ...). Bounded
         // by Agent::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS so a permanently
         // broken provider cannot keep an autonomous session running forever.
         let mut provider_error_continuations = 0u32;
+        let mut memory_context_queued = false;
         // Cache static system prompt and tool definitions across turn-loop
         // iterations. Within a single user turn, the model receives tool results
         // and decides the next action — the system prompt and tool list never
@@ -241,15 +242,8 @@ impl Agent {
             let tools: &[ToolDefinition] = cached_tools.as_deref().unwrap();
             let messages: std::sync::Arc<[Message]> = messages.into();
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
-            let memory_pending = self.build_memory_prompt_nonblocking_shared(
-                std::sync::Arc::clone(&messages),
-                Some(std::sync::Arc::new({
-                    let event_tx = event_tx.clone();
-                    move |event| {
-                        let _ = event_tx.send(event);
-                    }
-                })),
-            );
+            let memory_pending =
+                self.build_memory_prompt_nonblocking_shared(&messages, &mut memory_context_queued);
             // Tier-aware: trivial greetings get the sub-1 KB identity prompt
             // instead of the full task prompt, and a short-circuited reply
             // avoids the API round-trip entirely.
@@ -401,12 +395,8 @@ impl Agent {
                                 Ok(stream) => break stream,
                                 Err(e) => {
                                     let err_text = super::response_recovery::provider_error_text_for_recovery(&e);
-                                    // Transient provider / transport errors
-                                    // (5xx, 429 with rate-limit words, network
-                                    // EOF, ...) get an automatic "continue"
-                                    // injection so the agent keeps working
-                                    // instead of stalling on a single blip.
-                                    // The helper enforces the retry budget.
+                                    // No stream opened. Retry eligible transient
+                                    // failures without changing the conversation.
                                     if let Some(delay) = self.maybe_continue_after_provider_error(
                                         &err_text,
                                         &mut provider_error_continuations,

@@ -240,14 +240,6 @@ pub async fn run() -> Result<()> {
     // initialized, so a re-exec here is safe and invisible to the user.
     maybe_reexec_to_fresher_binary(&args)?;
 
-    // Blocking GitHub star consent gate: agree -> continue normally,
-    // disagree -> close the binary. Placed after the re-exec so the user is
-    // only prompted once (in the freshest binary), and before the TUI takes
-    // over the screen. Skips automatically for non-interactive invocations
-    // (CI, piped I/O, --quiet, subcommands like serve/acp/run) and for users
-    // who already agreed (consent file on disk).
-    crate::alphacode_github_star::ensure_star_consent_or_exit(&args);
-
     spawn_background_update_check(&args);
 
     if let Err(e) = dispatch::run_main(args).await {

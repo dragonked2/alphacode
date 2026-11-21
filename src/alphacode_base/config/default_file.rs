@@ -299,20 +299,16 @@ swarm = true
 # Mermaid: render Mermaid code blocks and tell the model that diagrams are supported
 mermaid = true
 # Auto-poke: automatically nudge the model to continue when it stops with
-# incomplete todos. /poke on and /poke off still override this per session.
-auto_poke = true
-# Inject timestamps into user messages and tool results sent to the model
-message_timestamps = true
+# incomplete todos. Use /poke on to opt in for the session.
+auto_poke = false
+# Include timestamps in provider prompts. Session history always records its own timestamps.
+message_timestamps = false
 # Persist memory injections into session history instead of sending them as request-only ephemeral context
 persist_memory_injections = false
 # Show an in-chat warning when a request misses the KV cache for a harness-caused
 # (avoidable) reason: system prompt, tool set, or message prefix changed. These
 # should essentially never happen and indicate a prefix-cache bug.
 kv_cache_miss_notices = true
-# Prompt Autopilot: auto-expand underspecified requests ("fix this", "make it
-# work") into a well-defined task briefing so vague prompts still produce
-# complete, verified results. The user's own text is never rewritten.
-prompt_autopilot = true
 # Update channel: "stable" (releases only) or "main" (latest commits on push)
 # Set to "main" for bleeding edge updates every time code is pushed
 update_channel = "stable"

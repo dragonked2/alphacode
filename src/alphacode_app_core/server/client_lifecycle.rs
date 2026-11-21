@@ -3027,7 +3027,16 @@ pub(super) fn turn_terminal_event(id: u64, result: &Result<()>) -> (&'static str
                 message: crate::util::format_error_chain(error),
                 retry_after_secs: error
                     .downcast_ref::<StreamError>()
-                    .and_then(|stream_error| stream_error.retry_after_secs),
+                    .and_then(|stream_error| stream_error.retry_after_secs)
+                    .or_else(|| {
+                        crate::alphacode_provider_core::retry_after::retry_after_from_error(error)
+                            .map(|delay| {
+                                delay
+                                    .as_secs()
+                                    .saturating_add(u64::from(delay.subsec_nanos() > 0))
+                            })
+                            .filter(|seconds| *seconds > 0)
+                    }),
             },
         ),
     }

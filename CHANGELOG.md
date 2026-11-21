@@ -6,6 +6,46 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.17] - 2026-11-21
+
+### Changed
+
+- The AlphaCode banner stays pinned above the conversation before and after
+  the first prompt, including while streaming and scrolling. Short terminals
+  use a compact banner with the selected model. Full-size terminals retain
+  the wordmark and workspace details.
+- Long drafts leave room for the transcript. Narrow composer footers keep
+  the stop shortcut visible, and connection status keeps the retry time or
+  reconnect state readable.
+- Launching the terminal opens the interface directly. Use `alphacode support`
+  to find ways to support the project.
+- Standalone terminal sessions now use the configured tool disclosure policy.
+  Provider prompts omit the tool inventory briefing when all schemas are visible.
+- Automatic todo follow-ups and provider-facing timestamps default to off.
+  Existing config values still apply, and `/poke on` enables session follow-ups.
+- Usage widgets and diagnostics read cached subscription usage. Use `/usage`
+  to fetch a fresh snapshot.
+
+### Fixed
+
+- The terminal preserves partial output and restores the draft after a daemon
+  turn failure without replaying the whole turn. An unrelated command error
+  keeps the active turn running.
+- Inference retries are bounded at the provider and turn layers. Gemini marks
+  exhausted retries, and the standalone terminal treats HTTP errors as provider
+  responses instead of reconnecting. Retries without partial assistant output
+  reuse the conversation without appending a continuation message.
+- Compatible gateways retain a repaired request body across transport retries.
+  Local context-limit recovery reports the failed recovery attempt once.
+- Memory retrieval is queued once per turn even if the provider request retries.
+
+### Removed
+
+- Removed Prompt Autopilot and its configuration. Brief requests no longer
+  receive an automatically generated task briefing.
+- Removed four Claude OAuth bootstrap and evaluation calls whose responses were
+  unused by inference.
+
 ## [1.1.16]
 
 ### Changed

@@ -1431,49 +1431,31 @@ pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<
 // Combined entry point
 // ---------------------------------------------------------------------------
 
-/// Rows the always-visible banner band occupies above the transcript.
-///
-/// The banner is pinned to the top of the chat column (it no longer scrolls
-/// away with the transcript). A normal 80x24 terminal shows the full cyan
-/// logo, with fourteen rows reserved for the working interface. Short terminals
-/// select a complete smaller tier rather than clipping letters.
-pub(super) fn banner_band_height(width: u16, available_height: u16) -> u16 {
-    if width < 12 || available_height < 12 {
+/// Keep the wordmark and model identity in the same place for the life of
+/// the conversation. Only available space determines the banner's tier.
+pub(super) fn banner_band_height(width: u16, height: u16, available_rows: u16) -> u16 {
+    if width < 12 || height < 6 || available_rows == 0 {
         return 0;
     }
-    // Keep a full logo on ordinary 80x24 terminals while reserving fourteen
-    // rows for status, transcript, and composer. Short terminals use text.
-    //
-    // The cap is 8 rather than the full block art height (7) plus separator
-    // because the tallest wordmark is already 6 rows; the budget exists to
-    // stop a very tall terminal from reserving more rows than the art uses.
-    let budget = available_height.saturating_sub(14).clamp(2, 10);
-    // Build only the banner (not the model/auth lines) to learn its real
-    // height. `build_alpha_banner` is a pure width→art lookup.
-    banner_wordmark(width, budget - 1).map_or(2, |art| art.len() as u16 + 1)
-}
-
-pub(super) fn conversation_is_active(app: &dyn TuiState) -> bool {
-    !app.onboarding_preview_mode()
-        && (!app.display_messages().is_empty()
-            || app.is_processing()
-            || !app.streaming_text().is_empty())
-}
-
-/// Keep workspace identity in view once the transcript starts. A short split
-/// uses one row so the composer and transcript still have room.
-pub(super) fn conversation_banner_height(app: &dyn TuiState, width: u16, height: u16) -> u16 {
-    if !conversation_is_active(app) {
-        return banner_band_height(width, height);
+    if height < 12 || available_rows == 1 {
+        return 1;
     }
-    match (width, height) {
-        (12.., 12..) => 2,
-        (12.., 6..) => 1,
-        _ => 0,
-    }
+    // Leave fourteen working rows at normal heights. The large wordmark
+    // sits above the same two identity rows and a separator.
+    let art_rows = available_rows
+        .min(height.saturating_sub(14))
+        .saturating_sub(3);
+    banner_wordmark(width, art_rows)
+        .filter(|art| art.len() > 1)
+        .map_or(2, |art| art.len() as u16 + 3)
 }
 
-fn build_conversation_header(app: &dyn TuiState, width: usize, height: u16) -> Vec<Line<'static>> {
+fn build_conversation_header(
+    app: &dyn TuiState,
+    width: usize,
+    height: u16,
+    show_brand: bool,
+) -> Vec<Line<'static>> {
     use unicode_width::UnicodeWidthStr;
 
     let provider = app.provider_name();
@@ -1491,19 +1473,38 @@ fn build_conversation_header(app: &dyn TuiState, width: usize, height: u16) -> V
         .add_modifier(Modifier::BOLD);
     let detail_style = Style::default().fg(BrandTheme::dim_bright());
     let separator = " · ";
-    let mut spans = vec![Span::styled(
-        truncate_header_text(model, width),
-        model_style,
-    )];
-    let mut used = spans[0].width();
+    let mut spans = Vec::new();
+    let mut used = 0;
+    if show_brand {
+        let brand = if width >= 24 {
+            crate::alphacode_brand::DISPLAY_NAME
+        } else {
+            crate::alphacode_brand::MARK
+        };
+        spans.push(Span::styled(
+            brand,
+            Style::default().fg(BrandTheme::accent()).bold(),
+        ));
+        spans.push(Span::styled(separator, Style::default().fg(dim_color())));
+        used = brand.width() + separator.width();
+    }
+    let model_index = spans.len();
+    let model_budget = width.saturating_sub(used);
+    let model_text = truncate_header_text(model, model_budget);
+    used += model_text.width();
+    spans.push(Span::styled(model_text, model_style));
     if !provider.is_empty() && !model.eq_ignore_ascii_case(&provider) {
         // Leave enough room for a recognizable model name when both identity
         // fields have long names. A short terminal still shows the model first.
         let provider_width = provider.width().min(width / 3);
-        if provider_width > 0 && width.saturating_sub(provider_width + separator.width()) >= 12 {
-            let model_width = width - provider_width - separator.width();
-            spans[0] = Span::styled(truncate_header_text(model, model_width), model_style);
-            used = spans[0].width();
+        if provider_width > 0
+            && model_budget.saturating_sub(provider_width + separator.width()) >= 12
+        {
+            let model_width = model_budget - provider_width - separator.width();
+            used -= spans[model_index].width();
+            spans[model_index] =
+                Span::styled(truncate_header_text(model, model_width), model_style);
+            used += spans[model_index].width();
             push_if_fits(
                 &mut spans,
                 &mut used,
@@ -1578,7 +1579,7 @@ fn banner_wordmark(width: u16, height: u16) -> Option<&'static [&'static str]> {
         })
 }
 
-/// Build the pinned identity rows or the welcome wordmark that fits the band.
+/// Render the pinned banner, including model and workspace identity.
 pub(super) fn build_banner_band_lines(
     app: &dyn TuiState,
     width: u16,
@@ -1587,19 +1588,17 @@ pub(super) fn build_banner_band_lines(
     if width == 0 || height == 0 {
         return Vec::new();
     }
-    if conversation_is_active(app) {
-        return build_conversation_header(app, usize::from(width), height);
+    if height <= 2 {
+        return build_conversation_header(app, usize::from(width), height, true);
     }
-    let art_height = height.saturating_sub(1).max(1);
+    let art_height = height.saturating_sub(3);
     let art = banner_wordmark(width, art_height).unwrap_or(&[crate::alphacode_brand::DISPLAY_NAME]);
     let mut lines = BrandTheme::wordmark_lines(art);
-    if height > 1 {
-        lines.resize(usize::from(height - 1), Line::default());
-        lines.push(Line::from(Span::styled(
-            "─".repeat(usize::from(width)),
-            Style::default().fg(crate::alphacode_tui_style::theme::border_color()),
-        )));
-    }
+    lines.extend(build_conversation_header(app, usize::from(width), 2, false));
+    lines.push(Line::from(Span::styled(
+        "─".repeat(usize::from(width)),
+        Style::default().fg(border_color()),
+    )));
     lines
         .into_iter()
         .map(|line| {
@@ -1651,35 +1650,29 @@ mod tests {
     #[test]
     fn banner_band_shows_full_art_on_a_normal_terminal_and_preserves_work_space() {
         // Tall and normal terminals keep complete art without an empty band.
-        let tall = banner_band_height(100, 48);
-        assert!(tall >= 1, "a tall terminal must reserve a banner row");
-        assert_eq!(tall, 7);
-        assert_eq!(banner_band_height(100, 24), 7);
-        assert_eq!(banner_band_height(100, 32), 7);
-        assert!(banner_band_height(80, 24) <= 24 - 14);
-        assert!(tall <= build_alpha_banner(100).len() as u16);
+        assert_eq!(banner_band_height(100, 48, 40), 9);
+        assert_eq!(banner_band_height(100, 24, 16), 9);
+        assert_eq!(banner_band_height(100, 32, 24), 9);
+        assert!(banner_band_height(80, 24, 16) <= 24 - 14);
 
-        // Very short terminals get no band (nothing to pin without starving
-        // the transcript).
-        assert_eq!(banner_band_height(100, 8), 0);
-        // Too narrow for any wordmark gets no band.
-        assert_eq!(banner_band_height(6, 40), 0);
+        assert_eq!(banner_band_height(100, 8, 2), 1);
+        assert_eq!(banner_band_height(40, 12, 2), 2);
+        assert_eq!(banner_band_height(40, 12, 1), 1);
+        assert_eq!(banner_band_height(40, 12, 0), 0);
+        assert_eq!(banner_band_height(100, 5, 1), 0);
+        assert_eq!(banner_band_height(6, 40, 30), 0);
     }
 
     #[test]
     fn banner_selects_complete_art_for_the_available_height() {
         for height in 12..=60 {
-            let band = banner_band_height(100, height);
-            let art = banner_wordmark(100, band - 1).expect("wordmark fits");
-            assert_eq!(art.len() + 1, usize::from(band));
+            let band = banner_band_height(100, height, height.saturating_sub(7));
             assert!(band <= height.saturating_sub(14).max(2));
-            assert!(
-                art == crate::alphacode_brand::WORDMARK_BLOCK
-                    || art == crate::alphacode_brand::WORDMARK_COMPACT
-                    || art == crate::alphacode_brand::WORDMARK_NARROW
-                    || art == crate::alphacode_brand::WORDMARK_MONOSPACE_ROWS
-                    || art == crate::alphacode_brand::WORDMARK_MINIMAL_ROWS
-            );
+            if band > 2 {
+                let art = banner_wordmark(100, band - 3).expect("wordmark fits");
+                assert_eq!(art.len() + 3, usize::from(band));
+                assert!(art.len() > 1);
+            }
         }
     }
 

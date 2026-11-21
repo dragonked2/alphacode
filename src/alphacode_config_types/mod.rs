@@ -1054,9 +1054,9 @@ pub struct FeatureConfig {
     pub mermaid: bool,
     /// Default state of auto-poke (automatic follow-up when the model stops with
     /// incomplete todos). `/poke on` / `/poke off` still override this per session
-    /// (default: true)
+    /// (default: false)
     pub auto_poke: bool,
-    /// Inject timestamps into user messages and tool results sent to the model (default: true)
+    /// Inject timestamps into user messages and tool results sent to the model (default: false)
     pub message_timestamps: bool,
     /// Persist auto-recalled memory injections into normal session history instead of sending
     /// them as request-only ephemeral suffix messages (default: false)
@@ -1068,14 +1068,6 @@ pub struct FeatureConfig {
     /// that something in the harness silently invalidated the prefix cache
     /// (default: true).
     pub kv_cache_miss_notices: bool,
-    /// Prompt Autopilot: when the user's latest request is underspecified
-    /// (short/vague, no files, no error details, no acceptance criteria),
-    /// attach an auto-generated task briefing so the model restates the
-    /// concrete requirement, infers missing details from the codebase, defines
-    /// "done", and verifies its work instead of guessing. The user's own text
-    /// is never rewritten (default: true).
-    #[serde(default = "default_true")]
-    pub prompt_autopilot: bool,
     /// Update channel: "stable" (releases only) or "main" (latest commits)
     pub update_channel: UpdateChannel,
     /// Decision Plane configuration for bounded judgment inference.
@@ -1089,11 +1081,10 @@ impl Default for FeatureConfig {
             memory: true,
             swarm: true,
             mermaid: true,
-            auto_poke: true,
-            message_timestamps: true,
+            auto_poke: false,
+            message_timestamps: false,
             persist_memory_injections: false,
             kv_cache_miss_notices: true,
-            prompt_autopilot: true,
             update_channel: UpdateChannel::default(),
             decisions: DecisionPlaneConfig::default(),
         }

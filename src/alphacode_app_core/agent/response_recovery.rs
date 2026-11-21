@@ -211,14 +211,8 @@ impl Agent {
     // impl block in `turn_loops.rs` so it has exactly one definition. We just
     // reference it through `Self::MAX_EMPTY_POST_TOOL_CONTINUATION_ATTEMPTS`
     // from this file, so a future change to the value lives in one place.
-    /// Retries allowed when a turn's API call itself returns a transient
-    /// provider / transport error (5xx, 429, network/EOF, TLS reset, ...).
-    /// Bounded so a permanently broken provider cannot keep an autonomous
-    /// session running forever, but generous enough to ride out a 120s rate
-    /// limit (the OpenRouter free tier's worst case as of 2026-08).
-    /// Increased from 4 to 6 with wider backoff to handle longer rate-limit
-    /// windows without excessive retries.
-    pub(crate) const MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS: u32 = 6;
+    /// Turn-level recovery budget for errors that the provider did not retry.
+    pub(crate) const MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS: u32 = 2;
     /// Keep free-pool failover bounded: every retry resends the full prompt,
     /// and rate-limit retries are especially unlikely to help the same shared
     /// gateway account. A rate-limited Alphax Free turn gets one alternate
@@ -287,7 +281,7 @@ impl Agent {
     /// - "Empty response" / "guardrail" / "refusal": those are handled by
     ///   the other `maybe_continue_*` helpers, not by retrying the call.
     pub(crate) fn is_transient_provider_error(error: &str) -> bool {
-        if error.starts_with(crate::alphacode_provider_core::retry::STREAM_RETRY_LIMIT_PREFIX) {
+        if crate::alphacode_provider_core::retry::stream_retry_exhausted(error) {
             return false;
         }
         let lower = error.to_ascii_lowercase();
@@ -426,9 +420,8 @@ impl Agent {
 
     /// Auto-continue the current turn after a transient provider error.
     ///
-    /// Injects a user-side "continue" reminder so the model resumes from the
-    /// exact point the previous call failed at, and tells the caller to
-    /// `continue` the turn loop. Bounded by
+    /// Reuses the existing conversation unless partial assistant output was
+    /// committed and the model needs a continuation cue. Bounded by
     /// [`Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS`] so a permanently
     /// broken provider cannot keep an autonomous session running forever.
     ///
@@ -451,7 +444,7 @@ impl Agent {
             is_alphax_free_bad_request, is_context_limit_error,
         };
 
-        if error.starts_with(crate::alphacode_provider_core::retry::STREAM_RETRY_LIMIT_PREFIX) {
+        if crate::alphacode_provider_core::retry::stream_retry_exhausted(error) {
             return Ok(None);
         }
         if is_alphax_free_bad_request(error) && !is_context_limit_error(error) {
@@ -592,27 +585,25 @@ impl Agent {
         // Count the recovery so the status line can show the session rode
         // out a transient blip instead of the user assuming a hang.
         super::note_provider_error_auto_recovered();
-        // Do NOT inject a continuation message for 429/rate-limit errors.
-        // Injecting a user message forces a brand-new full-context API request,
-        // which wastes tokens and can trigger more 429s. Instead, the caller
-        // sleeps for `delay` seconds and retries the exact same request.
-        // Continuation messages are only injected for non-rate-limit transient
-        // errors where the model needs to pick up where it left off.
-        if !is_rate_limit {
-            self.add_message(
+        // The error paths commit any usable partial output before calling
+        // recovery. If the prompt or tool result is still the last message,
+        // another message would only change the request prefix.
+        if self
+            .session
+            .messages
+            .last()
+            .is_some_and(|message| message.role == Role::Assistant)
+        {
+            self.add_message_with_display_role(
                 Role::User,
                 vec![ContentBlock::Text {
-                    text: format!(
-                        "[System reminder: the previous provider call failed with a transient error. The provider asked us to wait {} seconds. Please continue exactly where you left off -- the failure was on our side, not yours. Do not repeat completed work; if the next step is a tool call, emit the tool call now. Retry attempt {}/{}]",
-                        delay,
-                        attempt,
-                        Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS,
-                    ),
+                    text: "<system-reminder>The previous response was interrupted. Continue from the partial response without repeating completed work.</system-reminder>".to_string(),
                     cache_control: None,
                 }],
+                Some(StoredDisplayRole::System),
             );
+            self.session.save()?;
         }
-        self.session.save()?;
         Ok(Some(delay))
     }
 

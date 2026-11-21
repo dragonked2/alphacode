@@ -3313,7 +3313,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         .saturating_sub(input_ui::COMPOSER_FRAME_COLS);
     let base_input_height =
         input_ui::wrapped_input_line_count(app, composer_wrapped_width, next_prompt).min(10) as u16;
-    // Add 1 line for command suggestions, shell mode hints, or the Ctrl+Enter hint.
+    // Shell and new-session hints can reserve one interior row.
     let hint_line_height = input_ui::input_hint_line_height(app);
     let requested_inline_height = inline_ui_height(app);
     // The frame's top and bottom border rows are permanent chrome, not composer
@@ -3329,17 +3329,23 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         0
     } else if chat_area.height >= 12 {
         3
+    } else if requested_inline_height == 0 && chat_area.height >= 7 {
+        2
     } else {
         1
     };
     let status_height =
         u16::from(chat_area.height >= 9 || (requested_inline_height == 0 && chat_area.height >= 5));
-    let essential_rows = status_height + transcript_reserve;
-    let picker_reserve = requested_inline_height.min(4).min(
-        chat_area
-            .height
-            .saturating_sub(essential_rows + frame_rows + 1),
+    let spare_rows = chat_area
+        .height
+        .saturating_sub(status_height + transcript_reserve + frame_rows + 1);
+    let picker_reserve = requested_inline_height.min(4).min(spare_rows);
+    let banner_height = header::banner_band_height(
+        chat_area.width,
+        chat_area.height,
+        spare_rows - picker_reserve,
     );
+    let essential_rows = status_height + transcript_reserve + banner_height;
     let input_height = requested_input_height.min(
         chat_area
             .height
@@ -3354,9 +3360,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     remaining -= notification_height;
     let pending_height = requested_pending_height.min(remaining);
     remaining -= pending_height;
-    let desired_banner = header::conversation_banner_height(app, chat_area.width, chat_area.height);
-    let banner_height = desired_banner.min(remaining);
-    remaining -= banner_height;
     let swarm_strip_height = requested_swarm_height.min(remaining);
     remaining -= swarm_strip_height;
     let inline_ui_gap_height = u16::from(inline_block_height > 0).min(remaining);
@@ -3394,14 +3397,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         let started = Instant::now();
         let prepared =
             mermaid::with_preferred_aspect_ratio(transcript_mermaid_aspect_ratio, || {
-                // A conversation's identity lives above the transcript. Keep
-                // even a very short split free of scrollable header rows.
-                let include_header = banner_height == 0 && !header::conversation_is_active(app);
-                if include_header {
-                    prepare::prepare_messages(app, width, chat_area.height)
-                } else {
-                    prepare::prepare_messages_with(app, width, chat_area.height, false)
-                }
+                prepare::prepare_messages_with(app, width, chat_area.height, false)
             });
         note_prep_prepare_at(started.elapsed());
         prepared
@@ -3576,10 +3572,10 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // testing, overlays and partial redraws all use the same rectangles.
     let order = if app.composer_at_top() {
         [
+            CHUNK_BANNER,
             CHUNK_INPUT,
             CHUNK_INLINE_GAP,
             CHUNK_INLINE_UI,
-            CHUNK_BANNER,
             CHUNK_MESSAGES,
             CHUNK_PENDING,
             CHUNK_SWARM_STRIP,

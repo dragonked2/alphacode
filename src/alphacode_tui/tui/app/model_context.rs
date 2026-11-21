@@ -196,7 +196,10 @@ impl App {
         }
     }
 
-    fn handle_provider_failover_prompt(&mut self, prompt: crate::provider::ProviderFailoverPrompt) {
+    pub(super) fn handle_provider_failover_prompt(
+        &mut self,
+        prompt: crate::provider::ProviderFailoverPrompt,
+    ) {
         let input_summary = Self::format_failover_input_summary(&prompt);
         let manual_message = format!(
             "⚠ {} became unavailable - alphacode did not resend your prompt to {} automatically.\n\nReason: {}\n\nRetrying elsewhere would send {}.\n\nTo switch manually now, use /model and pick a model from {}, then resend. {}",
@@ -926,8 +929,7 @@ impl App {
 
         if is_request_payload_too_large_error(&error) {
             // 413 is a request body-size rejection driven by inline images.
-            // Strip oversized images now so a manual resubmit (or auto-poke
-            // retry) goes through, and keep auto-poke alive.
+            // Strip oversized images so a manual resubmit has a smaller body.
             let stripped = self
                 .session
                 .strip_oversized_images(crate::compaction::PAYLOAD_IMAGE_CHAR_BUDGET);
@@ -950,34 +952,11 @@ impl App {
         }
 
         if is_context_limit_error(&error) {
-            let recovery = self.auto_recover_context_limit();
-            let should_stop_auto_poke = recovery.is_none();
-            let hint = match recovery {
-                Some(msg) => format!(" {}", msg),
-                None => " Run /fix to try recovery.".to_string(),
-            };
-            self.push_display_message(DisplayMessage::error(format!(
-                "Context limit reached.{}",
-                hint
-            )));
-            if should_stop_auto_poke {
-                super::commands::stop_auto_poke_for_non_retryable_error(self, &error);
-                self.stop_overnight_auto_poke_for_non_retryable_error(&error);
-            }
-        } else if self.is_remote
-            && crate::alphacode_provider_core::retry::is_retryable_message(&error)
-        {
-            // Transient upstream provider failures (Nvidia overloaded,
-            // temporarily unavailable, upstream timeout, etc.) are always
-            // retryable. Instead of stopping auto-poke or requiring manual
-            // intervention, show a brief notice and let the automatic retry
-            // mechanism resend the request with exponential backoff.
-            self.push_display_message(DisplayMessage::system(format!(
-                "Temporary provider issue: {} — retrying automatically…",
-                summary
-            )));
-            // Do NOT stop auto-poke or overnight-poke: the provider may
-            // recover in seconds and the retry budget will handle exhaustion.
+            self.push_display_message(DisplayMessage::error(
+                "Context limit reached. Use /compact to reduce context or /fix to recover into a new session.",
+            ));
+            super::commands::stop_auto_poke_for_non_retryable_error(self, &error);
+            self.stop_overnight_auto_poke_for_non_retryable_error(&error);
         } else {
             // Offer a one-keypress switch to the next best model/auth-method
             // (e.g. broken API key -> working OAuth login) before giving up. The
@@ -1000,82 +979,28 @@ impl App {
         }
     }
 
-    pub(super) fn auto_recover_context_limit(&mut self) -> Option<String> {
-        if self.is_remote || !self.provider.supports_compaction() {
-            return None;
-        }
-        let compaction = self.registry.compaction();
-        let mut manager = compaction.try_write().ok()?;
-        let mut provider_messages = self.materialized_provider_messages();
-
-        let usage = manager.context_usage_with(&provider_messages);
-        if usage > 1.5 {
-            let recovery = manager.recover_within_budget(&mut provider_messages);
-            if recovery.did_anything() {
-                self.messages = provider_messages.clone();
-                self.sync_session_compaction_state_from_manager(&manager);
-                return Some(format!(
-                    "{} You can continue.",
-                    recovery.summary_line(usage)
-                ));
+    pub(super) async fn recover_or_report_local_turn_error(
+        &mut self,
+        error: String,
+        terminal: &mut DefaultTerminal,
+        event_stream: &mut EventStream,
+    ) {
+        self.last_stream_error = None;
+        let recovered = if is_request_payload_too_large_error(&error) {
+            self.try_recover_payload_too_large_and_retry(terminal, event_stream)
+                .await
+        } else if is_context_limit_error(&error) {
+            self.try_auto_compact_and_retry(terminal, event_stream)
+                .await
+        } else {
+            false
+        };
+        if !recovered {
+            // A failed recovery send has already reported its newer error.
+            if self.last_stream_error.is_none() {
+                self.handle_turn_error(error);
             }
-        }
-
-        // Raise the observed count so `force_compact_with`'s usage gate
-        // (which reads `effective_token_count_with` = `max(estimate,
-        // observed)`) agrees to run even when the provider reports no
-        // streaming usage and the context limit is unknown — the faked value
-        // is only needed *during* that call. Capture the honest count first,
-        // then restore it before anything that emits a compaction event:
-        // leaving the faked value in place made the event report `pre_tokens`
-        // as the entire context window (a ~30k conversation was announced as
-        // "2,000,000,000->30,525 tokens" on a model whose unknown window
-        // resolves to the 2e9 sentinel).
-        let real_pre_tokens = manager.effective_token_count_with(&provider_messages) as u64;
-        let observed_tokens = self
-            .current_stream_context_tokens()
-            .unwrap_or(self.context_limit);
-        manager.update_observed_input_tokens(observed_tokens);
-
-        let forced = manager.force_compact_with(&provider_messages, self.provider.clone());
-        // Honesty is restored for both outcomes: on success the background
-        // compaction event is applied later from the real counts, and on
-        // failure the emergency paths (hard compact / truncation) size and
-        // report from the real pre-tokens.
-        manager.update_observed_input_tokens(real_pre_tokens);
-
-        match forced {
-            Ok(()) => Some(
-                "⚡ Auto-compaction started - summarizing old messages in background. Retry in a moment."
-                    .to_string(),
-            ),
-            Err(reason) => {
-                crate::logging::error(&format!(
-                    "[auto_recover] force_compact failed: {}",
-                    reason
-                ));
-                match manager.hard_compact_with(&provider_messages) {
-                    Ok(dropped) => {
-                        self.sync_session_compaction_state_from_manager(&manager);
-                        Some(format!(
-                            "⚡ Emergency compaction: dropped {} old messages. You can continue.",
-                            dropped
-                        ))
-                    }
-                    Err(_) => {
-                        let truncated = manager.emergency_truncate_with(&mut provider_messages);
-                        if truncated > 0 {
-                            self.messages = provider_messages;
-                            Some(format!(
-                                "⚡ Emergency truncation: shortened {} large tool result(s) to fit context. You can continue.",
-                                truncated
-                            ))
-                        } else {
-                            None
-                        }
-                    }
-                }
-            }
+            super::commands::clear_queued_poke_messages(self);
         }
     }
 

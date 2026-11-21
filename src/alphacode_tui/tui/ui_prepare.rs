@@ -708,6 +708,7 @@ fn prepare_active_batch_progress(
     )
 }
 
+#[cfg(test)]
 pub(super) fn prepare_messages(
     app: &dyn TuiState,
     width: u16,
@@ -857,10 +858,10 @@ fn prepare_messages_inner(
     include_header: bool,
 ) -> PreparedChatFrame {
     let header_start = Instant::now();
-    let header_prepared = if !include_header && header::conversation_is_active(app) {
-        Arc::new(empty_prepared_messages())
-    } else {
+    let header_prepared = if include_header {
         prepare_header_cached(app, width, include_header)
+    } else {
+        Arc::new(empty_prepared_messages())
     };
     let header_ms = header_start.elapsed().as_secs_f64() * 1000.0;
 
