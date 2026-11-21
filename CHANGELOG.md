@@ -38,6 +38,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 - Compatible gateways retain a repaired request body across transport retries.
   Local context-limit recovery reports the failed recovery attempt once.
 - Memory retrieval is queued once per turn even if the provider request retries.
+- Browser navigation validates URLs before opening tabs. HTTP Flow sends one
+  Cookie header and summarizes response cookies by name.
 
 ### Removed
 

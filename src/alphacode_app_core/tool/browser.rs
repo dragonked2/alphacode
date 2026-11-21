@@ -1983,6 +1983,13 @@ fn unsupported_action_message(action: &str) -> String {
     message
 }
 
+fn validate_navigation_url(url: &str) -> Result<()> {
+    reqwest::Url::parse(url).map_err(|_| {
+        anyhow::anyhow!("Browser navigation requires an absolute URL. Include the scheme, or use the current tab's URL to resolve a relative path.")
+    })?;
+    Ok(())
+}
+
 fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, String)> {
     let bridge_action = bridge_action_for(action, input)?.into_owned();
 
@@ -2000,6 +2007,7 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
     match action {
         "new_tab" => {
             if let Some(url) = &input.url {
+                validate_navigation_url(url)?;
                 params.insert("url".into(), json!(url));
             }
             params.insert("focus".into(), json!(input.focus.unwrap_or(false)));
@@ -2034,6 +2042,7 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
                 .url
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("url is required for open"))?;
+            validate_navigation_url(url)?;
             params.insert("url".into(), json!(url));
             params.insert("wait".into(), json!(input.wait.unwrap_or(true)));
             // The executor resolves the working tab before issuing navigate.
@@ -3988,6 +3997,20 @@ mod tests {
         assert_eq!(bridge_action, "navigate");
         assert_eq!(params["wait"], true);
         assert_eq!(params["newTab"], true);
+    }
+
+    #[test]
+    fn browser_navigation_requires_an_absolute_url_before_opening_a_tab() {
+        for action in ["open", "new_tab"] {
+            let input = browser_input(json!({"action":action,"url":"/example"}));
+            assert!(
+                bridge_request(action, &input)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("absolute URL")
+            );
+        }
+        assert!(validate_navigation_url("about:blank").is_ok());
     }
 
     #[test]

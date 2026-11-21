@@ -546,6 +546,16 @@ impl HttpFlowTool {
         let method = params.method.as_deref().unwrap_or("GET").to_uppercase();
         let follow = params.follow_redirects.unwrap_or(true);
         let initial_origin = Url::parse(url)?.origin();
+        let explicit_cookie_headers = params
+            .headers
+            .iter()
+            .flat_map(|headers| headers.keys())
+            .filter(|name| name.eq_ignore_ascii_case("cookie"))
+            .count();
+        anyhow::ensure!(
+            explicit_cookie_headers <= 1,
+            "Supply a single Cookie header. Header names are case-insensitive."
+        );
 
         let mut redirect_chain = Vec::new();
         let mut current_url = url.to_string();
@@ -553,7 +563,7 @@ impl HttpFlowTool {
         let mut current_body = params.body.clone();
         let mut all_cookies: Vec<String> = Vec::new();
 
-        for _ in 0..MAX_REDIRECTS {
+        for hop in 0..MAX_REDIRECTS {
             // Build request
             let parsed_url =
                 Url::parse(&current_url).context(format!("Invalid URL: {}", current_url))?;
@@ -585,8 +595,15 @@ impl HttpFlowTool {
             };
             request_builder = request_builder.timeout(std::time::Duration::from_secs(timeout_secs));
 
-            // Attach cookies from the jar to this request.
-            {
+            let same_origin = parsed_url.origin() == initial_origin;
+            if same_origin && explicit_cookie_headers == 1 {
+                if hop == 0 {
+                    anyhow::ensure!(
+                        cookies.read().await.is_empty(),
+                        "This session already has stored cookies for the URL. Remove the explicit Cookie header or use a new session."
+                    );
+                }
+            } else {
                 let jar = cookies.read().await;
                 if !jar.is_empty() {
                     let cookie_header: Vec<String> =
@@ -597,26 +614,10 @@ impl HttpFlowTool {
 
             // Add custom headers
             if let Some(headers) = &params.headers
-                && parsed_url.origin() == initial_origin
+                && same_origin
             {
-                // If Host header is overridden, we need to ensure cookies still
-                // transmit correctly. The reqwest client may not attach cookies
-                // when the Host header differs from the URL's host.
-                let host_overridden = headers.contains_key("host") || headers.contains_key("Host");
                 for (key, value) in headers {
                     request_builder = request_builder.header(key.as_str(), value.as_str());
-                }
-                // When Host is overridden, explicitly pin the Cookie header from
-                // the jar to ensure it's sent (reqwest may skip cookie injection
-                // when Host doesn't match the URL's original host).
-                if host_overridden {
-                    let jar = cookies.read().await;
-                    if !jar.is_empty() {
-                        let cookie_header: Vec<String> =
-                            jar.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
-                        request_builder =
-                            request_builder.header("cookie", cookie_header.join("; "));
-                    }
                 }
             }
 
@@ -656,7 +657,7 @@ impl HttpFlowTool {
                 let mut jar = cookies.write().await;
                 for (k, v) in &new_cookies {
                     jar.insert(k.clone(), v.clone());
-                    all_cookies.push(format!("{}={}", k, v));
+                    all_cookies.push(k.clone());
                 }
             }
 
@@ -748,8 +749,7 @@ impl HttpFlowTool {
                 ));
             }
 
-            // Show key response headers (Set-Cookie, Location, Content-Type)
-            let important_headers = ["set-cookie", "location", "content-type", "x-frame-options"];
+            let important_headers = ["location", "content-type", "x-frame-options"];
             for h in &important_headers {
                 if let Some(val) = result.headers.get(*h) {
                     output.push_str(&format!("{}: {}\n", h, val));
@@ -757,7 +757,10 @@ impl HttpFlowTool {
             }
 
             if !result.cookies.is_empty() {
-                output.push_str(&format!("Cookies set: {}\n", result.cookies.join("; ")));
+                output.push_str(&format!(
+                    "Cookie names set: {}\n",
+                    result.cookies.join(", ")
+                ));
             }
 
             if let Some(token) = csrf_token {
@@ -1440,9 +1443,20 @@ mod tests {
             .await
             .unwrap();
         assert!(no_follow.output.starts_with("HTTP 302"));
+        assert!(no_follow.output.contains("Cookie names set: sid"));
+        assert!(!no_follow.output.contains("sid=owned"));
+        let conflict = tool
+            .execute(
+                json!({"url": format!("{base}/start"), "headers":{"Cookie":"sid=explicit"}}),
+                context(),
+            )
+            .await
+            .expect_err("reject explicit cookie with stored cookies");
+        assert!(conflict.to_string().contains("already has stored cookies"));
+        assert!(!conflict.to_string().contains("sid=explicit"));
         let followed = tool
             .execute(
-                json!({"url": format!("{base}/start"), "follow_redirects": true}),
+                json!({"url": format!("{base}/start"), "follow_redirects": true, "headers":{"Host":"fixture.local"}}),
                 context(),
             )
             .await
@@ -1455,6 +1469,13 @@ mod tests {
         assert!(requests[0].starts_with("GET /start "));
         assert!(requests[1].starts_with("GET /start "));
         assert!(requests[2].starts_with("GET /end "));
+        assert_eq!(
+            requests[2]
+                .to_ascii_lowercase()
+                .matches("\r\ncookie:")
+                .count(),
+            1
+        );
         assert!(
             requests[2]
                 .to_ascii_lowercase()
