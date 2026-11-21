@@ -25,6 +25,7 @@ pub(super) struct RestoredReloadInput {
     pub observe_page_updated_at_ms: u64,
     pub split_view_enabled: bool,
     pub todos_view_enabled: bool,
+    pub auto_poke_enabled: Option<bool>,
     pub todo_confidence_spike_challenged: bool,
 }
 
@@ -228,6 +229,7 @@ impl App {
             && !self.observe_mode_enabled
             && !self.split_view_enabled
             && !self.todos_view_enabled
+            && self.auto_poke_incomplete_todos == crate::config::config().features.auto_poke
             && !self.todo_confidence_spike_challenged
         {
             // Nothing to save, but a stale file from an earlier run could
@@ -318,6 +320,7 @@ impl App {
                 "observe_page_updated_at_ms": self.observe_page_updated_at_ms,
                 "split_view_enabled": self.split_view_enabled,
                 "todos_view_enabled": self.todos_view_enabled,
+                "auto_poke_enabled": self.auto_poke_incomplete_todos,
                 "todo_confidence_spike_challenged": self.todo_confidence_spike_challenged,
             });
             let _ = std::fs::write(&path, data.to_string());
@@ -539,6 +542,7 @@ impl App {
                 .get("todo_confidence_spike_challenged")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let auto_poke_enabled = value.get("auto_poke_enabled").and_then(|v| v.as_bool());
             let cursor = cursor.min(input.len());
             return Some(RestoredReloadInput {
                 input,
@@ -559,6 +563,7 @@ impl App {
                 observe_page_updated_at_ms,
                 split_view_enabled,
                 todos_view_enabled,
+                auto_poke_enabled,
                 todo_confidence_spike_challenged,
             });
         }
@@ -585,6 +590,7 @@ impl App {
             observe_page_updated_at_ms: 0,
             split_view_enabled: false,
             todos_view_enabled: false,
+            auto_poke_enabled: None,
             todo_confidence_spike_challenged: false,
         })
     }

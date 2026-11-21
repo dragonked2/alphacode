@@ -1515,16 +1515,12 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
                 return true;
             }
-            let stopped_poke =
-                crate::alphacode_tui::tui::app::commands::stop_auto_poke_for_non_retryable_error(
-                    app, &message,
-                );
-            let stopped_overnight = app.stop_overnight_auto_poke_for_non_retryable_error(&message);
+            crate::alphacode_tui::tui::app::commands::stop_auto_poke_for_non_retryable_error(
+                app, &message,
+            );
+            app.stop_overnight_auto_poke_for_non_retryable_error(&message);
             crate::alphacode_tui::tui::app::commands::clear_queued_poke_messages(app);
             app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
-            if !stopped_poke && !stopped_overnight {
-                app.schedule_queued_dispatch_after_interrupt();
-            }
             true
         }
         ServerEvent::SessionId { session_id } => {

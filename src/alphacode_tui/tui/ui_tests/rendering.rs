@@ -65,11 +65,17 @@ fn workspace_identity_stays_visible_when_the_transcript_scrolls() {
         let rows: Vec<String> = (0..40)
             .map(|y| (0..100).map(|x| buffer[(x, y)].symbol()).collect())
             .collect();
-        assert!(rows[0].contains("GPT-5.2"), "model: {}", rows[0]);
+        let identity_row = crate::alphacode_brand::WORDMARK_BLOCK.len();
+        assert!(rows[0].contains(crate::alphacode_brand::WORDMARK_BLOCK[0].trim()));
         assert!(
-            rows[1].contains("audit-workspace"),
+            rows[identity_row].contains("GPT-5.2"),
+            "model: {}",
+            rows[identity_row]
+        );
+        assert!(
+            rows[identity_row + 1].contains("audit-workspace"),
             "workspace: {}",
-            rows[1]
+            rows[identity_row + 1]
         );
         assert!(
             rows.iter().any(|row| row.contains("transcript sentinel")),

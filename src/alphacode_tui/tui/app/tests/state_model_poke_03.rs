@@ -2219,6 +2219,7 @@ fn test_poke_arms_auto_poke_until_todos_are_done() {
 fn test_poke_status_reports_current_state() {
     with_temp_alphacode_home(|| {
         let mut app = create_test_app();
+        app.auto_poke_incomplete_todos = true;
         crate::todo::save_todos(
             &app.session.id,
             &[crate::todo::TodoItem {

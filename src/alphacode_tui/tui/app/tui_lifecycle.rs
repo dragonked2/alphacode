@@ -100,6 +100,9 @@ impl App {
         self.set_observe_mode_enabled(restored.observe_mode_enabled, restored.observe_mode_enabled);
         self.set_split_view_enabled(restored.split_view_enabled, restored.split_view_enabled);
         self.set_todos_view_enabled(restored.todos_view_enabled, restored.todos_view_enabled);
+        if let Some(enabled) = restored.auto_poke_enabled {
+            self.auto_poke_incomplete_todos = enabled;
+        }
         self.todo_confidence_spike_challenged = restored.todo_confidence_spike_challenged;
 
         // Always reset these on a fresh restore so the user is not stuck in

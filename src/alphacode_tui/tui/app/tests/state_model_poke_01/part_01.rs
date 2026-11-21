@@ -1104,11 +1104,11 @@ fn test_pinned_top_diagram_layout_allocates_top_pane() {
     );
     let diagram_bottom = diagram.y + diagram.height;
     assert!(messages.y >= diagram_bottom, "transcript overlaps diagram");
-    let expected_banner_rows = crate::alphacode_brand::WORDMARK_BLOCK.len() as u16 + 1;
+    let expected_banner_rows = crate::alphacode_brand::WORDMARK_BLOCK.len() as u16 + 3;
     assert_eq!(
         messages.y - diagram_bottom,
         expected_banner_rows,
-        "only the pinned wordmark should separate the diagram and transcript"
+        "only the pinned wordmark and identity should separate the diagram and transcript"
     );
     let rendered = buffer_to_text(&terminal);
     let banner = rendered

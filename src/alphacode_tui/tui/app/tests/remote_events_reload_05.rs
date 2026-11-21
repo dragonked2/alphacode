@@ -143,6 +143,7 @@ fn test_reload_preserves_completed_confidence_spike_challenge() {
     with_temp_alphacode_home(|| {
         let mut app = create_test_app();
         let reload_session_id = format!("test-confidence-spike-reload-{}", std::process::id());
+        app.auto_poke_incomplete_todos = true;
         app.todo_confidence_spike_challenged = true;
         app.save_input_for_reload(&reload_session_id);
 
@@ -150,6 +151,7 @@ fn test_reload_preserves_completed_confidence_spike_challenge() {
             .expect("confidence challenge state should survive reload");
         let mut reloaded_app = create_test_app();
         reloaded_app.apply_restored_reload_input(restored);
+        assert!(reloaded_app.auto_poke_incomplete_todos);
         assert!(reloaded_app.todo_confidence_spike_challenged);
 
         crate::todo::save_todos(
