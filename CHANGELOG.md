@@ -28,6 +28,9 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Scrapling browser mode opens an isolated tab or headless browser for each
+  request and verifies the document URL before returning content. Automatic
+  mode skips the duplicate HTTP fetch before browser fallback.
 - The terminal preserves partial output and restores the draft after a daemon
   turn failure without replaying the whole turn. An unrelated command error
   keeps the active turn running.

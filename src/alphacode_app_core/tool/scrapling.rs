@@ -1,3 +1,4 @@
+use super::browser::{firefox_run_bridge_command, tab_id_from_value};
 use super::webfetch::{html_to_markdown, html_to_text, truncate_output};
 use super::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context as _, Result};
@@ -8,10 +9,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::time::{Instant, timeout_at};
+use url::Url;
 
 const MAX_SIZE: usize = 5 * 1024 * 1024; // 5MB
 const DEFAULT_TIMEOUT: u64 = 30;
 const MAX_TIMEOUT: u64 = 120;
+// Leave room for JSON escapes and metadata in the browser bridge response.
+const MAX_RENDERED_HTML: usize = 150_000;
 
 pub struct ScraplingTool {
     client: reqwest::Client,
@@ -41,20 +46,15 @@ struct ScraplingInput {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct PythonScraplingResult {
-    #[serde(default)]
-    status: Option<u16>,
-    #[serde(default)]
+struct RenderedPage {
+    url: String,
+    html: String,
     title: Option<String>,
+    status: Option<u16>,
+    #[serde(rename = "readyState")]
+    ready_state: Option<String>,
     #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    html: Option<String>,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    error: Option<String>,
+    truncated: bool,
 }
 
 #[async_trait]
@@ -64,10 +64,8 @@ impl Tool for ScraplingTool {
     }
 
     fn description(&self) -> &str {
-        "Smart web scraping with adaptive extraction. Fetches URLs using multiple strategies: \
-         fast HTTP, intelligent DOM extraction with CSS selectors, or browser-based rendering \
-         for JavaScript-heavy pages. Supports anti-detection via Scrapling Python library. \
-         Use for security research, content extraction, and scraping sites that block simple HTTP."
+        "Fetch and extract web content with HTTP, CSS selectors, or browser rendering for \
+         JavaScript-heavy pages. Returns the final page URL in browser mode."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -83,7 +81,7 @@ impl Tool for ScraplingTool {
                 "mode": {
                     "type": "string",
                     "enum": ["http", "adaptive", "browser", "auto"],
-                    "description": "Fetch strategy. http=fast HTTP only. adaptive=DOM parsing with CSS selectors. browser=JS rendering via Scrapling Python. auto=try HTTP, escalate if blocked (default).",
+                    "description": "Fetch strategy. http=fast HTTP only. adaptive=DOM parsing with CSS selectors. browser=JavaScript rendering. auto=try HTTP first (default).",
                     "default": "auto"
                 },
                 "extract": {
@@ -215,13 +213,31 @@ impl ScraplingTool {
         format: &str,
         ctx: &ToolContext,
     ) -> Result<ToolOutput> {
-        // Try Scrapling Python first
-        if let Ok(result) = self.try_scrapling_python(params, timeout).await {
-            return self.format_python_result(&result, params, format);
-        }
+        let requested = Url::parse(&params.url).context("Invalid Scrapling browser URL")?;
+        anyhow::ensure!(
+            matches!(requested.scheme(), "http" | "https") && requested.has_host(),
+            "Scrapling browser mode requires an HTTP or HTTPS URL"
+        );
+        let deadline = Instant::now() + Duration::from_secs(timeout);
+        let (page, backend) = timeout_at(deadline, async {
+            match fetch_scrapling_python(&requested, deadline).await {
+                Ok(page) => Ok((page, "Scrapling")),
+                Err(python_error) => fetch_firefox_page(&requested, deadline, |action, params| {
+                    firefox_run_bridge_command(action, params, ctx)
+                })
+                .await
+                .map(|page| (page, "Firefox"))
+                .map_err(|firefox_error| {
+                    anyhow::anyhow!(
+                        "Firefox rendering failed: {firefox_error:#}. Scrapling Python browser failed: {python_error:#}"
+                    )
+                }),
+            }
+        })
+        .await
+        .context("Timed out rendering the requested Scrapling page")??;
 
-        // Fallback: use the existing browser tool's get_content
-        self.fallback_to_browser_tool(params, format, ctx).await
+        self.format_rendered_page(&page, &requested, params, format, backend)
     }
 
     /// Auto mode: try HTTP, escalate if blocked
@@ -264,25 +280,6 @@ impl ScraplingTool {
                 )));
             }
         }
-        // Fall through to adaptive/browser
-
-        // Level 2: Try adaptive extraction (needs a new HTTP fetch)
-        if let Ok(response) = self.build_and_send_request(params, timeout).await
-            && let Ok((status, content_type, body)) = self.read_response(response).await
-            && self.gate_validate(status, &content_type, &body).is_ok()
-        {
-            let document = Html::parse_document(&body);
-            if let Ok(output) = self.extract_main_content(&document, &content_type, format) {
-                let (output, truncated) = truncate_output(output);
-                let note = if truncated { "\n\n[Truncated]" } else { "" };
-                return Ok(ToolOutput::new(format!(
-                    "Fetched {} (auto: adaptive)\n\n{}{}",
-                    params.url, output, note
-                )));
-            }
-        }
-
-        // Level 3: Browser fallback
         self.fetch_browser(params, timeout, format, ctx).await
     }
 
@@ -648,255 +645,35 @@ impl ScraplingTool {
         }
     }
 
-    // ── Python Scrapling Integration ────────────────────────────────────
-
-    async fn try_scrapling_python(
+    fn format_rendered_page(
         &self,
-        params: &ScraplingInput,
-        timeout: u64,
-    ) -> Result<PythonScraplingResult> {
-        // Check if Python is available
-        let python = find_python()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Python not found"))?;
-
-        // Check if scrapling is installed
-        let mut check = tokio::process::Command::new(&python);
-        // The shared server runs console-less, so an unflagged console-subsystem
-        // child makes Windows allocate a fresh visible console window. Hide it.
-        crate::alphacode_base::platform::hide_helper_console(check.as_std_mut());
-        check.args(["-c", "import scrapling; print(scrapling.__version__)"]);
-        let check = super::recon_common::run_command_bounded(
-            check,
-            "Scrapling Python probe",
-            Duration::from_secs(5),
-        )
-        .await
-        .map_err(anyhow::Error::msg)?;
-        if !check.status.success() {
-            return Err(anyhow::anyhow!("Scrapling Python library not installed"));
-        }
-
-        // Create a temporary Python script
-        let script = r#"
-import json, sys
-try:
-    from scrapling import Fetcher
-    url = sys.argv[1]
-    timeout = int(sys.argv[2])
-    fetcher = Fetcher(auto_match=False)
-    page = fetcher.get(url, timeout=timeout)
-    result = {
-        "status": page.status if hasattr(page, 'status') else None,
-        "title": page.css_first('title').text() if hasattr(page, 'css_first') else None,
-        "text": page.get_all_text(separator='\n') if hasattr(page, 'get_all_text') else None,
-        "html": str(page.html_content) if hasattr(page, 'html_content') else None,
-        "url": str(page.url) if hasattr(page, 'url') else None,
-    }
-    print(json.dumps(result))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-    sys.exit(1)
-"#
-        .to_string();
-
-        let temp_dir = tempfile::tempdir()?;
-        let script_path = temp_dir.path().join("scrapling_fetch.py");
-        tokio::fs::write(&script_path, &script).await?;
-
-        let mut command = tokio::process::Command::new(&python);
-        crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
-        command
-            .arg(script_path.to_str().unwrap_or(""))
-            .arg(&params.url)
-            .arg(timeout.to_string());
-        // Bound both captured streams as well as the wall-clock time: a page
-        // with an enormous DOM must not turn the browser fallback into an
-        // unbounded memory allocation.
-        let output = super::recon_common::run_command_bounded(
-            command,
-            "Scrapling Python execution",
-            Duration::from_secs(timeout),
-        )
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("Failed to execute Scrapling Python script")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow::anyhow!("Scrapling Python error: {}", stderr));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let result: PythonScraplingResult = serde_json::from_str(&stdout)
-            .map_err(|e| anyhow::anyhow!("Failed to parse Scrapling output: {}", e))?;
-
-        Ok(result)
-    }
-
-    fn format_python_result(
-        &self,
-        result: &PythonScraplingResult,
+        page: &RenderedPage,
+        requested: &Url,
         params: &ScraplingInput,
         format: &str,
+        backend: &str,
     ) -> Result<ToolOutput> {
-        if let Some(err) = &result.error {
-            return Err(anyhow::anyhow!("Scrapling error: {}", err));
-        }
-
-        let html = result.html.as_deref().unwrap_or("");
-        let text = result.text.as_deref().unwrap_or("");
-
-        // Browser mode used to ignore `extract` completely: a caller that asked
-        // for `table` or `#scope` still received the whole rendered page, was
-        // truncated at the cap, and the selector it asked for was silently
-        // dropped. Repeated attempts to narrow the result could never succeed,
-        // which is what turned a single extraction into a long loop of retries.
-        // The selector is applied here against the rendered HTML so browser mode
-        // behaves like adaptive mode.
-        let selected = params.extract.as_deref().map(|selector| {
-            let document = Html::parse_document(html);
-            self.extract_by_selector(&document, selector, format)
-        });
-        let selected = match selected {
-            Some(Ok(value)) => Some(value),
-            Some(Err(error)) => return Err(error),
-            None => None,
-        };
-
-        let body = match selected {
-            Some(value) => value,
-            None => match format {
-                "html" => html,
-                "text" | "markdown" => text,
-                _ => text,
-            }
-            .to_string(),
-        };
-
-        let (output, truncated) = truncate_output(body);
-        let title = result.title.as_deref().unwrap_or("untitled");
-        let note = if truncated { "\n\n[Truncated]" } else { "" };
-
-        Ok(ToolOutput::new(format!(
-            "Fetched {} (browser: Scrapling)\nTitle: {}\n\n{}{}",
-            params.url, title, output, note
-        )))
-    }
-
-    // ── Browser Tool Fallback ───────────────────────────────────────────
-
-    async fn fallback_to_browser_tool(
-        &self,
-        params: &ScraplingInput,
-        format: &str,
-        _ctx: &ToolContext,
-    ) -> Result<ToolOutput> {
-        // Open a dedicated tab for the requested URL. Reusing the shared
-        // active tab returned whatever page happened to be open — an agent
-        // scraping site A silently received site B's (possibly authenticated)
-        // content (BUG-04).
-        let input = json!({
-            "action": "open",
-            "url": &params.url,
-            "new_tab": true,
-            "format": match format {
-                "html" => "html",
-                "text" | "markdown" => "text",
-                _ => "text",
-            }
-        });
-
-        // Auto-install browser bridge if missing
-        let bin = crate::browser::browser_binary_path();
-        if !bin.exists() {
-            crate::browser::ensure_browser_setup().await?;
-        }
-        let bin = crate::browser::browser_binary_path();
-        if !bin.exists() {
-            return Err(anyhow::anyhow!(
-                "Browser bridge installation failed. Use mode='http' or 'adaptive' instead."
-            ));
-        }
-
-        let params_json = serde_json::to_string(&input)?;
-        let mut command = tokio::process::Command::new(&bin);
-        crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
-        command.arg("navigate").arg(&params_json);
-        #[cfg(not(windows))]
-        if std::env::var("BROWSER_SESSION").is_err()
-            && let Some(session_name) =
-                crate::browser::ensure_browser_session(&_ctx.session_id).await
-        {
-            command.env("BROWSER_SESSION", session_name);
-        }
-        let output = super::recon_common::run_command_bounded(
-            command,
-            "Scrapling browser fallback",
-            Duration::from_secs(MAX_TIMEOUT),
-        )
-        .await
-        .map_err(anyhow::Error::msg)
-        .context("Failed to run browser bridge for scrapling fallback")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow::anyhow!("Browser fallback failed: {}", stderr));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let result: Value =
-            serde_json::from_str(&stdout).unwrap_or_else(|_| json!({ "raw": stdout.to_string() }));
-
-        // Validate the landed URL against the request: block cross-site
-        // content leakage (BUG-04).
-        let landed_url = result["url"].as_str().unwrap_or("");
-        if !landed_url.is_empty() {
-            let requested_host = url::Url::parse(&params.url)
-                .ok()
-                .and_then(|u| u.host_str().map(String::from));
-            let landed_host = url::Url::parse(landed_url)
-                .ok()
-                .and_then(|u| u.host_str().map(String::from));
-            if let (Some(req_host), Some(land_host)) = (&requested_host, &landed_host) {
-                let req_reg = req_host.trim_start_matches("www.");
-                let land_reg = land_host.trim_start_matches("www.");
-                if req_reg != land_reg {
-                    return Err(anyhow::anyhow!(
-                        "Browser fallback safety check failed: requested {} but landed on {} ({}). The browser may have redirected; use mode='http' instead.",
-                        params.url,
-                        landed_url,
-                        land_host
-                    ));
-                }
-            }
-        }
-
-        let content = result["content"]["content"]
-            .as_str()
-            .or_else(|| result["content"]["text"].as_str())
-            .or_else(|| result["content"]["html"].as_str())
-            .or_else(|| result["content"].as_str())
-            .unwrap_or(&stdout);
-
-        // The fallback dropped `extract` as well, so a selector that adaptive
-        // mode honoured stopped working the moment the request escalated to the
-        // browser — the caller saw the full page, truncated, and could not tell
-        // why its selector had no effect. Apply it here too.
-        let content = match params.extract.as_deref() {
+        let landed = validate_rendered_url(requested, &page.url)?;
+        self.gate_validate(page.status.unwrap_or(200), "text/html", &page.html)?;
+        let output = match params.extract.as_deref() {
             Some(selector) => {
-                let document = Html::parse_document(content);
-                self.extract_by_selector(&document, selector, format)?
+                self.extract_by_selector(&Html::parse_document(&page.html), selector, format)?
             }
-            None => content.to_string(),
+            None => self.format_output(&page.html, "text/html", format),
+        };
+        let (output, truncated) = truncate_output(output);
+        let title = page.title.as_deref().filter(|title| !title.is_empty());
+        let title = title.map_or_else(String::new, |title| format!("\nTitle: {title}"));
+        let note = if page.truncated {
+            "\n\n[Rendered document was partially captured]"
+        } else if truncated {
+            "\n\n[Truncated]"
+        } else {
+            ""
         };
 
-        let (output, truncated) = truncate_output(content);
-        let note = if truncated { "\n\n[Truncated]" } else { "" };
-
         Ok(ToolOutput::new(format!(
-            "Fetched {} (browser: Firefox fallback, dedicated tab)\n\n{}{}",
-            params.url, output, note
+            "Fetched {landed} (browser: {backend}){title}\n\n{output}{note}"
         )))
     }
 
@@ -934,17 +711,148 @@ except Exception as e:
     }
 }
 
-/// Find available Python interpreter.
-///
-/// Async, and bounded. The previous synchronous `std::process::Command` was
-/// called from an `async fn` on the `browser`/`auto` hot path, so it occupied
-/// a tokio worker thread for the whole spawn — up to three of them per call —
-/// with no timeout. A `python` on PATH that blocks (a shim that prompts, a
-/// hung launcher) blocked the runtime thread indefinitely.
-async fn find_python() -> Option<String> {
-    super::python::find_python()
+fn validate_rendered_url(requested: &Url, landed: &str) -> Result<Url> {
+    let landed = Url::parse(landed).context("Browser returned an invalid document URL")?;
+    let same_host = match (requested.host_str(), landed.host_str()) {
+        (Some(requested_host), Some(landed_host)) => {
+            requested_host
+                .strip_prefix("www.")
+                .unwrap_or(requested_host)
+                == landed_host.strip_prefix("www.").unwrap_or(landed_host)
+        }
+        _ => false,
+    };
+    let same_scheme = requested.scheme() == landed.scheme();
+    let https_upgrade = requested.scheme() == "http" && landed.scheme() == "https";
+    anyhow::ensure!(
+        same_host && (same_scheme || https_upgrade) && requested.port() == landed.port(),
+        "Browser opened {landed} while rendering {requested}. Content from a different site was withheld."
+    );
+    Ok(landed)
+}
+
+async fn fetch_scrapling_python(requested: &Url, deadline: Instant) -> Result<RenderedPage> {
+    let python = super::python::find_python()
         .await
-        .map(|path| path.to_string_lossy().into_owned())
+        .context("Python not found")?;
+    let script = r#"
+import json
+import sys
+from scrapling.fetchers import DynamicFetcher
+
+url, timeout, limit = sys.argv[1:]
+page = DynamicFetcher.fetch(
+    url, timeout=int(timeout), headless=True, google_search=False, retries=1,
+)
+limit = int(limit)
+html = page.body.decode("utf-8", errors="replace")
+title = page.css("title::text").get()
+print(json.dumps({
+    "url": str(page.url),
+    "status": page.status,
+    "title": title[:512] if title else None,
+    "html": html[:limit],
+    "truncated": len(html) > limit,
+}, ensure_ascii=False))
+"#;
+    let mut command = tokio::process::Command::new(python);
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    command
+        .env("PYTHONIOENCODING", "utf-8")
+        .args(["-c", script, requested.as_str()])
+        .arg(remaining.as_millis().to_string())
+        .arg(MAX_RENDERED_HTML.to_string());
+    crate::alphacode_core::env::strip_internal_env(&mut command);
+    let output =
+        super::recon_common::run_command_bounded(command, "Scrapling Python browser", remaining)
+            .await
+            .map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Scrapling Python browser failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+            .chars()
+            .take(1200)
+            .collect::<String>()
+    );
+    serde_json::from_slice(&output.stdout).context("Invalid Scrapling Python browser response")
+}
+
+async fn fetch_firefox_page<F, Fut>(
+    requested: &Url,
+    deadline: Instant,
+    mut bridge: F,
+) -> Result<RenderedPage>
+where
+    F: FnMut(&'static str, Value) -> Fut,
+    Fut: std::future::Future<Output = Result<Value>>,
+{
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let mut result = bridge(
+        "createTab",
+        json!({"url": requested.as_str(), "focus": false, "timeoutMs": remaining.as_millis()}),
+    )
+    .await?;
+    let id =
+        tab_id_from_value(&result).context("Firefox did not identify the new Scrapling tab")?;
+    let script = format!(
+        r#"(() => {{
+            const html = document.documentElement?.outerHTML ?? "";
+            return {{
+                url: location.href,
+                readyState: document.readyState,
+                title: document.title.slice(0, 512).replace(/[\uD800-\uDBFF]$/, ""),
+                html: html.slice(0, {MAX_RENDERED_HTML}).replace(/[\uD800-\uDBFF]$/, ""),
+                truncated: html.length > {MAX_RENDERED_HTML}
+            }};
+        }})()"#
+    );
+
+    loop {
+        anyhow::ensure!(
+            tab_id_from_value(&result) == Some(id),
+            "Firefox returned a different tab while loading {requested}"
+        );
+        let tab = result.get("tab").unwrap_or(&result);
+        if tab["status"] == "complete" {
+            let tab_url = tab["url"]
+                .as_str()
+                .context("Firefox omitted the Scrapling tab URL")?;
+            if tab_url != "about:blank" {
+                let mut landed = validate_rendered_url(requested, tab_url)?;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let snapshot = bridge(
+                    "evaluate",
+                    json!({
+                        "tabId": id,
+                        "frameId": 0,
+                        "pageWorld": false,
+                        "script": &script,
+                        "timeoutMs": remaining.as_millis()
+                    }),
+                )
+                .await?;
+                let page: RenderedPage = serde_json::from_value(snapshot)
+                    .context("Firefox omitted the rendered document URL or HTML")?;
+                let mut document =
+                    Url::parse(&page.url).context("Firefox returned an invalid document URL")?;
+                // A fragment can change without a different document loading.
+                landed.set_fragment(None);
+                document.set_fragment(None);
+                if document != landed && document.as_str() != "about:blank" {
+                    anyhow::bail!(
+                        "Firefox's Scrapling tab changed from {landed} to {document} during extraction"
+                    );
+                }
+                if document == landed && page.ready_state.as_deref() == Some("complete") {
+                    return Ok(page);
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        result = bridge("getTab", json!({"tabId": id})).await?;
+    }
 }
 
 #[cfg(test)]
@@ -962,30 +870,99 @@ mod tests {
         assert!(!tool.detect_anti_bot("<html><body>Normal page</body></html>"));
     }
 
-    /// Regression: browser mode ignored `extract`.
-    ///
-    /// A caller asking for `#scope` received the whole rendered page, truncated,
-    /// with its selector silently dropped — so re-asking with a narrower
-    /// selector could never succeed and the turn looped. The selector must
-    /// narrow the body in browser mode exactly as it does in adaptive mode.
-    #[test]
-    fn browser_mode_applies_the_extract_selector() {
+    #[tokio::test]
+    async fn scrapling_browser_uses_a_fresh_tab_and_applies_the_selector() {
         let tool = ScraplingTool::new();
-        let html = Html::parse_document(
-            "<html><body><div id=\"noise\">drop me</div>\
-             <section id=\"scope\"><p>api.example.com</p></section></body></html>",
-        );
-        let selected = tool
-            .extract_by_selector(&html, "#scope", "text")
-            .expect("selector must apply");
-        assert!(
-            selected.contains("api.example.com"),
-            "the selected content must be present: {selected}"
-        );
-        assert!(
-            !selected.contains("drop me"),
-            "content outside the selector must be excluded: {selected}"
-        );
+        for (id, host, content) in [
+            (41, "docs.example", "First"),
+            (42, "market.example", "Second"),
+        ] {
+            let requested = Url::parse(&format!("https://{host}/old")).unwrap();
+            let landed = format!("https://www.{host}/current");
+            let mut actions = ["createTab", "getTab", "evaluate"].into_iter();
+            let page = fetch_firefox_page(&requested, Instant::now() + Duration::from_secs(2), |action, input| {
+                assert_eq!(actions.next(), Some(action));
+                let result = match action {
+                    "createTab" => {
+                        assert_eq!(input["url"], requested.as_str());
+                        assert_eq!(input["focus"], false);
+                        json!({"tabId": id, "url": "about:blank", "status": "complete"})
+                    }
+                    "getTab" => {
+                        assert_eq!(input["tabId"], id);
+                        json!({"tab": {"tabId": id, "url": landed, "status": "complete"}})
+                    }
+                    "evaluate" => {
+                        assert_eq!(input["tabId"], id);
+                        assert_eq!(input["frameId"], 0);
+                        json!({"url": landed, "readyState": "complete", "html": format!("<div>drop me</div><main>{content}</main>")})
+                    }
+                    _ => unreachable!(),
+                };
+                std::future::ready(Ok(result))
+            })
+            .await
+            .unwrap();
+            assert_eq!(actions.next(), None);
+            let params = ScraplingInput {
+                extract: Some("main".into()),
+                ..Default::default()
+            };
+            let output = tool
+                .format_rendered_page(&page, &requested, &params, "text", "Firefox")
+                .unwrap()
+                .output;
+            assert!(output.starts_with(&format!("Fetched {landed}")));
+            assert!(output.ends_with(content));
+            assert!(!output.contains("drop me"));
+        }
+    }
+
+    #[tokio::test]
+    async fn scrapling_browser_rejects_unverified_or_stale_documents() {
+        let requested = Url::parse("https://market.example/current").unwrap();
+        for (allocated, snapshot, expected) in [
+            (
+                json!({"url": requested.as_str(), "status": "complete"}),
+                Value::Null,
+                "did not identify the new Scrapling tab",
+            ),
+            (
+                json!({"tabId": 42, "url": "https://docs.example/changelog", "status": "complete"}),
+                Value::Null,
+                "different site",
+            ),
+            (
+                json!({"tabId": 42, "url": requested.as_str(), "status": "complete"}),
+                json!({"html": "Missing URL", "readyState": "complete"}),
+                "omitted the rendered document URL or HTML",
+            ),
+            (
+                json!({"tabId": 42, "url": requested.as_str(), "status": "complete"}),
+                json!({"url": "https://market.example/old", "html": "Stale", "readyState": "complete"}),
+                "during extraction",
+            ),
+        ] {
+            let result = fetch_firefox_page(
+                &requested,
+                Instant::now() + Duration::from_secs(2),
+                |action, input| {
+                    let result = match action {
+                        "createTab" => allocated.clone(),
+                        "evaluate" => {
+                            assert_eq!(input["tabId"], 42);
+                            assert_ne!(snapshot, Value::Null);
+                            snapshot.clone()
+                        }
+                        _ => panic!("Unexpected bridge action {action}"),
+                    };
+                    std::future::ready(Ok(result))
+                },
+            )
+            .await
+            .expect_err("unverified content must never be returned");
+            assert!(result.to_string().contains(expected), "{result:#}");
+        }
     }
 
     #[test]

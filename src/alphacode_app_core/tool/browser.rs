@@ -2719,7 +2719,7 @@ fn missing_tab_error(message: &str) -> bool {
 }
 
 /// Extract a Firefox tab id from the shapes returned by bridge versions.
-fn tab_id_from_value(value: &Value) -> Option<i64> {
+pub(super) fn tab_id_from_value(value: &Value) -> Option<i64> {
     let object = value.as_object()?;
     let direct = ["tabId", "tab_id", "id"]
         .into_iter()
@@ -2958,7 +2958,7 @@ async fn run_firefox_upload(params: Value, ctx: &ToolContext) -> Result<Value> {
 /// load plus `waitForStable` legitimately takes a while, but bounded.
 const BRIDGE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 
-async fn firefox_run_bridge_command(
+pub(super) async fn firefox_run_bridge_command(
     action: &str,
     params: Value,
     _ctx: &ToolContext,
