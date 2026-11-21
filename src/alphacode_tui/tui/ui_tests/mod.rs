@@ -234,6 +234,7 @@ struct TestState {
     provider_name: Option<String>,
     provider_model: Option<String>,
     working_dir: Option<String>,
+    current_context_tokens: Option<u64>,
     info_widget_data: info_widget::InfoWidgetData,
     suppress_info_widgets: bool,
     display_messages: Vec<DisplayMessage>,
@@ -419,6 +420,9 @@ impl crate::alphacode_tui::tui::TuiState for TestState {
     }
     fn total_session_tokens(&self) -> Option<(u64, u64)> {
         None
+    }
+    fn current_context_tokens(&self) -> Option<u64> {
+        self.current_context_tokens
     }
     fn is_remote_mode(&self) -> bool {
         false

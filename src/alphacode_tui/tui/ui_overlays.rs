@@ -833,6 +833,14 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     ));
     lines.push(key_entry("Ctrl+F", "Find text in the transcript"));
     lines.push(key_entry(
+        "PgUp / PgDn",
+        "Scroll the transcript. PgDn to the bottom resumes following",
+    ));
+    lines.push(key_entry(
+        "/tool-call-details on / off",
+        "Show or hide inline tool output previews",
+    ));
+    lines.push(key_entry(
         &format!("Ctrl+V / {}", alt("V")),
         "Paste clipboard (text or image)",
     ));

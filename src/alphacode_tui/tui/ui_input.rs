@@ -1314,6 +1314,22 @@ fn compose_idle_status_tip(tip: &str, suffix: Option<&str>, max_width: usize) ->
     truncate_line_with_ellipsis(Line::from(spans), max_width)
 }
 
+fn with_idle_context(line: Line<'static>, app: &dyn TuiState, width: usize) -> Line<'static> {
+    let Some(suffix) = idle_context_suffix(app) else {
+        return line;
+    };
+    let text = if line.width() == 0 {
+        suffix.trim_start_matches(" · ").to_owned()
+    } else {
+        suffix
+    };
+    super::truncate_line_preserving_suffix_to_width(
+        &line,
+        &Line::from(Span::styled(text, Style::default().fg(muted_text_color()))),
+        width,
+    )
+}
+
 /// Build the always-on idle session-stats line shown under the input: session
 /// tokens, per-direction tokens, context usage, model identity, estimated cost
 /// or provider window usage (when reported), and compaction count.
@@ -1934,12 +1950,13 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 } else {
                     warning_color()
                 };
-            Line::from(vec![
+            let warning = Line::from(vec![
                 Span::styled("⚠ ", Style::default().fg(warning_color)),
                 Span::styled(warning, Style::default().fg(warning_color)),
-            ])
+            ]);
+            with_idle_context(warning, app, area.width as usize)
         } else if let Some(changes) = &turn_changes {
-            changes.clone()
+            with_idle_context(changes.clone(), app, area.width as usize)
         } else if let Some(tip) =
             idle_status_tip_line(app, area.width as usize, app.animation_elapsed() as u64)
         {
@@ -1952,22 +1969,45 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             // header strip now, so the bottom row stays a clean activity/tip
             // line. On narrow terminals the header strip may have dropped
             // fragments, so fall back to the stats line there.
-            idle_session_stats_line(app, area.width as usize).unwrap_or_default()
+            idle_session_stats_line(app, area.width as usize)
+                .unwrap_or_else(|| with_idle_context(Line::default(), app, area.width as usize))
         } else {
-            Line::from("")
+            with_idle_context(Line::default(), app, area.width as usize)
         }
     } else if let Some(changes) = &turn_changes {
-        changes.clone()
+        with_idle_context(changes.clone(), app, area.width as usize)
     } else if let Some(tip) =
         idle_status_tip_line(app, area.width as usize, app.animation_elapsed() as u64)
     {
         tip
     } else {
-        Line::from("")
+        with_idle_context(Line::default(), app, area.width as usize)
     };
 
     crate::memory::check_staleness();
     let line = truncate_line_with_ellipsis(line, area.width as usize);
+    let line = if app.auto_scroll_paused()
+        && !app.diff_pane_focus()
+        && !app.diagram_focus()
+        && !app.swarm_panel_focused()
+        && super::last_resolved_chat_scroll() < super::last_max_scroll()
+    {
+        let hint = if line.width() == 0 {
+            "PgDn toward latest"
+        } else {
+            " · PgDn toward latest"
+        };
+        if usize::from(area.width) >= line.width() + hint.len() {
+            let mut line = line;
+            line.spans
+                .push(Span::styled(hint, Style::default().fg(queued_color())));
+            line
+        } else {
+            line
+        }
+    } else {
+        line
+    };
 
     // Subtle background highlight for the status line to visually separate it
     // from the transcript above. Uses a very dim brand-tinted background.

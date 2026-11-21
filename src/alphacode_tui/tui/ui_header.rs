@@ -1296,7 +1296,7 @@ fn build_mcp_line(app: &dyn TuiState, w: usize, align: Alignment) -> Option<Line
 
 /// Keep the project end of a long path visible instead of spending the row
 /// on the home-directory prefix. Clip only at complete grapheme boundaries.
-fn compact_workspace_path(path: &str, width: usize) -> String {
+pub(super) fn compact_workspace_path(path: &str, width: usize) -> String {
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
     let path = crate::alphacode_tui_render::single_line_text(path);
@@ -1454,10 +1454,123 @@ pub(super) fn banner_band_height(width: u16, available_height: u16) -> u16 {
     banner_wordmark(width, budget - 1).map_or(2, |art| art.len() as u16 + 1)
 }
 
-/// Keep the same responsive wordmark before, during, and after a conversation.
-/// Terminal geometry, rather than message or processing state, determines size.
-pub(super) fn conversation_banner_height(_app: &dyn TuiState, width: u16, height: u16) -> u16 {
-    banner_band_height(width, height)
+pub(super) fn conversation_is_active(app: &dyn TuiState) -> bool {
+    !app.onboarding_preview_mode()
+        && (!app.display_messages().is_empty()
+            || app.is_processing()
+            || !app.streaming_text().is_empty())
+}
+
+/// Keep workspace identity in view once the transcript starts. A short split
+/// uses one row so the composer and transcript still have room.
+pub(super) fn conversation_banner_height(app: &dyn TuiState, width: u16, height: u16) -> u16 {
+    if !conversation_is_active(app) {
+        return banner_band_height(width, height);
+    }
+    match (width, height) {
+        (12.., 12..) => 2,
+        (12.., 6..) => 1,
+        _ => 0,
+    }
+}
+
+fn build_conversation_header(app: &dyn TuiState, width: usize, height: u16) -> Vec<Line<'static>> {
+    use unicode_width::UnicodeWidthStr;
+
+    let provider = app.provider_name();
+    let model = header_model_display_name(&app.provider_model(), &provider);
+    let route_prefix = format!(
+        "{}: ",
+        if provider.trim().is_empty() {
+            "OpenRouter"
+        } else {
+            provider.trim()
+        }
+    );
+    let model = model.strip_prefix(&route_prefix).unwrap_or(&model);
+    let model = if model.is_empty() {
+        "Select a model"
+    } else {
+        model
+    };
+    let provider = crate::alphacode_tui_render::single_line_text(provider.trim());
+    let model_style = Style::default()
+        .fg(BrandTheme::model())
+        .add_modifier(Modifier::BOLD);
+    let detail_style = Style::default().fg(BrandTheme::dim_bright());
+    let separator = " · ";
+    let mut spans = vec![Span::styled(
+        truncate_header_text(model, width),
+        model_style,
+    )];
+    let mut used = spans[0].width();
+    if !provider.is_empty() && !model.eq_ignore_ascii_case(&provider) {
+        // Leave enough room for a recognizable model name when both identity
+        // fields have long names. A short terminal still shows the model first.
+        let provider_width = provider.width().min(width / 3);
+        if provider_width > 0 && width.saturating_sub(provider_width + separator.width()) >= 12 {
+            let model_width = width - provider_width - separator.width();
+            spans[0] = Span::styled(truncate_header_text(model, model_width), model_style);
+            used = spans[0].width();
+            push_if_fits(
+                &mut spans,
+                &mut used,
+                width,
+                format!(
+                    "{separator}{}",
+                    truncate_header_text(&provider, provider_width)
+                ),
+                detail_style,
+            );
+        }
+    }
+    for label in collect_status_items(app) {
+        push_if_fits(
+            &mut spans,
+            &mut used,
+            width,
+            format!("{separator}{label}"),
+            Style::default().fg(if label.contains('↑') {
+                BrandTheme::warning()
+            } else {
+                dim_color()
+            }),
+        );
+    }
+    let mut lines = vec![Line::from(spans)];
+    if height > 1 {
+        let dir = app.working_dir();
+        let session = app
+            .session_display_name()
+            .or_else(|| app.current_session_id());
+        let session = session.filter(|name| !name.trim().is_empty()).map(|name| {
+            let name = truncate_header_text(&name, width.saturating_sub(8).min(24));
+            format!("Session {name}")
+        });
+        let session = session.filter(|text| {
+            dir.is_none() || width.saturating_sub(text.width() + separator.width()) >= 24
+        });
+        let mut workspace = Vec::new();
+        if let Some(dir) = dir.as_deref() {
+            let budget = width.saturating_sub(
+                session
+                    .as_deref()
+                    .map_or(0, |text| text.width() + separator.width()),
+            );
+            workspace.push(Span::styled(
+                compact_workspace_path(&abbreviate_home(dir), budget),
+                detail_style,
+            ));
+        }
+        if let Some(session) = session {
+            if !workspace.is_empty() {
+                workspace.push(Span::styled(separator, Style::default().fg(dim_color())));
+            }
+            workspace.push(Span::styled(session, detail_style));
+        }
+        lines.push(Line::from(workspace));
+    }
+    lines
 }
 
 fn banner_wordmark(width: u16, height: u16) -> Option<&'static [&'static str]> {
@@ -1473,10 +1586,7 @@ fn banner_wordmark(width: u16, height: u16) -> Option<&'static [&'static str]> {
         })
 }
 
-/// Build exactly `height` rows for the pinned banner band.
-///
-/// The band is drawn in its own layout chunk above the transcript, so it must
-/// use only a complete wordmark tier that fits the reserved rows.
+/// Build the pinned identity rows or the welcome wordmark that fits the band.
 pub(super) fn build_banner_band_lines(
     app: &dyn TuiState,
     width: u16,
@@ -1485,7 +1595,9 @@ pub(super) fn build_banner_band_lines(
     if width == 0 || height == 0 {
         return Vec::new();
     }
-    let _ = app;
+    if conversation_is_active(app) {
+        return build_conversation_header(app, usize::from(width), height);
+    }
     let art_height = height.saturating_sub(1).max(1);
     let art = banner_wordmark(width, art_height).unwrap_or(&[crate::alphacode_brand::DISPLAY_NAME]);
     let mut lines = BrandTheme::wordmark_lines(art);

@@ -213,7 +213,9 @@ fn test_pinned_content_uses_left_splitter_instead_of_rounded_box() {
 fn test_file_diff_uses_left_splitter_instead_of_rounded_box() {
     let _lock = scroll_render_test_lock();
     let temp = tempfile::tempdir().expect("tempdir");
-    let file_path = temp.path().join("demo.rs");
+    let directory = temp.path().join("a-long-workspace-path-that-does-not-fit-the-diff-title");
+    std::fs::create_dir(&directory).expect("create workspace");
+    let file_path = directory.join("demo.rs");
     std::fs::write(&file_path, "fn demo() {}\n").expect("write demo file");
 
     let mut app = create_test_app();
@@ -249,4 +251,8 @@ fn test_file_diff_uses_left_splitter_instead_of_rounded_box() {
     assert_eq!(buf[(diff_area.x, diff_area.y)].symbol(), "│");
     assert_eq!(buf[(diff_area.x, diff_area.y + 1)].symbol(), "│");
     assert!(text.contains("demo.rs"), "rendered text: {text}");
+    let title: String = (diff_area.x..diff_area.right())
+        .map(|x| buf[(x, diff_area.y)].symbol())
+        .collect();
+    assert!(title.contains("demo.rs") && title.contains("Ctrl+L focus"), "{title}");
 }

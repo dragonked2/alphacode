@@ -453,16 +453,17 @@ pub(super) fn draw_file_diff_view(
     };
 
     let active_context = active_file_diff_context(prepared, scroll, visible_height);
+    let navigation_hint = if focused { "Esc chat" } else { "Ctrl+L focus" };
 
     let Some(active_context) = active_context else {
         let Some(inner) = super::draw_right_rail_chrome(
             frame,
             area,
             Line::from(vec![
-                Span::styled(" file ", Style::default().fg(tool_color())),
-                Span::styled(" ⇧Tab hide ", Style::default().fg(dim_color())),
+                Span::styled(" File changes · ", Style::default().fg(tool_color())),
+                Span::styled(navigation_hint, Style::default().fg(dim_color())),
             ]),
-            super::right_rail_border_style(false, tool_color()),
+            super::right_rail_border_style(focused, tool_color()),
         ) else {
             return;
         };
@@ -523,7 +524,7 @@ pub(super) fn draw_file_diff_view(
     };
 
     let short_path = file_path
-        .rsplit('/')
+        .rsplit(['/', '\\'])
         .take(2)
         .collect::<Vec<_>>()
         .into_iter()
@@ -531,50 +532,45 @@ pub(super) fn draw_file_diff_view(
         .collect::<Vec<_>>()
         .join("/");
 
-    let mut title_parts = vec![
-        Span::styled(" ", Style::default().fg(dim_color())),
-        Span::styled(
-            short_path,
-            Style::default()
-                .fg(rgb(180, 200, 255))
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        ),
-    ];
-    if additions > 0 || deletions > 0 {
-        title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
-        if additions > 0 {
-            title_parts.push(Span::styled(
-                format!("+{}", additions),
-                Style::default().fg(diff_add_color()),
-            ));
-        }
-        if deletions > 0 {
-            if additions > 0 {
-                title_parts.push(Span::styled(" ", Style::default().fg(dim_color())));
-            }
-            title_parts.push(Span::styled(
-                format!("-{}", deletions),
-                Style::default().fg(diff_del_color()),
-            ));
-        }
+    let title_width = usize::from(area.width.saturating_sub(1));
+    let mut metadata = Line::default();
+    if additions > 0 {
+        metadata.spans.push(Span::styled(
+            format!(" +{}", additions),
+            Style::default().fg(diff_add_color()),
+        ));
     }
-    title_parts.push(Span::styled(
-        format!(" {}L ", total_lines),
-        Style::default().fg(dim_color()),
+    if deletions > 0 {
+        metadata.spans.push(Span::styled(
+            format!(" -{}", deletions),
+            Style::default().fg(diff_del_color()),
+        ));
+    }
+    const MIN_PATH_CELLS: usize = 9;
+    let hint = format!(" · {navigation_hint}");
+    let detail = format!(" · {total_lines}L · edit#{}", active_context.edit_index);
+    use unicode_width::UnicodeWidthStr;
+    if metadata.width() + hint.width() + detail.width() + MIN_PATH_CELLS <= title_width {
+        metadata
+            .spans
+            .push(Span::styled(detail, Style::default().fg(dim_color())));
+    }
+    if metadata.width() + hint.width() + MIN_PATH_CELLS <= title_width {
+        metadata
+            .spans
+            .push(Span::styled(hint, Style::default().fg(dim_color())));
+    }
+    let path_width = title_width.saturating_sub(metadata.width());
+    let mut title = Line::from(Span::styled(
+        super::header::compact_workspace_path(&short_path, path_width),
+        Style::default()
+            .fg(file_link_color())
+            .add_modifier(Modifier::BOLD),
     ));
-    title_parts.push(Span::styled(
-        format!(" edit#{} ", active_context.edit_index),
-        Style::default().fg(file_link_color()),
-    ));
-    title_parts.push(Span::styled(
-        " ⇧Tab hide ",
-        Style::default().fg(dim_color()),
-    ));
+    title.spans.extend(metadata.spans);
 
     let border_style = super::right_rail_border_style(focused, tool_color());
-    let Some(inner) =
-        super::draw_right_rail_chrome(frame, area, Line::from(title_parts), border_style)
-    else {
+    let Some(inner) = super::draw_right_rail_chrome(frame, area, title, border_style) else {
         return;
     };
 

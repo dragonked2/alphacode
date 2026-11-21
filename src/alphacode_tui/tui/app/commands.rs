@@ -2785,7 +2785,7 @@ fn handle_tool_call_details_command(app: &mut App, trimmed: &str) -> bool {
     if rest.is_empty() || matches!(rest, "show" | "status") {
         let current = crate::config::config().display.tool_call_details;
         app.push_display_message(DisplayMessage::system(format!(
-            "Tool call details are currently {}.\n\nWhen on, tool rows show the dimmed technical detail (command, path, args) next to the model-provided intent, and successful bash/read/grep results render inline (bounded, with a +N more lines marker). When off — the default — tool calls stay collapsed as polished one-line cards so raw output doesn't flood the transcript; errors still always render.\n\nUse /tool-call-details on or /tool-call-details off to change it.",
+            "Tool call details are currently {}.\n\nUse /tool-call-details on to show commands, paths, and bounded output previews. Use /tool-call-details off for compact tool rows. Shell failures show a short diagnostic preview in either mode. Use the shortcut beside a tool result to copy its retained output.",
             if current { "on" } else { "off" }
         )));
         return true;

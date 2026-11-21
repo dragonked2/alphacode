@@ -3710,6 +3710,40 @@ fn clip_preview_line(line: &str, budget: usize) -> String {
     crate::alphacode_tui_tool_display::truncate_tail_display(line, budget)
 }
 
+fn push_output_preview<'a>(
+    lines: &mut Vec<Line<'static>>,
+    output: impl Iterator<Item = &'a str>,
+    hidden: usize,
+    width: usize,
+    tail: bool,
+) {
+    let output_style = Style::default().fg(muted_text_color());
+    let omission = || {
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                format!("⋮ {hidden} more lines"),
+                Style::default().fg(dim_color()),
+            ),
+        ])
+    };
+    if tail && hidden > 0 {
+        lines.push(omission());
+    }
+    for line in output {
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                clip_preview_line(line, width.saturating_sub(4)),
+                output_style,
+            ),
+        ]));
+    }
+    if !tail && hidden > 0 {
+        lines.push(omission());
+    }
+}
+
 pub(super) fn push_tool_failure_lines(
     lines: &mut Vec<Line<'static>>,
     mut header: Line<'static>,
@@ -3878,6 +3912,14 @@ pub(crate) fn render_tool_message(
         }
     }
 
+    let tool_key = tools_ui::canonical_tool_name(&tc.name);
+    let details_visible = tools_ui::show_tool_call_details();
+    let preview_limit = match tool_key {
+        "bash" => 64,
+        "read" | "glob" | "grep" => 24,
+        "alphagrep" if !crate::config::config().display.show_alphagrep_output => 24,
+        _ => 0,
+    };
     let batch_counts = if tc.name == "batch" {
         tools_ui::parse_batch_completion_counts(&msg.content)
     } else {
@@ -4004,7 +4046,7 @@ pub(crate) fn render_tool_message(
             Style::default().fg(crate::alphacode_tui_style::theme::accent_color()),
         ));
     }
-    let token_suffix = Line::from(vec![
+    let mut token_suffix = Line::from(vec![
         Span::styled(" · ", Style::default().fg(dim_color())),
         Span::styled(token_badge.label, Style::default().fg(token_badge.color)),
     ]);
@@ -4032,7 +4074,7 @@ pub(crate) fn render_tool_message(
                 intent.to_string(),
                 Style::default().fg(tool_color()),
             ));
-            if tools_ui::show_tool_call_details() && !summary.is_empty() && summary != intent {
+            if details_visible && !summary.is_empty() && summary != intent {
                 tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
                 tool_line.push(Span::styled(summary, Style::default().fg(dim_color())));
             }
@@ -4055,8 +4097,23 @@ pub(crate) fn render_tool_message(
             ));
             tool_line.push(Span::styled(")", Style::default().fg(dim_color())));
         }
+        let tool_line = Line::from(tool_line);
+        let output_hint = " · output hidden";
+        if preview_limit > 0
+            && !details_visible
+            && !matches!(msg.content.trim(), "" | "ok")
+            && row_width
+                >= tool_line.width()
+                    + token_suffix.width()
+                    + output_hint.width()
+                    + super::viewport::copy_badge_shortcut_width()
+        {
+            token_suffix
+                .spans
+                .push(Span::styled(output_hint, Style::default().fg(dim_color())));
+        }
         lines.push(super::truncate_line_preserving_suffix_to_width(
-            &Line::from(tool_line),
+            &tool_line,
             &token_suffix,
             row_width,
         ));
@@ -4098,8 +4155,8 @@ pub(crate) fn render_tool_message(
     // intent. With an intent present, the command summary is inline-only: it
     // shows on the tool row when it fits and is dropped otherwise, never
     // spilling onto a second line.
-    if tools_ui::canonical_tool_name(&tc.name) == "bash"
-        && intent.is_none()
+    if tool_key == "bash"
+        && (intent.is_none() || is_error)
         && !rendered_tool_line_text.contains('$')
         && let Some(command) = tc.input.get("command").and_then(|v| v.as_str())
     {
@@ -4143,86 +4200,32 @@ pub(crate) fn render_tool_message(
         }
     }
 
-    // Successful bash outputs render inline, but only when tool-call details
-    // are enabled (`/tool-call-details on`): in the default collapsed view a
-    // bash call is a single summary row, so build logs and JSON blobs no
-    // longer flood the transcript. A generous tail is rendered when enabled;
-    // anything beyond it is represented by an explicit "+N more lines" notice
-    // so output is never silently hidden — the old 12-line/800-char limits
-    // hid real results with no marker at all. Errors always render via the
-    // error-summary path above.
-    if tools_ui::canonical_tool_name(&tc.name) == "bash"
-        && tools_ui::show_tool_call_details()
-        && !is_error
-        && !msg.content.trim().is_empty()
+    if is_error
+        && tool_key == "bash"
+        && let Some((body, _)) = msg.content.rsplit_once("\n\nExit code: ")
     {
-        const BASH_INLINE_LINES: usize = 64;
-        const BASH_INLINE_CHARS: usize = 8_000;
-        let trimmed = msg.content.trim();
-        // Skip progress scaffolding / empty markers.
-        let body = trimmed;
-        let line_count = body.lines().count();
-        if body.chars().count() <= BASH_INLINE_CHARS && line_count > 0 {
-            let shown = line_count.min(BASH_INLINE_LINES);
-            for line in body.lines().take(shown) {
-                let short = clip_preview_line(line, row_width.saturating_sub(6));
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(short, Style::default().fg(rgb(160, 170, 185))),
-                ]));
-            }
-            let hidden = line_count.saturating_sub(shown);
-            if hidden > 0 {
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(
-                        format!("\u{22ee} +{} more lines", hidden),
-                        Style::default().fg(dim_color()),
-                    ),
-                ]));
-            }
-        }
-    }
-
-    // Inline output previews for the other everyday tools (read / glob /
-    // grep / alphagrep) render only when tool-call details are enabled.
-    // The default collapsed transcript keeps each of these as a single
-    // summary row — file dumps and search hits were the main sources of a
-    // fuzzy, flooded console. With details on, each tool gets a friendly
-    // bounded preview with an explicit remainder marker. Skipped for
-    // oversized payloads (the token badge already flags those in amber/red).
-    if !is_error {
-        const INLINE_PREVIEW_LINES: usize = 24;
-        const INLINE_PREVIEW_MAX_CHARS: usize = 12_000;
-        let tool_key = tools_ui::canonical_tool_name(&tc.name);
-        let show_inline_body = tools_ui::show_tool_call_details()
-            && matches!(tool_key, "read" | "glob" | "grep" | "alphagrep")
-            // alphagrep has its own dedicated renderer below when enabled.
-            && !(tool_key == "alphagrep" && crate::config::config().display.show_alphagrep_output);
-        if show_inline_body {
-            let body = msg.content.trim();
-            let line_count = body.lines().count();
-            if !body.is_empty() && body.chars().count() <= INLINE_PREVIEW_MAX_CHARS {
-                let shown = line_count.min(INLINE_PREVIEW_LINES);
-                for line in body.lines().take(shown) {
-                    let short = clip_preview_line(line, row_width.saturating_sub(6));
-                    lines.push(Line::from(vec![
-                        Span::raw("    "),
-                        Span::styled(short, Style::default().fg(rgb(160, 170, 185))),
-                    ]));
-                }
-                let hidden = line_count.saturating_sub(shown);
-                if hidden > 0 {
-                    lines.push(Line::from(vec![
-                        Span::raw("    "),
-                        Span::styled(
-                            format!("\u{22ee} +{} more lines", hidden),
-                            Style::default().fg(dim_color()),
-                        ),
-                    ]));
-                }
-            }
-        }
+        // The exit verdict already appears in the header. Keep the output
+        // immediately preceding it, where shell diagnostics usually land.
+        let body = body.trim();
+        let limit = if details_visible { preview_limit } else { 4 };
+        let hidden = body.lines().count().saturating_sub(limit);
+        push_output_preview(
+            &mut lines,
+            body.lines().skip(hidden),
+            hidden,
+            row_width,
+            true,
+        );
+    } else if !is_error && details_visible && preview_limit > 0 {
+        let body = msg.content.trim();
+        let hidden = body.lines().count().saturating_sub(preview_limit);
+        push_output_preview(
+            &mut lines,
+            body.lines().take(preview_limit),
+            hidden,
+            row_width,
+            false,
+        );
     }
 
     if tc.name == "batch"

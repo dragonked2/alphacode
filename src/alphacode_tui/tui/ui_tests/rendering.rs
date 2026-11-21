@@ -42,12 +42,14 @@ fn empty_chat_renders_the_setup_guide_without_generic_starters() {
 }
 
 #[test]
-fn banner_transcript_and_composer_render_in_separate_areas() {
+fn workspace_identity_stays_visible_when_the_transcript_scrolls() {
     let _lock = viewport_snapshot_test_lock();
     for count in [1, 80] {
         crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
         let state = TestState {
             input: "composer sentinel".into(),
+            provider_model: Some("gpt-5.2".into()),
+            working_dir: Some("C:/projects/audit-workspace".into()),
             display_messages: (0..count)
                 .map(|_| DisplayMessage::user("transcript sentinel"))
                 .collect(),
@@ -63,9 +65,11 @@ fn banner_transcript_and_composer_render_in_separate_areas() {
         let rows: Vec<String> = (0..40)
             .map(|y| (0..100).map(|x| buffer[(x, y)].symbol()).collect())
             .collect();
+        assert!(rows[0].contains("GPT-5.2"), "model: {}", rows[0]);
         assert!(
-            rows[..6].iter().any(|row| !row.trim().is_empty()),
-            "banner missing"
+            rows[1].contains("audit-workspace"),
+            "workspace: {}",
+            rows[1]
         );
         assert!(
             rows.iter().any(|row| row.contains("transcript sentinel")),
@@ -78,6 +82,81 @@ fn banner_transcript_and_composer_render_in_separate_areas() {
             "composer missing"
         );
     }
+}
+
+#[test]
+fn short_workspace_keeps_notice_and_pending_prompt_visible() {
+    let _lock = viewport_snapshot_test_lock();
+    let state = TestState {
+        display_messages: vec![DisplayMessage::user("working prompt")],
+        status: ProcessingStatus::Streaming,
+        status_notice: Some("notice sentinel".into()),
+        pending_soft_interrupts: vec!["pending sentinel".into()],
+        input: "draft sentinel".into(),
+        suppress_info_widgets: true,
+        ..Default::default()
+    };
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(52, 10)).unwrap();
+    terminal.draw(|frame| draw_inner(frame, &state)).unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    for sentinel in [
+        "working prompt",
+        "notice sentinel",
+        "pending sentinel",
+        "draft sentinel",
+    ] {
+        assert!(text.contains(sentinel), "missing {sentinel}: {text}");
+    }
+}
+
+#[test]
+fn scrollback_explains_how_to_return_to_the_live_tail() {
+    let _lock = viewport_snapshot_test_lock();
+    let mut state = TestState {
+        display_messages: (0..24)
+            .map(|n| DisplayMessage::assistant(format!("Transcript entry {n}")))
+            .collect(),
+        auto_scroll_paused: true,
+        chat_native_scrollbar: true,
+        suppress_info_widgets: true,
+        ..Default::default()
+    };
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    for paused in [true, false] {
+        state.auto_scroll_paused = paused;
+        terminal.draw(|frame| draw_inner(frame, &state)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let status = last_status_area().expect("status area");
+        let text: String = (status.x..status.right())
+            .map(|x| buffer[(x, status.y)].symbol())
+            .collect();
+        assert_eq!(text.contains("PgDn toward latest"), paused, "{text}");
+    }
+}
+
+#[test]
+fn idle_status_keeps_context_visible_without_a_facts_column() {
+    let _lock = viewport_snapshot_test_lock();
+    let state = TestState {
+        display_messages: vec![DisplayMessage::user("check context")],
+        current_context_tokens: Some(1_200),
+        suppress_info_widgets: true,
+        ..Default::default()
+    };
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+    terminal.draw(|frame| draw_inner(frame, &state)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let status = last_status_area().expect("status area");
+    let text: String = (status.x..status.right())
+        .map(|x| buffer[(x, status.y)].symbol())
+        .collect();
+    assert!(text.contains("ctx="), "{text}");
 }
 
 #[test]

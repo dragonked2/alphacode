@@ -2436,10 +2436,14 @@ mod responsive_render_tests {
     fn empty_search_has_actionable_feedback() {
         let mut picker = SessionPicker::loading();
         picker.loading_message = None;
+        picker.filter_mode = SessionFilterMode::Active;
+        picker.search_active = true;
         picker.search_query = "missing".to_string();
-        let rows = draw(&mut picker, 60, 15);
+        let rows = draw(&mut picker, 32, 15);
         assert!(rows.iter().any(|row| row.contains("No matching sessions")));
         assert!(rows.iter().any(|row| row.contains("Edit or clear")));
+        assert!(rows.last().unwrap().contains("Esc clear"));
+        assert!(!rows.iter().any(|row| row.contains("Esc close")));
     }
 
     #[test]

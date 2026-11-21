@@ -137,6 +137,19 @@ fn composer_review_collapsed_interior_does_not_publish_a_cursor() {
 }
 
 #[test]
+fn compact_empty_composer_shows_command_and_file_discovery() {
+    let _lock = viewport_snapshot_test_lock();
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut terminal = Terminal::new(TestBackend::new(50, 3)).unwrap();
+    let state = TestState::default();
+    terminal.draw(|frame| {
+        input_ui::draw_input(frame, &state, frame.area(), 1, &mut None);
+    }).unwrap();
+    let footer: String = (0..50).map(|x| terminal.backend().buffer()[(x, 2)].symbol()).collect();
+    assert!(footer.contains("/ commands") && footer.contains("@ files"), "{footer}");
+}
+
+#[test]
 fn composer_mouse_mapping_tracks_the_visible_draft_not_the_tail() {
     let _lock = viewport_snapshot_test_lock();
     let input = (1..=24)
@@ -181,27 +194,33 @@ fn composer_mouse_mapping_does_not_reserve_a_hidden_hint_on_short_windows() {
 }
 
 #[test]
-fn conversation_banner_preserves_its_size_during_and_after_chat() {
+fn conversation_header_reclaims_rows_and_keeps_identity_visible() {
     let idle = TestState::default();
     let welcome = header::conversation_banner_height(&idle, 120, 45);
     assert!(welcome > 1);
     let mut working = TestState {
         status: ProcessingStatus::Streaming,
         display_messages: vec![DisplayMessage::user("hello")],
+        provider_name: Some("Test Provider".into()),
+        provider_model: Some("gpt-5.2".into()),
+        working_dir: Some("C:/projects/世界-workspace".into()),
         ..Default::default()
     };
-    assert_eq!(header::conversation_banner_height(&working, 120, 45), welcome);
+    let rows = header::conversation_banner_height(&working, 120, 45);
+    assert!(rows < welcome);
+    assert_eq!(rows, 2);
     working.status = ProcessingStatus::Idle;
-    assert_eq!(header::conversation_banner_height(&working, 120, 45), welcome);
-    assert_eq!(header::conversation_banner_height(&working, 40, 10), 0);
+    assert_eq!(header::conversation_banner_height(&working, 120, 45), rows);
+    assert_eq!(header::conversation_banner_height(&working, 40, 10), 1);
     use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
-    let mut terminal = Terminal::new(TestBackend::new(120, welcome)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, rows)).unwrap();
     terminal.draw(|frame| {
-        let lines = header::build_banner_band_lines(&working, 120, welcome);
+        let lines = header::build_banner_band_lines(&working, 120, rows);
         frame.render_widget(Paragraph::new(lines), frame.area());
     }).unwrap();
     let rendered: String = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
-    assert!(rendered.contains(crate::alphacode_brand::WORDMARK_BLOCK[0].trim()));
+    assert!(rendered.contains("GPT-5.2") && rendered.contains("Test Provider"), "{rendered}");
+    assert!(rendered.contains("-workspace"), "{rendered}");
     export_composer_review_frame(terminal.backend().buffer(), "conversation-banner-active");
 }
 

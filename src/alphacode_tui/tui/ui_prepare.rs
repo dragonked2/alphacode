@@ -857,8 +857,11 @@ fn prepare_messages_inner(
     include_header: bool,
 ) -> PreparedChatFrame {
     let header_start = Instant::now();
-    // Keep the session details while omitting the separately pinned wordmark.
-    let header_prepared = prepare_header_cached(app, width, include_header);
+    let header_prepared = if !include_header && header::conversation_is_active(app) {
+        Arc::new(empty_prepared_messages())
+    } else {
+        prepare_header_cached(app, width, include_header)
+    };
     let header_ms = header_start.elapsed().as_secs_f64() * 1000.0;
 
     let body_start = Instant::now();

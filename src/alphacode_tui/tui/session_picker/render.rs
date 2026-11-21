@@ -487,6 +487,7 @@ impl SessionPicker {
                 )])),
             ]
         } else if self.items.is_empty()
+            && self.search_query.is_empty()
             && self.filter_mode == crate::alphacode_tui_session_picker::SessionFilterMode::Active
         {
             vec![
@@ -688,26 +689,48 @@ impl SessionPicker {
 
         title_parts.push(Span::styled(" ", Style::default()));
 
-        let mut help = if self.loading_message.is_some() {
-            " Esc cancel ".to_string()
-        } else if self.search_active {
-            " Type to filter · ↑↓ navigate · Esc close ".to_string()
-        } else if area.width < 36 {
-            " Enter open · / search · q close ".to_string()
-        } else if area.width < 60 {
-            " Enter open · ↑↓ select · / search · Tab preview · q close ".to_string()
-        } else {
-            match crate::config::config().keybindings.session_picker_enter {
-                crate::config::SessionPickerResumeAction::CurrentTerminal => {
-                    " Enter in place · / search · Space select · Ctrl+Enter new terminal · d debug · h/l focus · ↑↓ · q ".to_string()
-                }
-                crate::config::SessionPickerResumeAction::NewTerminal => {
-                    " Enter new terminal · / search · Space select · Ctrl+Enter in place · d debug · h/l focus · ↑↓ · q ".to_string()
-                }
+        let (enter, alternate) = match crate::config::config().keybindings.session_picker_enter {
+            crate::config::SessionPickerResumeAction::CurrentTerminal => {
+                ("Enter resume here", "Ctrl+Enter new terminal")
+            }
+            crate::config::SessionPickerResumeAction::NewTerminal => {
+                ("Enter new terminal", "Ctrl+Enter resume here")
             }
         };
-        if self.selected_live_claude_target().is_some() && !self.search_active {
-            help = format!(" T take over live Claude ·{}", help);
+        let actions: &[&str] = if self.loading_message.is_some() {
+            &["Esc cancel"]
+        } else if self.search_active && self.visible_sessions.is_empty() {
+            &["Esc clear", "Type to filter"]
+        } else if self.search_active {
+            &[enter, "Esc clear", "↑↓ select"]
+        } else if self.visible_sessions.is_empty() {
+            &["/ search", "s filter", "q close"]
+        } else if self.selected_live_claude_target().is_some() {
+            &[enter, "T take over", "/ search", "Tab preview", "q close"]
+        } else {
+            &[
+                enter,
+                "/ search",
+                "Tab preview",
+                "q close",
+                "Space select",
+                alternate,
+                "d debug",
+            ]
+        };
+        // Border titles are clipped by the widget. Fit complete action labels
+        // inside the corners and keep the next usable key visible.
+        let width = usize::from(area.width.saturating_sub(2));
+        let mut help = String::new();
+        for action in actions {
+            let gap = if help.is_empty() { " " } else { " · " };
+            if help.width() + gap.width() + action.width() < width {
+                help.push_str(gap);
+                help.push_str(action);
+            }
+        }
+        if !help.is_empty() {
+            help.push(' ');
         }
 
         let border_dim = role_color(Role::PanelBorderMuted);

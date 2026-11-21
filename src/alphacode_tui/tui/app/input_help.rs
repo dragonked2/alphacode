@@ -196,7 +196,7 @@ impl App {
                 "/show-alphagrep-output\nShow whether full alphagrep search output renders inline in the transcript.\n\n/show-alphagrep-output on\nRender the full alphagrep search results inline beneath each alphagrep call instead of just the one-line summary.\n\n/show-alphagrep-output off\nShow only the compact one-line alphagrep summary."
             }
             "tool-call-details" => {
-                "/tool-call-details\nShow whether the dimmed technical detail (command, path, args) renders next to the model-provided intent on tool rows.\n\n/tool-call-details on\nShow the technical detail after the intent, e.g. `bash · Run tests · $ cargo test`.\n\n/tool-call-details off\nShow only the intent on tool rows that have one. Rows without an intent still show the technical detail, and error summaries always render."
+                "/tool-call-details\nCheck whether tool output previews are enabled.\n\n/tool-call-details on\nShow commands, paths, and bounded output previews.\n\n/tool-call-details off\nKeep tool rows compact. Shell failures still show a short diagnostic preview."
             }
             "auth" | "login" => {
                 "/auth\nShow authentication status for all providers.\n\n/login\nInteractive provider selection - pick a provider to log into.\n\n/login <provider>\nStart login flow directly for any provider shown by /login or the /login completions.\n\nUse /login alphacode for curated alphacode subscription access via your router, not OpenRouter BYOK."

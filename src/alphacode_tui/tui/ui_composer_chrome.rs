@@ -36,11 +36,11 @@ fn actions(mode: ComposerMode, app: &dyn TuiState) -> Vec<(&'static str, &'stati
         actions.push(("Esc", "stop"));
     }
     actions.push(("F1", "help"));
-    actions.push(("Alt+Enter", "newline"));
     if app.input().is_empty() && !mode.is_shell() {
         actions.push(("/", "commands"));
         actions.push(("@", "files"));
     }
+    actions.push(("Alt+Enter", "newline"));
     actions.push(("Ctrl+R", "history"));
     // One newline affordance, not three. Shift+Enter (kitty keyboard
     // protocol), Alt/Option+Enter, and a trailing `\` then Enter all insert

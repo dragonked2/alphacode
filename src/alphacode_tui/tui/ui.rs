@@ -3348,15 +3348,15 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let mut remaining = chat_area
         .height
         .saturating_sub(input_height + essential_rows);
-    let desired_banner = header::conversation_banner_height(app, chat_area.width, chat_area.height);
-    let banner_height = desired_banner.min(remaining.saturating_sub(picker_reserve));
-    remaining -= banner_height;
     let inline_block_height = requested_inline_height.min(remaining);
     remaining -= inline_block_height;
     let notification_height = u16::from(app.has_notification()).min(remaining);
     remaining -= notification_height;
     let pending_height = requested_pending_height.min(remaining);
     remaining -= pending_height;
+    let desired_banner = header::conversation_banner_height(app, chat_area.width, chat_area.height);
+    let banner_height = desired_banner.min(remaining);
+    remaining -= banner_height;
     let swarm_strip_height = requested_swarm_height.min(remaining);
     remaining -= swarm_strip_height;
     let inline_ui_gap_height = u16::from(inline_block_height > 0).min(remaining);
@@ -3394,12 +3394,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         let started = Instant::now();
         let prepared =
             mermaid::with_preferred_aspect_ratio(transcript_mermaid_aspect_ratio, || {
-                // When the banner is pinned above the transcript (see
-                // CHUNK_BANNER) the prepared frame must not bake a second copy
-                // into its scrollable line total. On a terminal too small for
-                // the band there is nothing pinned, so fall back to the
-                // in-scroll header the transcript has always carried.
-                let include_header = banner_height == 0;
+                // A conversation's identity lives above the transcript. Keep
+                // even a very short split free of scrollable header rows.
+                let include_header = banner_height == 0 && !header::conversation_is_active(app);
                 if include_header {
                     prepare::prepare_messages(app, width, chat_area.height)
                 } else {

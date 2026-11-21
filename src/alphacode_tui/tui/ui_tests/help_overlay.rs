@@ -58,6 +58,14 @@ fn rendered_command_entries(rows: &[String]) -> Vec<String> {
 }
 
 #[test]
+fn help_explains_tool_output_previews_and_tail_following() {
+    let _lock = viewport_snapshot_test_lock();
+    let text = rendered_help_rows().join("\n");
+    assert!(text.contains("/tool-call-details on / off"));
+    assert!(text.contains("PgDn to the bottom resumes following"));
+}
+
+#[test]
 fn help_overlay_lists_each_command_syntax_once() {
     let _lock = viewport_snapshot_test_lock();
     let rows = rendered_help_rows();

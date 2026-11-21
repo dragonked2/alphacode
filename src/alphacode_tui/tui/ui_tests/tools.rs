@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn shell_output_keeps_failure_tail_and_indicates_folded_success() {
+    tools_ui::tests_tool_call_details_override::set(false);
+    let mut msg = DisplayMessage {
+        role: "tool".into(),
+        content: "test log\nprogress 2\nprogress 3\nprogress 4\nprogress 5\nmissing fixture\n\nExit code: 2\nHint: Check output".into(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "shell-preview".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "cargo test"}),
+            intent: Some("Check tests".into()),
+            thought_signature: None,
+        }),
+    };
+    let render = |msg: &DisplayMessage| {
+        render_tool_message(msg, 100, crate::config::DiffDisplayMode::Off)
+            .iter()
+            .map(extract_line_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let failed = render(&msg);
+    for marker in ["exit 2", "cargo test", "missing fixture", "2 more lines"] {
+        assert!(failed.contains(marker), "missing {marker}: {failed}");
+    }
+    assert!(!failed.contains("test log"), "{failed}");
+
+    msg.content = (0..70).map(|n| format!("result {n}\n")).collect();
+    let folded = render(&msg);
+    assert!(
+        folded.contains("output hidden") && !folded.contains("result 0"),
+        "{folded}"
+    );
+    tools_ui::tests_tool_call_details_override::set(true);
+    let expanded = render(&msg);
+    tools_ui::tests_tool_call_details_override::set(false);
+    assert!(
+        expanded.contains("result 0") && expanded.contains("6 more lines"),
+        "{expanded}"
+    );
+}
+
+#[test]
 fn test_summarize_apply_patch_input_ignores_begin_marker() {
     let patch = "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-old\n+new\n*** End Patch\n";
     let summary = tools_ui::summarize_apply_patch_input(patch);
