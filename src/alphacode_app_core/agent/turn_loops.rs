@@ -97,10 +97,6 @@ impl Agent {
         let mut incomplete_continuations = 0u32;
         let mut empty_post_tool_continuations = 0u32;
         let mut security_report_corrections = 0u32;
-        // Automatic alternate-route attempts after a model-side refusal stop
-        // (bounded by Agent::MAX_REFUSAL_ROTATIONS_PER_TURN so a policy that
-        // keeps declining cannot cycle the whole pool in one request).
-        let mut refusal_rotations = 0u32;
         // Counter for retries scheduled after a transient provider / transport
         // error (5xx, 429 with rate-limit words, network EOF, ...). Bounded
         // by Agent::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS so a permanently
@@ -1062,11 +1058,10 @@ impl Agent {
 
             // The stream has completed successfully only after MessageEnd.
             // `complete_split` returns a receiver before the HTTP request has
-            // finished, so resetting retry state or clearing quarantine when
+            // finished, so resetting retry state when
             // that receiver is merely opened hides later stream failures.
             if saw_message_end {
                 context_limit_retries = 0;
-                self.note_free_pool_model_healthy();
             }
 
             let api_elapsed = api_start.elapsed();
@@ -1243,19 +1238,6 @@ impl Agent {
                     continue;
                 }
                 // A model-side refusal stop does not have to dead-end the turn.
-                // Give it one automatic alternate-route attempt (the in-turn
-                // version of the manual Ctrl+Y reroute; free pool only, so no
-                // paid route is ever switched to without the user asking)
-                // before the guardrail notice surfaces.
-                if !self.is_graceful_shutdown()
-                    && Self::is_guardrail_stop_reason(stop_reason.as_deref())
-                    && refusal_rotations < Self::MAX_REFUSAL_ROTATIONS_PER_TURN
-                    && self.maybe_rotate_free_pool_after_refusal().is_some()
-                {
-                    refusal_rotations += 1;
-                    logging::warn("Refusal stop: rotated to an alternate free route for this turn");
-                    continue;
-                }
                 if let Some(mission) = open_mission
                     && !visible_text_is_empty
                     && !Self::is_guardrail_stop_reason(stop_reason.as_deref())

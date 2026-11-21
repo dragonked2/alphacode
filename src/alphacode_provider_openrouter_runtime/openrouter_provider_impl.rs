@@ -43,7 +43,11 @@ impl Provider for OpenRouterProvider {
         system: &str,
         _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
-        let model = self.model.read().await.clone();
+        let fixed_model = self.fixed_profile_model();
+        let model = match fixed_model {
+            Some(model) => model.to_owned(),
+            None => self.model.read().await.clone(),
+        };
         let reasoning_effort = self.reasoning_effort();
         let thinking_override = Self::thinking_override();
         // Moonshot's dedicated Kimi coding endpoint enables thinking server-side
@@ -260,11 +264,15 @@ impl Provider for OpenRouterProvider {
         // Merge user-configured extra request-body fields last so they can
         // satisfy non-standard backend requirements (e.g. NVIDIA NIM
         // DeepSeek-V4 `chat_template_kwargs`) and intentionally override any
-        // alphacode-generated field with the same key (issue #341).
+        // generated field with the same key (issue #341), except for model
+        // selection on a fixed-model profile.
         if let Some(extra) = self.extra_body.as_ref()
             && let Some(request_obj) = request.as_object_mut()
         {
             for (key, value) in extra {
+                if fixed_model.is_some() && matches!(key.as_str(), "model" | "models") {
+                    continue;
+                }
                 request_obj.insert(key.clone(), value.clone());
             }
         }
@@ -423,6 +431,9 @@ impl Provider for OpenRouterProvider {
     }
 
     fn model(&self) -> String {
+        if let Some(model) = self.fixed_profile_model() {
+            return model.to_owned();
+        }
         self.model
             .try_read()
             .map(|m| m.clone())
@@ -464,11 +475,13 @@ impl Provider for OpenRouterProvider {
     }
 
     fn set_model(&self, model: &str) -> Result<()> {
-        // OpenRouter accepts any model ID - validation happens at API call time
-        // This allows using any model without needing to pre-fetch the list
         let trimmed = model.trim();
         if trimmed.is_empty() {
             anyhow::bail!("OpenRouter/OpenAI-compatible model cannot be empty");
+        }
+        // Old sessions can still name a retired model on this profile.
+        if self.fixed_profile_model().is_some() {
+            return Ok(());
         }
 
         // Session restore persists the model as `<provider-key>:<model>` so the
@@ -629,9 +642,10 @@ impl Provider for OpenRouterProvider {
     }
 
     fn available_models_display(&self) -> Vec<String> {
-        let finalize = |models: Vec<String>| {
-            self.filter_profile_chat_supported_models(self.augment_free_pool_models(models))
-        };
+        if let Some(model) = self.fixed_profile_model() {
+            return vec![model.to_owned()];
+        }
+        let finalize = |models: Vec<String>| self.filter_profile_chat_supported_models(models);
         let with_current_model = |mut models: Vec<String>| {
             let current = self.model();
             if !current.trim().is_empty() && !models.iter().any(|model| model == &current) {
@@ -985,6 +999,12 @@ impl Provider for OpenRouterProvider {
 }
 
 impl OpenRouterProvider {
+    fn fixed_profile_model(&self) -> Option<&'static str> {
+        (self.profile_id.as_deref()
+            == Some(crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID))
+        .then(crate::alphacode_provider_metadata::route_cloak::leaked_free_route_default_model)
+    }
+
     /// The disk-cache namespace this provider's *foreground* catalog reads and
     /// writes should use.
     ///
@@ -999,25 +1019,6 @@ impl OpenRouterProvider {
     /// env-var-driven `cache_path()` semantics.
     pub(crate) fn foreground_cache_namespace(&self) -> Option<String> {
         self.profile_id.clone()
-    }
-
-    /// Alphax Free builds its picker list from the automatic route plus every
-    /// pool member the background discovery refresh has absorbed.
-    ///
-    /// The pool is process-local and discovery lands asynchronously, so a fresh
-    /// session lists the automatic route first and gains member rows once the
-    /// refresh completes. Reopening the picker reads the merged list again, and
-    /// rotation keeps working for members regardless of picker visibility.
-    pub(crate) fn augment_free_pool_models(&self, models: Vec<String>) -> Vec<String> {
-        if self.profile_id.as_deref()
-            != Some(crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID)
-        {
-            return models;
-        }
-        // Alphax Free exposes only the automatic routing alias to the user;
-        // the individual pool members are an internal routing detail and must
-        // not appear in the picker/model list.
-        models
     }
 
     /// The disk cache entry usable for this provider, i.e. its own namespace

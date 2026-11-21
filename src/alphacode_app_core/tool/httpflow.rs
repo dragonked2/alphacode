@@ -667,9 +667,8 @@ impl HttpFlowTool {
             // Detect an actual challenge, not merely delivery through a CDN.
             if Self::detect_bot_protection(status, &body, &response_headers) {
                 return Err(anyhow::anyhow!(
-                    "A likely bot-protection challenge was detected (status {}). This is a tool/target limitation, not a security-test result. \
-                     Do not retry the same request or bypass CAPTCHA/anti-bot controls. If ordinary interactive browsing is explicitly permitted, \
-                     the browser tool may be used once without defeating the challenge; otherwise mark this surface blocked and continue with other in-scope work.",
+                    "Response classified as a likely bot-protection challenge (HTTP {}). \
+                     The requested resource's status remains unverified.",
                     status
                 ));
             }

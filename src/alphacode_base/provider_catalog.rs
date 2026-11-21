@@ -765,14 +765,7 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
             }
         }
         "alphax-free" => {
-            // The full rotation pool, not just the default. The live catalog is
-            // disabled for this profile (the gateway's `/v1/models` returns
-            // mostly-paid rows), so this static list is the only thing that
-            // makes the free models knowable — both for `/model` and for
-            // automatic 429 rotation.
-            for model in crate::alphacode_provider_metadata::curated_free_models() {
-                push(model);
-            }
+            push(route_cloak::leaked_free_route_default_model());
         }
         _ => {}
     }
@@ -936,11 +929,7 @@ pub fn openai_compatible_profile_context_limit(profile_id: &str, model: &str) ->
     let profile_id = profile_id.trim().to_ascii_lowercase();
     let model = model.trim().to_ascii_lowercase();
 
-    // Alphax Free rotation moves a live conversation between free models whose
-    // windows differ by 16x (65K to 1M), and this profile's live catalog is
-    // disabled so nothing upstream can correct a wrong answer. The verified
-    // per-model table has to win, before the generic family classifier, or
-    // compaction would be budgeted against a window the new model does not have.
+    // Use the known context window for Alphax Free before the generic classifier.
     if profile_id == crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID
         && let Some(limit) = crate::alphacode_provider_metadata::free_model_context_limit(&model)
     {
@@ -1017,10 +1006,8 @@ fn apply_openai_compatible_profile_env_impl(
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_PROVIDER_FEATURES", "0");
         // Profiles like alphax-free use a virtual model ID (their routing
         // alias) that only exists on their gateway. Their /v1/models returns
-        // unrelated paid models. Disable the live model catalog for these
-        // profiles — the free rotation pool is served from the curated static
-        // list instead, and refreshed separately (and only for its price
-        // filter).
+        // unrelated models. Alphax Free serves its fixed model from the static
+        // list.
         let disable_model_catalog =
             profile.id == crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID;
         crate::alphacode_core::env::set_var(

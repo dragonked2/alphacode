@@ -122,10 +122,6 @@ impl Agent {
         let mut incomplete_continuations = 0u32;
         let mut empty_post_tool_continuations = 0u32;
         let mut security_report_corrections = 0u32;
-        // Automatic alternate-route attempts after a model-side refusal stop
-        // (bounded by Agent::MAX_REFUSAL_ROTATIONS_PER_TURN so a policy that
-        // keeps declining cannot cycle the whole pool in one request).
-        let mut refusal_rotations = 0u32;
         // Counter for retries scheduled after a transient provider / transport
         // error (5xx, 429 with rate-limit words, network EOF, ...). Bounded
         // by Agent::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS so a permanently
@@ -1390,10 +1386,9 @@ impl Agent {
 
             // `complete_split` only opens the response stream; the model has
             // not served the turn until a successful MessageEnd arrives.
-            // Clear retry state and quarantine only after that point.
+            // Clear retry state only after that point.
             if saw_message_end {
                 context_limit_retries = 0;
-                self.note_free_pool_model_healthy();
             }
 
             let had_tool_calls_before = !tool_calls.is_empty();
@@ -1530,20 +1525,6 @@ impl Agent {
                     continue;
                 }
                 // A model-side refusal stop does not have to dead-end the turn.
-                // Give it one automatic alternate-route attempt (the in-turn
-                // version of the manual Ctrl+Y reroute; free pool only, so no
-                // paid route is ever switched to without the user asking) before
-                // the guardrail notice surfaces.
-                if saw_message_end
-                    && !self.is_graceful_shutdown()
-                    && Self::is_guardrail_stop_reason(stop_reason.as_deref())
-                    && refusal_rotations < Self::MAX_REFUSAL_ROTATIONS_PER_TURN
-                    && self.maybe_rotate_free_pool_after_refusal().is_some()
-                {
-                    refusal_rotations += 1;
-                    logging::warn("Refusal stop: rotated to an alternate free route for this turn");
-                    continue;
-                }
                 match self.handle_streaming_no_tool_calls(
                     stop_reason.as_deref(),
                     &mut incomplete_continuations,
@@ -2320,64 +2301,6 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
-    struct RateLimitedFreeProvider;
-
-    #[async_trait::async_trait]
-    impl crate::alphacode_app_core::provider::Provider for RateLimitedFreeProvider {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _tools: &[ToolDefinition],
-            _system: &str,
-            _resume_session_id: Option<&str>,
-        ) -> anyhow::Result<crate::alphacode_app_core::provider::EventStream> {
-            anyhow::bail!("status: 429 Too Many Requests")
-        }
-
-        fn name(&self) -> &str {
-            "Alphax Free"
-        }
-
-        fn model(&self) -> String {
-            crate::alphacode_provider_metadata::route_cloak::free_route_default_model()
-        }
-
-        fn fork(&self) -> Arc<dyn crate::alphacode_app_core::provider::Provider> {
-            Arc::new(self.clone())
-        }
-    }
-
-    #[test]
-    fn free_rate_limit_recovery_stops_after_one_alternate() {
-        let _pool_lock = super::super::free_pool_rotation::lock_pool_state_for_tests();
-        let _env_lock = crate::storage::lock_test_env();
-        let temp_home = tempfile::tempdir().expect("temporary AlphaCode home");
-        let previous_home = std::env::var_os("ALPHACODE_HOME");
-        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
-        let _restore_home = RestoreAlphacodeHome(previous_home);
-        super::super::free_pool_rotation::absorb_discovered_free_models(vec![
-            "synthetic/unused:free".into(),
-        ]);
-        let mut agent = Agent::new(
-            Arc::new(RateLimitedFreeProvider),
-            crate::alphacode_app_core::tool::Registry::empty(),
-        );
-        let mut attempts = Agent::MAX_FREE_POOL_RATE_LIMIT_RECOVERIES_PER_TURN;
-        assert_eq!(
-            agent
-                .maybe_continue_after_provider_error("status: 429 Too Many Requests", &mut attempts)
-                .expect("recovery decision"),
-            None
-        );
-        assert_eq!(attempts, 2);
-        assert_eq!(
-            super::super::free_pool_rotation::next_free_model("synthetic/unused:free"),
-            None,
-            "the failed alias must remain quarantined"
-        );
-    }
-
     #[test]
     fn ordinary_provider_rate_limit_stops_after_one_recovery() {
         let provider = Arc::new(FailOnceProvider {
@@ -2491,7 +2414,6 @@ mod tests {
     struct RejectedFreeProvider {
         model: Arc<std::sync::Mutex<String>>,
         requests: Arc<std::sync::Mutex<Vec<String>>>,
-        reject_alternate: bool,
     }
 
     #[async_trait::async_trait]
@@ -2503,22 +2425,10 @@ mod tests {
             _system: &str,
             _resume_session_id: Option<&str>,
         ) -> anyhow::Result<crate::alphacode_app_core::provider::EventStream> {
-            let model = self.model();
-            let mut requests = self.requests.lock().unwrap();
-            requests.push(model);
-            if requests.len() == 1 || self.reject_alternate {
-                anyhow::bail!(
-                    "Alphax Free request failed (status: 429 Too Many Requests).\nAlphax Free is rate limited."
-                );
-            }
-            Ok(Box::pin(tokio_stream::iter([
-                Ok(StreamEvent::TextDelta(
-                    "Recovered on the alternate route.".into(),
-                )),
-                Ok(StreamEvent::MessageEnd {
-                    stop_reason: Some("stop".into()),
-                }),
-            ])))
+            self.requests.lock().unwrap().push(self.model());
+            anyhow::bail!(
+                "Alphax Free request failed (status: 429 Too Many Requests).\nAlphax Free is rate limited."
+            );
         }
 
         fn name(&self) -> &str {
@@ -2533,9 +2443,6 @@ mod tests {
             let bare = model
                 .strip_prefix("alphax-free:")
                 .ok_or_else(|| anyhow::anyhow!("recovery left the free profile"))?;
-            anyhow::ensure!(super::super::free_pool_rotation::should_rotate_for_model(
-                bare
-            ));
             *self.model.lock().unwrap() = bare.to_string();
             Ok(())
         }
@@ -2560,7 +2467,6 @@ mod tests {
         let provider = Arc::new(RejectedFreeProvider {
             model: Arc::new(std::sync::Mutex::new(alias.clone())),
             requests: Arc::default(),
-            reject_alternate: false,
         });
         let mut agent = Agent::new(
             provider.clone(),

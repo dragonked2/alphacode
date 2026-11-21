@@ -213,13 +213,6 @@ impl Agent {
     // from this file, so a future change to the value lives in one place.
     /// Turn-level recovery budget for errors that the provider did not retry.
     pub(crate) const MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS: u32 = 2;
-    /// Keep free-pool failover bounded: every retry resends the full prompt,
-    /// and rate-limit retries are especially unlikely to help the same shared
-    /// gateway account. A rate-limited Alphax Free turn gets one alternate
-    /// route; other transient free-route failures get at most two recoveries.
-    pub(crate) const MAX_FREE_POOL_RATE_LIMIT_RECOVERIES_PER_TURN: u32 = 1;
-    pub(crate) const MAX_FREE_POOL_TRANSIENT_RECOVERIES_PER_TURN: u32 = 2;
-
     pub(crate) fn maybe_continue_empty_post_tool_response(
         &mut self,
         visible_text_empty: bool,
@@ -244,13 +237,6 @@ impl Agent {
             attempts,
             Self::MAX_EMPTY_POST_TOOL_CONTINUATION_ATTEMPTS
         ));
-        // A free model that answers with nothing is usually a silently-broken
-        // endpoint, and re-asking the same one tends to return nothing again.
-        // Rotate after the first empty response, before spending a continuation
-        // message on a model that is not going to use it.
-        if self.maybe_rotate_free_pool_after_empty_response().is_some() {
-            return Ok(true);
-        }
         self.add_message_with_display_role(
             Role::User,
             vec![ContentBlock::Text {
@@ -440,64 +426,12 @@ impl Agent {
         error: &str,
         attempts: &mut u32,
     ) -> Result<Option<u64>> {
-        use crate::alphacode_provider_core::error_classification::{
-            is_alphax_free_bad_request, is_context_limit_error,
-        };
-
-        if crate::alphacode_provider_core::retry::stream_retry_exhausted(error) {
-            return Ok(None);
-        }
-        if is_alphax_free_bad_request(error) && !is_context_limit_error(error) {
-            // The gateway redacts its upstream reason. Try a different free
-            // route once before giving up. Keep the same rejected route out of
-            // recovery and let explicit context errors reach compaction.
-            if *attempts == 0
-                && let Some(delay) = self.try_free_pool_rotation(
-                    super::free_pool_rotation::RotationTrigger::RejectedRequest,
-                )
-            {
-                *attempts += 1;
-                return Ok(Some(delay));
-            }
-            return Ok(None);
-        }
-        if !Self::is_transient_provider_error(error) {
-            // A hard 4xx is normally the end of the turn. One class deserves a
-            // bounded rescue: rejection text that reads as *model-side policy*
-            // ("data policy", "moderation", "content policy", "flagged")
-            // rather than a malformed request. Retrying the same request on
-            // the same upstream fails identically, but another upstream in the
-            // pool applies its own moderation and often serves the identical
-            // payload fine. The rotation is intrinsically bounded: the refusing
-            // model is quarantined and `next_free_model` returns `None` after
-            // at most one full sweep, so this cannot loop.
-            if is_content_policy_rejection(error) {
-                logging::warn(&format!(
-                    "Provider rejected the request under its content policy; attempting free-pool rotation: {}",
-                    error.lines().next().unwrap_or(error).trim()
-                ));
-                if let Some(delay) = self.maybe_rotate_free_pool_model(error) {
-                    return Ok(Some(delay));
-                }
-            }
-            // A routing 404 on the free pool ("the gateway has no route for
-            // this model id") is not a transient blip, but dead-ending the
-            // turn is also wrong: the pool usually holds models that *are*
-            // currently served. Rotate to the next healthy member and retry
-            // immediately — the unroutable id quarantines for a long window so
-            // this cannot ping-pong, and the rotation is bounded by one pool
-            // sweep (session stuck 404 → 30-min quarantine period).
-            if classify_rotation_trigger(error)
-                == super::free_pool_rotation::RotationTrigger::Unroutable
-            {
-                logging::warn(&format!(
-                    "Free gateway has no route for this model id; attempting free-pool rotation: {}",
-                    error.lines().next().unwrap_or(error).trim()
-                ));
-                if let Some(delay) = self.maybe_rotate_free_pool_model(error) {
-                    return Ok(Some(delay));
-                }
-            }
+        if crate::alphacode_provider_core::retry::stream_retry_exhausted(error)
+            || crate::alphacode_provider_core::error_classification::is_alphax_free_bad_request(
+                error,
+            )
+            || !Self::is_transient_provider_error(error)
+        {
             return Ok(None);
         }
         if *attempts >= Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS {
@@ -521,56 +455,18 @@ impl Agent {
             );
             return Ok(None);
         }
-        let is_free_pool_model = super::free_pool_rotation::should_rotate_for_provider(
-            &self.provider.display_name(),
-            &self.provider.model(),
-        );
-
-        // A free-pool fallback is a complete new model request with the full
-        // conversation attached. Bound that work separately from paid/provider
-        // transient retries so an upstream 429 cannot fan out into six large
-        // requests in one user turn.
-        if is_free_pool_model {
-            let recovery_limit = if is_rate_limit {
-                Self::MAX_FREE_POOL_RATE_LIMIT_RECOVERIES_PER_TURN
-            } else {
-                Self::MAX_FREE_POOL_TRANSIENT_RECOVERIES_PER_TURN
-            };
-            if attempt > recovery_limit {
-                logging::warn(&format!(
-                    "Alphax Free automatic recovery budget exhausted after {} failed requests",
-                    attempt
-                ));
-                // Remember the last failed route without sending another full
-                // request. The recovery limit must remain a real per-turn cap.
-                super::free_pool_rotation::quarantine_model(
-                    &self.provider.model(),
-                    classify_rotation_trigger(error),
-                );
-                return Ok(None);
-            }
+        // An Alphax Free turn stops when its route is rate limited.
+        if is_rate_limit
+            && self
+                .provider
+                .display_name()
+                .eq_ignore_ascii_case(crate::alphacode_provider_metadata::ALPHAX_FREE_DISPLAY_NAME)
+        {
+            return Ok(None);
         }
         // Replaying a throttled prompt repeatedly can prolong account pressure.
         if is_rate_limit && attempt > 1 {
             logging::warn("Provider rate-limit retry budget exhausted");
-            return Ok(None);
-        }
-
-        // Free-pool rotation, before the sleep. For a rate-limited free model
-        // the backoff below is the wrong remedy: it re-sends the same request
-        // to the same throttled upstream. Switching to another free model is
-        // both faster and more likely to succeed, so it is tried first and the
-        // wait is skipped entirely.
-        if let Some(delay) = self.maybe_rotate_free_pool_model(error) {
-            return Ok(Some(delay));
-        }
-
-        // Never resend an identical rate-limited free-pool request when there
-        // is no alternate route available.
-        if is_rate_limit && is_free_pool_model {
-            logging::warn(
-                "Alphax Free has no alternate route available; stopping automatic rate-limit retries",
-            );
             return Ok(None);
         }
 
@@ -605,132 +501,6 @@ impl Agent {
             self.session.save()?;
         }
         Ok(Some(delay))
-    }
-
-    /// Quarantine the current concrete free-pool model and switch to another
-    /// free one when recovery allows it. The automatic Alphax Free alias is
-    /// intentionally pinned so an error cannot rewrite the user's selection.
-    ///
-    /// Returns `Some(0)` when a model switch happened, so the caller retries
-    /// immediately. Returns `None` when rotation does not apply, leaving the
-    /// caller on its original backoff path. `Some(delay)` with a non-zero delay
-    /// is never returned: there is no reason to wait once a fresh backend is
-    /// available.
-    ///
-    /// Failure to switch is deliberately not an error. A missing key, a
-    /// provider that rejects the model id, or an exhausted pool must all
-    /// degrade to the pre-existing retry behaviour rather than surface a new
-    /// error the user has never seen.
-    pub(crate) fn maybe_rotate_free_pool_model(&mut self, error: &str) -> Option<u64> {
-        self.try_free_pool_rotation(classify_rotation_trigger(error))
-    }
-
-    /// Rotate on an empty response, which is a distinct trigger from a
-    /// transport error: the model answered, it just had nothing to say.
-    ///
-    /// Called from the empty-post-tool path so a silently-broken free endpoint
-    /// is cycled out instead of consuming the whole continuation budget
-    /// re-asking a model that has already proven useless this turn.
-    pub(crate) fn maybe_rotate_free_pool_after_empty_response(&mut self) -> Option<u64> {
-        self.try_free_pool_rotation(super::free_pool_rotation::RotationTrigger::EmptyResponse)
-    }
-
-    /// Refusal staleness budget per turn: unlike rate limits (recover by
-    /// waiting) or empty responses (recover by re-asking), a refusal is
-    /// model-policy dependent — one automatic switch to a fresh upstream is
-    /// worth trying, several are not.
-    pub(crate) const MAX_REFUSAL_ROTATIONS_PER_TURN: u32 = 1;
-
-    /// Rotate to another pool member after a model-side guardrail/refusal stop.
-    ///
-    /// This is the automatic in-turn version of the reroute the guardrail
-    /// notice offers: instead of ending the turn so the user can press
-    /// Ctrl+Y and resend, an Alphax Free session immediately retries on the
-    /// next free upstream. The refusing model quarantines briefly
-    /// ([`super::free_pool_rotation::RotationTrigger::Refusal`]) so the retry
-    /// cannot bounce back to the same policy.
-    ///
-    /// Returns `Some(0)` when a model switch happened (caller re-issues the
-    /// request immediately), `None` when rotation does not apply — a paid
-    /// provider, an exhausted pool, or a refused switch degrades to the
-    /// existing end-of-turn guardrail notice rather than a new error.
-    pub(crate) fn maybe_rotate_free_pool_after_refusal(&mut self) -> Option<u64> {
-        self.try_free_pool_rotation(super::free_pool_rotation::RotationTrigger::Refusal)
-    }
-
-    fn try_free_pool_rotation(
-        &mut self,
-        trigger: super::free_pool_rotation::RotationTrigger,
-    ) -> Option<u64> {
-        let current = self.provider.model();
-        if !super::free_pool_rotation::should_implicitly_rotate_for_provider(
-            &self.provider.display_name(),
-            &current,
-        ) {
-            if super::free_pool_rotation::should_rotate_for_provider(
-                &self.provider.display_name(),
-                &current,
-            ) && super::free_pool_rotation::is_automatic_free_route(&current)
-            {
-                logging::info(
-                    "Alphax Free automatic route is pinned; leaving the selected model unchanged",
-                );
-            }
-            return None;
-        }
-
-        super::free_pool_rotation::quarantine_model(&current, trigger);
-        let next = super::free_pool_rotation::next_free_model(&current)?;
-        if next == current {
-            return None;
-        }
-
-        let profile = crate::alphacode_provider_metadata::free_pool::ALPHAX_FREE_PROFILE_ID;
-        // A bare slash-separated model ID can route through generic OpenRouter.
-        // Keep automatic recovery on the same configured free profile.
-        if let Err(err) = self.set_model_from_auth(&format!("{profile}:{next}")) {
-            // A refused switch is not the user's problem to solve right now.
-            // Undo the quarantine so the original model can be retried on the
-            // normal backoff schedule instead of being written off.
-            super::free_pool_rotation::clear_quarantine(&current);
-            logging::warn(&format!(
-                "Free-pool rotation could not switch to '{next}': {err}; \
-                 falling back to retry backoff on '{current}'"
-            ));
-            return None;
-        }
-
-        let notice = super::free_pool_rotation::RotationNotice {
-            from_model: current,
-            to_model: next,
-            trigger,
-        };
-        logging::warn(&format!(
-            "Free-pool rotation: {} -> {} after {:?}",
-            notice.from_model, notice.to_model, notice.trigger
-        ));
-        // The rotation is reported through the normal status-detail channel in
-        // the streaming path; the terminal path prints directly. Either way the
-        // user sees "Alphax Free is rate limited; switching…" and never an
-        // upstream model id.
-        self.last_status_detail = Some(notice.status_line());
-        crate::terminal_println!("\n{}", notice.status_line());
-        Some(0)
-    }
-
-    /// Put a model back in service after it serves a turn successfully.
-    ///
-    /// Without this a quarantined model would stay skipped for the rest of the
-    /// session even after its rate limit reset, which silently shrinks the
-    /// pool the user has available to fall back on.
-    pub(crate) fn note_free_pool_model_healthy(&self) {
-        let model = self.provider.model();
-        if super::free_pool_rotation::should_rotate_for_provider(
-            &self.provider.display_name(),
-            &model,
-        ) {
-            super::free_pool_rotation::clear_quarantine(&model);
-        }
     }
 
     fn continuation_prompt_for_stop_reason(stop_reason: &str) -> String {
@@ -927,41 +697,6 @@ pub(crate) fn extract_retry_after_secs(error: &str) -> Option<u64> {
     crate::alphacode_provider_core::retry_after::retry_after_seconds_from_text(error)
 }
 
-/// Classify a failure for free-pool quarantine purposes.
-///
-/// The distinction that matters is how long the upstream is likely to be
-/// unusable. A 429 is an explicit, usually-sustained limit and the gateway's
-/// own message can name a daily cap, so it earns the long quarantine. Everything
-/// else transient is an upstream blip that clears in seconds.
-pub(crate) fn classify_rotation_trigger(error: &str) -> super::free_pool_rotation::RotationTrigger {
-    let lower = error.to_ascii_lowercase();
-    // Routing 404 is checked first and is deliberately narrow. A generic
-    // `contains("404")` would also catch a 404 from a proxy or a bad base URL,
-    // which are not per-model facts and must keep the short transient window —
-    // the model is fine, the request is wrong.
-    if is_unroutable_model_error(&lower) {
-        return super::free_pool_rotation::RotationTrigger::Unroutable;
-    }
-    // A content-policy rejection is model-policy dependent, so it gets the
-    // refusal quarantine window rather than the short transient one —
-    // whichever upstream applies that policy will reject the same payload on
-    // the next attempt too.
-    if is_content_policy_rejection(&lower) {
-        return super::free_pool_rotation::RotationTrigger::Refusal;
-    }
-    let rate_limited = contains_429_with_rate_limit(&lower)
-        || lower.contains("too many requests")
-        || lower.contains("rate limit")
-        || lower.contains("rate_limit")
-        || lower.contains("daily limit")
-        || lower.contains("quota");
-    if rate_limited {
-        super::free_pool_rotation::RotationTrigger::RateLimited
-    } else {
-        super::free_pool_rotation::RotationTrigger::Transient
-    }
-}
-
 /// Does this error read as a provider/moderator content-policy rejection of
 /// the *message*, rather than a malformed request?
 ///
@@ -1027,7 +762,7 @@ pub(crate) fn annotate_final_turn_error(error: anyhow::Error, error_text: &str) 
     if is_content_policy_rejection(error_text) {
         push_bad_request_toast_if_applicable(error_text, true);
         return anyhow::anyhow!(
-            "The upstream model refused this request under its content policy.\nAlphacode has already tried the other upstreams available to this session.\nWhat helps: switch to a different model (Ctrl+O or `/model`), or rephrase the request.\n\nDiagnostic detail:\n{error_text}"
+            "The upstream model refused this request under its content policy.\nWhat helps: switch to a different model (Ctrl+O or `/model`), or rephrase the request.\n\nDiagnostic detail:\n{error_text}"
         );
     }
     error
@@ -1063,7 +798,7 @@ pub(crate) fn explain_hard_provider_error(error: &str) -> Option<String> {
     let explanation = match status {
         400 => {
             if is_content_policy_rejection(error) {
-                "The upstream model refused this request under its content policy (HTTP 400).\nAlphacode has already tried the other upstreams available to this session.\nWhat helps: switch to a different model (Ctrl+O or `/model`), or rephrase the request. Diagnostic detail logged above.".to_string()
+                "The upstream model refused this request under its content policy (HTTP 400).\nWhat helps: switch to a different model (Ctrl+O or `/model`), or rephrase the request. Diagnostic detail logged above.".to_string()
             } else if crate::alphacode_provider_core::error_classification::is_context_limit_error(error) {
                 "HTTP 400: this payload is larger than the model's context window.\nRun `/compact` to shrink the session history, or /doctor to check the model's context size.".to_string()
             } else if crate::alphacode_provider_core::error_classification::is_alphax_free_bad_request(error) {
@@ -1107,31 +842,6 @@ fn explain_unauthorized(error: &str, lower: &str) -> String {
     }
     let _ = error;
     "HTTP 401 (unauthorized): the API key was rejected, expired, or is missing. Run `/login` or `/keys` to refresh credentials.".to_string()
-}
-
-/// Does this error mean the gateway has no route for the model id itself?
-///
-/// Requires the routing vocabulary, not just a 404 status, because a 404 can
-/// equally mean a wrong base URL — and quarantining the model for that would
-/// hide a configuration bug behind a model that is actually fine.
-fn is_unroutable_model_error(lower: &str) -> bool {
-    if !lower.contains("404") {
-        return false;
-    }
-    lower.contains("no endpoints found")
-        || lower.contains("no provider or endpoint")
-        || lower.contains("no endpoint found")
-        || lower.contains("every candidate endpoint was removed")
-        // AlphaCode's own sanitized vocabulary for a free-gateway routing 404:
-        // the upstream body was deliberately stripped before this text reached
-        // recovery, so the product-level phrase must carry the signal.
-        || lower.contains("could not find an available route")
-        || lower.contains("no route for this model id")
-        // AlphaCode's own sanitizer for the free gateway strips the upstream
-        // body but keeps the status; the only 404s it sanitizes are chat/
-        // responses route misses on the bundled gateway, so the sanitizer's
-        // own vocabulary plus the status carries the signal.
-        || lower.contains("upstream error details suppressed")
 }
 
 /// Compute a retry delay for a transient provider error, preferring the

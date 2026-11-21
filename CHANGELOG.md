@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.18] - 2026-11-21
+
+### Changed
+
+- Alphax Free uses a fixed model route. The model switcher and activation
+  messages reflect the fixed route, and a rate limit ends the turn.
+
+### Fixed
+
+- Browser cookie validation explains the expected JSON array. Firefox
+  diagnostics identify script restrictions and navigation state, flag empty
+  HTML shells, and explain how to verify a tab's current URL.
+- HTTP flow diagnostics distinguish likely bot-protection challenges from a
+  confirmed resource status.
+
 ## [1.1.17] - 2026-11-21
 
 ### Changed

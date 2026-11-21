@@ -1379,16 +1379,13 @@ fn automatic_free_profile_ignores_gateway_catalog_models() {
         save_test_openrouter_model_cache(
             "alphax-free",
             &resolved.api_base,
-            &["unrelated-paid-model"],
+            &["retired/alternate:free", "unrelated-paid-model"],
         );
         let routes = direct_openai_compatible_profile_routes(profile);
-        assert!(routes.iter().any(|route| {
-            crate::alphacode_provider_metadata::is_alphax_free_builtin_model(&route.model)
-        }));
-        assert!(
-            !routes
-                .iter()
-                .any(|route| route.model == "unrelated-paid-model")
+        assert_eq!(routes.len(), 1);
+        assert_eq!(
+            routes[0].model,
+            crate::alphacode_provider_metadata::route_cloak::free_route_default_model()
         );
     });
 }

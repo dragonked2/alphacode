@@ -1686,9 +1686,9 @@ impl App {
         );
         let message = if profile.id == crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID {
             let activation = if self.is_remote {
-                "Credentials are saved. The connected session is activating Alphax Free and will select an available free model automatically."
+                "Credentials are saved. The connected session is activating Alphax Free."
             } else {
-                "Alphax Free is ready and automatically routes each request to an available free model. Use /model to choose one yourself."
+                "Alphax Free is ready."
             };
             format!("{activation}{ALPHAX_FREE_PRIVACY_NOTICE}")
         } else if self.is_remote {
@@ -3337,7 +3337,7 @@ impl App {
                 Some(self.session.id.clone()),
                 if is_alphax_free {
                     format!(
-                        "{} is activating its automatic free route. The service selects an available free model for each request; no model list refresh is needed.",
+                        "{} is activating for this session.",
                         provider_label
                     )
                 } else {
@@ -3371,7 +3371,9 @@ impl App {
                     crate::bus::LoginCompleted {
                         provider: provider_label,
                         success: true,
-                        message: "Credentials are saved. Alphax Free is activating for this session and will automatically select an available free model.".to_string(),
+                        message:
+                            "Credentials are saved. Alphax Free is activating for this session."
+                                .to_string(),
                     },
                 ));
             }
@@ -3428,10 +3430,7 @@ impl App {
                             session_id,
                             model,
                             provider_key,
-                            message: format!(
-                                "{} is ready and automatically routes each request to an available free model. Use /model to choose a specific free model.",
-                                provider_label
-                            ),
+                            message: format!("{} is ready.", provider_label),
                             open_picker: false,
                         },
                     );

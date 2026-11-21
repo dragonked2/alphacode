@@ -2854,7 +2854,11 @@ fn alphax_free_remote_login_delegates_activation_to_server() {
 
         let login = login_completed.expect("successful login event for server activation");
         assert!(login.success);
-        assert!(!login.message.contains("does not support model switching"));
+        app.push_display_message(DisplayMessage::system(login.message));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 35))
+            .expect("test terminal");
+        let rendered = render_and_snap(&mut app, &mut terminal);
+        assert!(rendered.contains("Credentials are saved. Alphax Free is activating for this session."));
     });
 }
 

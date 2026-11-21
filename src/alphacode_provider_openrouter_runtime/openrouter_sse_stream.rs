@@ -185,7 +185,7 @@ fn alphax_free_http_error(status: reqwest::StatusCode, context_overflow: bool) -
     );
     let guidance = match status.as_u16() {
         429 => {
-            "Alphax Free is temporarily busy. It will try one alternate free route; if that is also busy, wait briefly or switch model with /model."
+            "Alphax Free is temporarily busy. Try again shortly or switch providers with /model."
         }
         401 | 403 => {
             "Alphax Free could not authorize this request. Check the provider setup or switch model with /model."

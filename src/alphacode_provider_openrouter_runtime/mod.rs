@@ -261,6 +261,9 @@ fn initial_model_for_runtime(
     api_base: &str,
     profile_id: Option<&str>,
 ) -> Result<String> {
+    if profile_id == Some(crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID) {
+        return Ok(crate::alphacode_provider_metadata::route_cloak::free_route_default_model());
+    }
     if let Some(model) = env_model
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -2477,9 +2480,6 @@ impl OpenRouterProvider {
     pub fn new() -> Result<Self> {
         let autodetected_profile = autodetected_openai_compatible_profile();
         let api_base = configured_api_base();
-        let supports_provider_features = provider_features_enabled(&api_base);
-        let supports_model_catalog = model_catalog_enabled();
-        let send_openrouter_headers = supports_provider_features;
         let auth = Self::resolve_auth()?;
         let profile_id = std::env::var("ALPHACODE_OPENROUTER_CACHE_NAMESPACE")
             .ok()
@@ -2494,6 +2494,11 @@ impl OpenRouterProvider {
             .or_else(|| {
                 openai_compatible_profile_id_for_api_base(&api_base).map(ToString::to_string)
             });
+        let fixed_model = profile_id.as_deref()
+            == Some(crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID);
+        let supports_provider_features = !fixed_model && provider_features_enabled(&api_base);
+        let supports_model_catalog = !fixed_model && model_catalog_enabled();
+        let send_openrouter_headers = supports_provider_features;
         let static_context_limits = profile_id
             .as_deref()
             .and_then(openai_compatible_profile_by_id)
@@ -2684,16 +2689,8 @@ impl OpenRouterProvider {
         // returns unrelated paid models that break the static catalog. Disable
         // live model catalog for profiles whose static model list contains
         // virtual/gateway-only IDs.
-        //
-        // The free pool is still refreshed in the background, but through a
-        // separate path that keeps only zero-priced rows, so the rotating pool
-        // stays current without the paid models ever entering the model list.
-        let is_alphax_free =
+        let disable_model_catalog =
             profile.id == crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID;
-        if is_alphax_free {
-            Self::schedule_free_pool_refresh(resolved.api_base.clone());
-        }
-        let disable_model_catalog = is_alphax_free;
 
         Ok(Self {
             client: crate::alphacode_provider_core::shared_http_client(),
@@ -2723,41 +2720,6 @@ impl OpenRouterProvider {
             endpoints_cache: Arc::new(RwLock::new(HashMap::new())),
             endpoint_refresh: Arc::new(Mutex::new(EndpointRefreshTracker::default())),
         })
-    }
-
-    /// Refresh the Alphax Free rotation pool in the background.
-    ///
-    /// Entirely fire-and-forget: the curated pool is already correct, so a
-    /// failed refresh costs nothing and must never surface to the user or
-    /// delay startup. A TTL guard keeps this to one request per hour even
-    /// though provider construction happens on every session start.
-    fn schedule_free_pool_refresh(api_base: String) {
-        static LAST_REFRESH: std::sync::OnceLock<std::sync::Mutex<Option<std::time::Instant>>> =
-            std::sync::OnceLock::new();
-        let slot = LAST_REFRESH.get_or_init(|| std::sync::Mutex::new(None));
-        {
-            let Ok(mut last) = slot.lock() else {
-                return;
-            };
-            if let Some(previous) = *last
-                && previous.elapsed()
-                    < crate::alphacode_provider_metadata::free_pool::POOL_REFRESH_TTL
-            {
-                return;
-            }
-            // Claim the slot before spawning so concurrent session starts
-            // cannot each kick off their own fetch.
-            *last = Some(std::time::Instant::now());
-        }
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        handle.spawn(async move {
-            crate::alphacode_provider_metadata::free_pool::refresh_free_pool_from_gateway(
-                &api_base,
-            )
-            .await;
-        });
     }
 
     fn model_catalog_refresh_intervals(&self) -> (u64, u64) {
@@ -4059,6 +4021,77 @@ mod llamacpp_compat_tests {
             paths
         });
         (base, done_tx, server)
+    }
+
+    #[tokio::test]
+    async fn alphax_free_sends_only_its_fixed_model() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+        let profile_id = crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID;
+        let model = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = BufReader::new(socket);
+            let mut length = None;
+            loop {
+                let mut line = String::new();
+                if socket.read_line(&mut line).await.unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = Some(value.trim().parse::<usize>().unwrap());
+                }
+            }
+            let mut payload = vec![0; length.expect("content length")];
+            socket.read_exact(&mut payload).await.unwrap();
+            let response = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            socket.get_mut().write_all(format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            ).as_bytes()).await.unwrap();
+            serde_json::from_slice::<Value>(&payload).unwrap()
+        });
+
+        let initial = initial_model_for_runtime(
+            Some("overridden-model".to_owned()),
+            None,
+            &[],
+            &base,
+            Some(profile_id),
+        )
+        .unwrap();
+        assert_eq!(initial, model);
+
+        let mut provider = local_no_auth_provider("retired-model");
+        provider.api_base = base;
+        provider.client = Client::builder().no_proxy().build().unwrap();
+        provider.profile_id = Some(profile_id.to_owned());
+        provider.supports_model_catalog = false;
+        provider.extra_body = Some(serde_json::Map::from_iter([
+            ("model".into(), serde_json::json!("other-model")),
+            ("models".into(), serde_json::json!(["fallback-model"])),
+            ("temperature".into(), serde_json::json!(0.5)),
+        ]));
+        provider
+            .set_model(&format!("{profile_id}:retired-model"))
+            .unwrap();
+        let provider = provider.fork();
+        assert_eq!(provider.model(), model);
+        assert_eq!(provider.available_models_for_switching(), [model.as_str()]);
+
+        let mut stream = provider.complete(&[], &[], "test", None).await.unwrap();
+        let request = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(request["model"], model);
+        assert!(request.get("models").is_none());
+        assert_eq!(request["temperature"], 0.5);
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
     }
 
     #[tokio::test]

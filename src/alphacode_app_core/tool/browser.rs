@@ -841,6 +841,14 @@ impl Tool for BrowserTool {
 /// mistyped browser argument fails with something actionable instead of a
 /// bare "invalid input".
 fn invalid_input_error(input: &Value, error: &serde_json::Error) -> anyhow::Error {
+    if input
+        .get("cookies")
+        .is_some_and(|cookies| !cookies.is_null() && !cookies.is_array())
+    {
+        return anyhow::anyhow!(
+            "Invalid browser tool input: 'cookies' expects a JSON array. Pass [] for an empty array, or omit 'cookies' for action='list_cookies'."
+        );
+    }
     let raw = serde_json::to_string(input).unwrap_or_default();
     let snippet: String = raw.chars().take(500).collect();
     anyhow::anyhow!(
@@ -1693,6 +1701,15 @@ fn enrich_browser_error(action: &str, err: anyhow::Error) -> anyhow::Error {
         );
     }
     if action == "eval" || bridge_is_evaluate(&msg) {
+        if lower.contains("content security policy")
+            || lower.contains("unsafe-eval")
+            || lower.contains("page world is not supported")
+            || lower.contains("main world is not supported")
+        {
+            return anyhow::anyhow!(
+                "{msg}\n\nHint: Firefox reported a script security restriction for this document. Inspect the page with action='snapshot' if available."
+            );
+        }
         if lower.contains("evaluate timed out") {
             return anyhow::anyhow!(
                 "{msg}\n\nHint: the script did not finish before its deadline. Use 'timeout_ms' for a longer deadline, or split the operation into smaller steps. A timed-out script may still have performed actions; inspect the page before retrying."
@@ -2796,8 +2813,13 @@ async fn run_bridge_with_tab_recovery(
                 Ok(mut tab) => {
                     annotate_firefox_tab_load(&mut tab);
                     check_firefox_navigation(&tab, None, ctx).await?;
+                    let hint = if tab["status"] == "loading" {
+                        "Firefox reports that the tab is loading. Wait for navigation to finish."
+                    } else {
+                        "Check the tab's current URL and the extension's access to the document."
+                    };
                     anyhow::bail!(
-                        "Firefox tab {dead_tab_id} is still open, but the bridge could not run '{logical_action}' in its current document. Inspect the tab and wait for navigation to finish before retrying."
+                        "Firefox tab {dead_tab_id} is open. The bridge could not run '{logical_action}' in its current document. {hint}"
                     );
                 }
                 Err(probe_error) if missing_tab_error(&probe_error.to_string()) => {}
@@ -3358,13 +3380,30 @@ fn format_navigate_result(result: &Value) -> String {
     }
     lines.push(String::new());
     lines.push(
-        "Note: use action='snapshot' (or 'get_content') to read the page; navigation no longer returns the page body to keep this result small."
+        "Note: a tab ID identifies a tab, and its URL can change on navigation. Verify the current URL with action='list_tabs' before reusing an ID. Use action='snapshot' or 'get_content' to read the page."
             .to_string(),
     );
     lines.join("\n")
 }
 
 fn format_content_result(result: &Value) -> String {
+    if let Some(html) = result
+        .get("html")
+        .or_else(|| result.get("content"))
+        .and_then(Value::as_str)
+    {
+        let trimmed = html.trim();
+        if (trimmed.starts_with("<html>") || trimmed.starts_with("<html "))
+            && trimmed
+                .split_once('>')
+                .and_then(|(_, inner)| inner.strip_suffix("</html>"))
+                .is_some_and(|inner| inner.trim().is_empty())
+        {
+            return format!(
+                "{html}\n\nHint: Firefox returned an empty HTML shell. Use action='snapshot' to inspect the rendered DOM, or wait briefly for the application to render."
+            );
+        }
+    }
     if let Some(content) = result.get("content").and_then(|v| v.as_str()) {
         return content.to_string();
     }
@@ -5181,6 +5220,26 @@ awaitAll(items)
         assert!(message.contains("Invalid browser tool input"), "{message}");
         assert!(message.contains("\"x\""), "{message}");
         assert!(message.contains("120"), "{message}");
+    }
+
+    #[test]
+    fn list_cookies_explains_that_the_cookies_parameter_is_an_array() {
+        let bad = json!({"action": "list_cookies", "cookies": ""});
+        let error = serde_json::from_value::<BrowserInput>(bad.clone()).unwrap_err();
+        assert!(
+            invalid_input_error(&bad, &error)
+                .to_string()
+                .contains("Pass []")
+        );
+        browser_input(json!({"action": "list_cookies", "cookies": []}));
+    }
+
+    #[test]
+    fn empty_html_shell_suggests_snapshot() {
+        let shell = format_content_result(&json!({"html": "<html lang=\"en_us\"></html>"}));
+        assert!(shell.contains("action='snapshot'"));
+        let html = "<html><body>Hello</body></html>";
+        assert_eq!(format_content_result(&json!({"html": html})), html);
     }
 
     // ---- Bug fix #13: active-tab isolation -------------------------------
