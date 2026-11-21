@@ -34,6 +34,28 @@ jobs:
     # avoids a race where all six jobs try to create the same release at once.
     steps:
       - uses: actions/checkout@v5
+      - name: Verify release tag and package versions
+        shell: bash
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_REF_TYPE" != "tag" || "$RELEASE_TAG" != v[0-9]*.*.* ]]; then
+            echo "::error::Run this workflow on a version tag."
+            exit 1
+          fi
+          version="${RELEASE_TAG#v}"
+          manifest_version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+          lock_version="$(awk -F '"' '
+            /^\[\[package\]\]$/ { package_name = "" }
+            /^name = / { package_name = $2 }
+            /^version = / && package_name == "alphacode" { print $2; exit }
+          ' Cargo.lock)"
+          if [[ "$version" != "$manifest_version" || "$version" != "$lock_version" ]]; then
+            echo "::error::Release tag $RELEASE_TAG must match Cargo.toml ($manifest_version) and Cargo.lock ($lock_version)."
+            exit 1
+          fi
       - name: Extract changelog for this release
         id: changelog
         shell: bash
@@ -157,26 +179,6 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           echo "ALPHACODE_BUILD_SEMVER=$VERSION" >> "$GITHUB_ENV"
           echo "Release version: $VERSION"
-
-      # The tag is what the binary reports and what the updater compares
-      # against; `Cargo.toml` is what crates.io and `cargo install` publish.
-      # They must agree, or a "v1.0.93" release ships a crate labelled 1.0.92
-      # and the Windows VERSIONINFO resource (which is built from the crate
-      # version) advertises the wrong number in Explorer's Properties dialog.
-      # Failing here is far cheaper than shipping the mismatch.
-      - name: Verify Cargo version matches the release tag
-        shell: bash
-        env:
-          TAG_VERSION: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          want="${TAG_VERSION#v}"
-          got="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
-          if [ "$want" != "$got" ]; then
-            echo "::error::Cargo.toml version is '$got' but the release tag is '$TAG_VERSION'. Bump Cargo.toml (and Cargo.lock) before tagging."
-            exit 1
-          fi
-          echo "OK: Cargo.toml and the release tag both say $want"
 
       # Every target here now builds natively (the matrix pairs each triple
       # with a matching runner), so the action never reaches for `cross` —
@@ -482,8 +484,21 @@ jobs:
             [ -f "$f" ] || continue
             cat "$f" >> SHA256SUMS
           done
-          sort -u -o SHA256SUMS SHA256SUMS
-          test "$(wc -l < SHA256SUMS)" -eq 8 || { echo "::error::Expected checksums for all eight platform archives"; exit 1; }
+          sort -o SHA256SUMS SHA256SUMS
+          if ! awk 'NF != 2 || length($1) != 64 || $1 !~ /^[[:xdigit:]]+$/ { exit 1 }' SHA256SUMS; then
+            echo "::error::Each checksum must contain a SHA-256 digest and one filename."
+            exit 1
+          fi
+          expected="$(printf '%s\n' \
+            alphacode-linux-{arm64,x86_64}.tar.gz \
+            alphacode-linux-musl-{aarch64,x86_64}.tar.gz \
+            alphacode-macos-{arm64,x86_64}.tar.gz \
+            alphacode-windows-{arm64,x86_64}.zip | sort)"
+          actual="$(awk '{ sub(/^\*/, "", $2); print $2 }' SHA256SUMS | sort)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::Expected exactly one checksum for each of the eight release archives."
+            exit 1
+          fi
       # Platform builds may run alongside main-branch CI, but publishing must
       # wait for the exact source revision to pass every CI check.
       - name: Require green CI for this source revision
@@ -507,11 +522,17 @@ jobs:
           fi
           gh run watch "$ci_run" --exit-status --interval 30
 
-      - name: Upload combined SHA256SUMS
+      - name: Stage combined SHA256SUMS on the draft
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          draft: false
-          make_latest: true
+          draft: true
           files: SHA256SUMS
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
+      - name: Publish the verified draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest

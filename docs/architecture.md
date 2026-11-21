@@ -51,12 +51,24 @@ Startup is also a composition root: `startup.rs` registers provider runtimes and
 | CLI command routing | `src/cli/dispatch.rs` | Headless commands, default interactive path, server/client launch. |
 | TUI client launch | `src/cli/tui_launch.rs` | Client-side connection and terminal launch behavior. |
 | Provider and tool registration | `src/cli/provider_init.rs`, `src/alphacode_app_core/tool/` | Inspect build/feature gates and runtime tool filters as well as registration. |
-| Agent, protocol, server, sessions | `src/alphacode_agent_runtime/`, `src/alphacode_protocol/`, `src/server.rs`, `src/session.rs` | Shared runtime areas; trace callers for the specific command. |
+| Agent, protocol, server, sessions | `src/alphacode_app_core/agent/`, `src/alphacode_protocol/`, `src/alphacode_app_core/server/`, `src/alphacode_base/session/` | Shared runtime areas; trace callers for the specific command. |
 | TUI rendering and interaction | `src/alphacode_tui/`, `src/alphacode_tui_*/` | Rendering, widgets and presentation modules; the source of truth is the concrete module and its callers. |
 | Security/investigation workflows | `src/alphacode_security_core/` | Typed domain state and validation; check how CLI/TUI/session layers call it. |
 | Code-search package | `alphagrep/` | Separate workspace package used by the main crate. |
 
 Some paths may be gated by Cargo features or target platform. When documentation and implementation diverge, treat `Cargo.toml`, `src/lib.rs`, and the selected call path as authoritative and update this map with the change.
+
+## Provider streams and tool dispatch
+
+The daemon, headless runner, and local TUI each consume an owned provider stream. All three use `alphacode_provider_core::turn_stream` to validate tool framing and completion. The stream must reach a provider completion marker before the turn can dispatch its queued tool calls. An explicit provider terminal event can carry an optional stop reason. A bare transport EOF is an interruption. Usage and session metadata can arrive after the completion marker.
+
+Tool arguments must be complete JSON. Providers assemble fragmented calls before dispatch and the registry checks the resulting payload against the tool's schema and session permissions. A provider retry discards the abandoned attempt's pending calls. Provider-managed execution can already have side effects while streaming, so stream recovery does not automatically replay those requests in the agent run loops.
+
+The daemon gives interactive and background turns a generation ID in its logs. It relays each turn's events while holding the session agent lock and closes the relay before publishing the terminal event. This keeps queued deltas ahead of completion and prevents a retained sender from publishing afterward. Cooperative cancellation produces the interrupted event on this same path.
+
+MCP stdio requests reserve a response slot until the caller completes, cancels, or times out. The deadline includes the wait for space in the writer queue. Either transport pipe closing clears outstanding slots and wakes the waiting calls.
+
+A foreground shell command that exits unsuccessfully returns a tool error with its captured diagnostic. If the shell hands a running command to the background manager, the tool result includes a task ID to monitor. A later exit status belongs to that task.
 
 ## Reading architecture graphs responsibly
 

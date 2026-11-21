@@ -451,7 +451,7 @@ impl ClaudeEventTranslator {
 struct CliOutputParser {
     translator: ClaudeEventTranslator,
     saw_stream_events: bool,
-    saw_message_end: bool,
+    final_stop_reason: Option<String>,
 }
 
 impl CliOutputParser {
@@ -459,7 +459,7 @@ impl CliOutputParser {
         Self {
             translator: ClaudeEventTranslator::new(),
             saw_stream_events: false,
-            saw_message_end: false,
+            final_stop_reason: None,
         }
     }
 
@@ -477,14 +477,19 @@ impl CliOutputParser {
                     }
                 };
 
-                let events = self.translator.handle_event(parsed);
-                if events
-                    .iter()
-                    .any(|event| matches!(event, StreamEvent::MessageEnd { .. }))
-                {
-                    self.saw_message_end = true;
-                }
-                events
+                // A Claude message_stop can precede tool execution and more
+                // assistant messages. Only the CLI result ends the request.
+                self.translator
+                    .handle_event(parsed)
+                    .into_iter()
+                    .filter_map(|event| match event {
+                        StreamEvent::MessageEnd { stop_reason } => {
+                            self.final_stop_reason = stop_reason;
+                            None
+                        }
+                        event => Some(event),
+                    })
+                    .collect()
             }
             CliOutput::Assistant { message, .. } => {
                 let blocks = parse_content_blocks(&message.content);
@@ -532,10 +537,7 @@ impl CliOutputParser {
                     }
                 }
 
-                if !self.saw_message_end {
-                    self.saw_message_end = true;
-                    events.push(StreamEvent::MessageEnd { stop_reason: None });
-                }
+                self.saw_stream_events = false;
 
                 events
             }
@@ -594,10 +596,10 @@ impl CliOutputParser {
                         message: "Claude CLI reported an error".to_string(),
                         retry_after_secs: None,
                     });
-                }
-                if !self.saw_message_end {
-                    self.saw_message_end = true;
-                    events.push(StreamEvent::MessageEnd { stop_reason: None });
+                } else {
+                    events.push(StreamEvent::MessageEnd {
+                        stop_reason: self.final_stop_reason.take(),
+                    });
                 }
                 events
             }

@@ -11,10 +11,6 @@ use std::time::Instant;
 
 use crate::alphacode_provider_openrouter::{PinSource, ProviderPin};
 
-fn truncated_stream_payload_context(data: &str) -> String {
-    crate::alphacode_core::util::truncate_str(&data.trim().replace('\n', "\\n"), 240).to_string()
-}
-
 /// Pop the next complete SSE event off the front of `buffer`.
 ///
 /// Accepts both `\n\n` and `\r\n\r\n` event delimiters. Only handling `\n\n`
@@ -87,6 +83,16 @@ impl OpenRouterStream {
 
     fn queue_message_end(&mut self) {
         if self.message_end_emitted {
+            return;
+        }
+
+        if self.partial_json.take().is_some() {
+            self.tool_call_accumulators.clear();
+            self.message_end_emitted = true;
+            self.pending.push_back(StreamEvent::Error {
+                message: "OpenRouter sent [DONE] with an incomplete SSE payload".into(),
+                retry_after_secs: None,
+            });
             return;
         }
 
@@ -307,10 +313,9 @@ impl OpenRouterStream {
                         }
                     }
                     crate::alphacode_logging::warn(&format!(
-                        "OpenRouter SSE JSON parse failed for model {}: {} payload={} ",
-                        self.model,
-                        error,
-                        truncated_stream_payload_context(data)
+                        "OpenRouter SSE JSON parse failed at line {}, column {}",
+                        error.line(),
+                        error.column()
                     ));
                     continue;
                 }
@@ -466,6 +471,9 @@ impl Stream for OpenRouterStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
         loop {
+            if self.message_end_emitted {
+                return Poll::Ready(self.pending.pop_front().map(Ok));
+            }
             if let Some(event) = self.parse_next_event() {
                 return Poll::Ready(Some(Ok(event)));
             }
@@ -595,6 +603,34 @@ mod tests {
             "test-model".to_string(),
             Arc::new(std::sync::Mutex::new(None)),
         )
+    }
+
+    #[test]
+    fn done_cannot_complete_a_partial_sse_payload() {
+        let mut stream = test_stream();
+        stream.buffer = "data: {\"choices\":[\n\ndata: [DONE]\n\n".into();
+        assert!(matches!(
+            stream.parse_next_event(),
+            Some(StreamEvent::Error { message, .. }) if message.contains("incomplete")
+        ));
+        assert!(stream.parse_next_event().is_none());
+    }
+
+    #[tokio::test]
+    async fn done_closes_the_stream_even_if_transport_stays_open() {
+        use futures::FutureExt;
+
+        let bytes = futures::stream::iter([Ok(Bytes::from_static(b"data: [DONE]\n\n"))]);
+        let mut stream = OpenRouterStream::new(
+            bytes.chain(futures::stream::pending()),
+            "test-model".into(),
+            Arc::new(Mutex::new(None)),
+        );
+        assert!(matches!(
+            stream.next().await,
+            Some(Ok(StreamEvent::MessageEnd { .. }))
+        ));
+        assert!(matches!(stream.next().now_or_never(), Some(None)));
     }
 
     #[test]

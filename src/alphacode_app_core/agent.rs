@@ -28,6 +28,7 @@ mod turn_loops;
 mod turn_streaming_mpsc;
 mod utils;
 
+pub(crate) use self::streaming::TurnInterrupted;
 use self::streaming::{send_stream_keepalive_mpsc, stream_keepalive_ticker};
 use self::tools::{
     cap_sdk_tool_content_for_history, cap_tool_output_for_history, format_tool_output_preview,

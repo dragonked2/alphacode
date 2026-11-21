@@ -419,7 +419,7 @@ impl Agent {
         }
         self.add_message_ext(Role::Assistant, content_blocks, None, None);
         logging::warn(&format!(
-            "[agent] Committed partial stream output ({committed_chars} chars) before auto-continuing"
+            "[agent] Preserved partial stream output ({committed_chars} chars)"
         ));
         true
     }

@@ -160,6 +160,24 @@ fn idle_status_keeps_context_visible_without_a_facts_column() {
 }
 
 #[test]
+fn header_shows_configured_model_while_provider_metadata_is_pending() {
+    let _lock = viewport_snapshot_test_lock();
+    let state = TestState {
+        provider_name: Some(String::new()),
+        provider_model: Some("deepseek/deepseek-chat".into()),
+        display_messages: vec![DisplayMessage::user("check model")],
+        suppress_info_widgets: true,
+        ..Default::default()
+    };
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+    terminal.draw(|frame| draw_inner(frame, &state)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let header: String = (0..80).map(|x| buffer[(x, 0)].symbol()).collect();
+    assert!(header.contains("Deepseek Chat"), "{header}");
+    assert!(!header.contains("OpenRouter"), "{header}");
+}
+
+#[test]
 fn conversation_and_help_render_across_terminal_sizes() {
     let _lock = viewport_snapshot_test_lock();
     let mut state = TestState {

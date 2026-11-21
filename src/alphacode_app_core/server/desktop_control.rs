@@ -218,8 +218,7 @@ pub(super) async fn execute(
                     None,
                     Some(super::truncate_detail(prompt, 120)),
                     swarm,
-                )
-                .await;
+                );
                 return Ok(json!({"sent": true, "queued": false}));
             }
             if super::queue_soft_interrupt_for_session(

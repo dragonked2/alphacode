@@ -188,15 +188,15 @@ fn format_gpt_name(short: &str) -> String {
 /// display name instead of a hard-coded aggregator name, so the header
 /// matches whichever OpenAI-compatible profile (OpenRouter, TokenRouter,
 /// NVIDIA NIM, DeepSeek, ...) the user actually selected. Falls back to
-/// "OpenRouter" when no provider name is known.
+/// the model label when no provider name is known.
 fn label_slashed_model(short: &str, provider_name: &str) -> String {
-    let trimmed = provider_name.trim();
-    let label = if trimmed.is_empty() {
-        "OpenRouter"
+    let provider = provider_name.trim();
+    let model = prettify_slashed_model_name(short);
+    if provider.is_empty() {
+        model
     } else {
-        trimmed
-    };
-    format!("{}: {}", label, prettify_slashed_model_name(short))
+        format!("{provider}: {model}")
+    }
 }
 
 fn format_model_name(short: &str, provider_name: &str) -> String {
@@ -380,8 +380,7 @@ fn header_model_display_name(model: &str, provider_name: &str) -> String {
     }
 
     // Slashed ids (provider/model) keep the provider label form; the active
-    // provider name labels the line (OpenRouter fallback when unknown) instead
-    // of shortening away the namespace.
+    // provider name labels the line when available.
     if raw.contains('/') {
         return label_slashed_model(raw, provider_name);
     }
@@ -1479,14 +1478,7 @@ fn build_conversation_header(app: &dyn TuiState, width: usize, height: u16) -> V
 
     let provider = app.provider_name();
     let model = header_model_display_name(&app.provider_model(), &provider);
-    let route_prefix = format!(
-        "{}: ",
-        if provider.trim().is_empty() {
-            "OpenRouter"
-        } else {
-            provider.trim()
-        }
-    );
+    let route_prefix = format!("{}: ", provider.trim());
     let model = model.strip_prefix(&route_prefix).unwrap_or(&model);
     let model = if model.is_empty() {
         "Select a model"
@@ -2544,10 +2536,10 @@ mod tests {
             format_model_name("anthropic/claude-sonnet-4", "OpenRouter"),
             "OpenRouter: Claude Sonnet 4"
         );
-        // Missing provider name falls back to "OpenRouter" rather than an empty label.
+        // Keep the model visible while provider metadata is pending.
         assert_eq!(
             format_model_name("deepseek/deepseek-chat", ""),
-            "OpenRouter: Deepseek Chat"
+            "Deepseek Chat"
         );
         // Non-slashed models are unaffected by the provider label.
         assert_eq!(

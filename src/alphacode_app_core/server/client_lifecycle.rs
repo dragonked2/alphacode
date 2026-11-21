@@ -799,7 +799,7 @@ pub(super) async fn handle_client(
                             if let Some(session_id) = done_session.as_deref() {
                                 update_member_status(
                                     session_id,
-                                    "failed",
+                                    if e.is::<crate::agent::TurnInterrupted>() { "stopped" } else { "failed" },
                                     Some(truncate_detail(&e.to_string(), 120)),
                                     &swarm_members,
                                     &swarms_by_id,
@@ -2901,79 +2901,136 @@ async fn start_processing_message(
     )
     .await;
 
-    let start_message_index = {
-        let agent_guard = agent.lock().await;
-        agent_guard.message_count()
-    };
     let agent = Arc::clone(agent);
-    let report_agent = Arc::clone(&agent);
-    let tx = super::state::session_event_fanout_sender_with_fallback(
-        client_session_id.to_string(),
-        Arc::clone(swarm.members),
-        client_event_tx.clone(),
-    );
+    let members = Arc::clone(swarm.members);
+    let fallback_tx = client_event_tx.clone();
+    let session_id = client_session_id.to_string();
     let done_tx = processing_done_tx.clone();
-    crate::logging::info(&format!("Processing message id={} spawning task", id));
+    let generation_id = uuid::Uuid::new_v4();
+    crate::logging::info(&format!(
+        "Starting generation {generation_id} session={session_id} request={id}"
+    ));
     *state.task = Some(tokio::spawn(async move {
-        let event_tx = tx.clone();
-        let result = match std::panic::AssertUnwindSafe(process_message_streaming_mpsc(
-            agent,
-            &content,
-            images,
-            system_reminder,
-            event_tx,
-        ))
-        .catch_unwind()
-        .await
-        {
-            Ok(result) => result,
-            Err(panic_payload) => {
-                let msg = if let Some(text) = panic_payload.downcast_ref::<&str>() {
-                    text.to_string()
-                } else if let Some(text) = panic_payload.downcast_ref::<String>() {
-                    text.clone()
-                } else {
-                    "unknown panic".to_string()
-                };
-                crate::logging::error(&format!(
-                    "Processing task PANICKED for message id={}: {}",
-                    id, msg
-                ));
-                Err(anyhow::anyhow!("Processing task panicked: {}", msg))
-            }
-        };
-        match &result {
-            Ok(()) => crate::logging::info(&format!(
-                "Processing task completed OK for message id={}",
-                id
-            )),
-            Err(error) => crate::logging::warn(&format!(
-                "Processing task completed with error for message id={}: {}",
-                id, error
-            )),
-        }
+        let mut agent = agent.lock().await;
+        let start_message_index = agent.message_count();
+        let relay = TurnEventRelay::new(&members, &session_id, Some(&fallback_tx));
+        let result = relay
+            .run(&mut agent, &content, images, system_reminder)
+            .await;
         let completion_report = if result.is_ok() {
-            let agent = report_agent.lock().await;
             agent.latest_assistant_text_after(start_message_index)
         } else {
             None
         };
-        // Keep the terminal event on the same ordered fanout channel as the
-        // stream. Sending it later from the owning client's event loop could
-        // race ahead of the final MessageEnd for newly attached clients.
-        let terminal_event = match &result {
-            Ok(()) => ServerEvent::Done { id },
-            Err(error) => ServerEvent::Error {
+        let (outcome, terminal_event) = turn_terminal_event(id, &result);
+        crate::logging::info(&format!(
+            "Finished generation {generation_id} session={session_id} request={id} outcome={outcome}"
+        ));
+        // Keep the agent lock until the terminal event is enqueued for all
+        // attachments. A replacement turn can only publish after this.
+        relay.send(terminal_event).await;
+        let _ = done_tx.send((id, result, completion_report));
+    }));
+}
+
+/// Owns a turn's event delivery while the caller holds the session's agent
+/// lock. Earlier turns drain before later turns can publish to the session.
+pub(super) struct TurnEventRelay<'a> {
+    members: &'a Arc<RwLock<HashMap<String, SwarmMember>>>,
+    session_id: &'a str,
+    fallback_tx: Option<&'a mpsc::UnboundedSender<ServerEvent>>,
+}
+
+impl<'a> TurnEventRelay<'a> {
+    pub(super) fn new(
+        members: &'a Arc<RwLock<HashMap<String, SwarmMember>>>,
+        session_id: &'a str,
+        fallback_tx: Option<&'a mpsc::UnboundedSender<ServerEvent>>,
+    ) -> Self {
+        Self {
+            members,
+            session_id,
+            fallback_tx,
+        }
+    }
+
+    pub(super) async fn send(&self, event: ServerEvent) {
+        if let Some(fallback_tx) = self.fallback_tx {
+            if super::state::fanout_session_event(self.members, self.session_id, event.clone())
+                .await
+                == 0
+            {
+                let _ = fallback_tx.send(event);
+            }
+        } else {
+            super::state::fanout_session_event(self.members, self.session_id, event).await;
+        }
+    }
+
+    pub(super) async fn run(
+        &self,
+        agent: &mut Agent,
+        content: &str,
+        images: Vec<(String, String)>,
+        system_reminder: Option<String>,
+    ) -> Result<()> {
+        let (stream_tx, mut stream_rx) = mpsc::unbounded_channel();
+        let result = {
+            let turn = std::panic::AssertUnwindSafe(process_locked_message_streaming_mpsc(
+                agent,
+                content,
+                images,
+                system_reminder,
+                stream_tx,
+            ))
+            .catch_unwind();
+            tokio::pin!(turn);
+            loop {
+                tokio::select! {
+                    result = &mut turn => break result,
+                    Some(event) = stream_rx.recv() => self.send(event).await,
+                }
+            }
+        };
+        // Close before draining so a producer that retained its sender cannot
+        // publish anything after this turn's terminal event.
+        stream_rx.close();
+        while let Some(event) = stream_rx.recv().await {
+            self.send(event).await;
+        }
+        match result {
+            Ok(result) => result,
+            Err(payload) => {
+                let message = if let Some(text) = payload.downcast_ref::<&str>() {
+                    *text
+                } else if let Some(text) = payload.downcast_ref::<String>() {
+                    text.as_str()
+                } else {
+                    "unknown panic"
+                };
+                Err(anyhow::anyhow!("Processing task panicked: {message}"))
+            }
+        }
+    }
+}
+
+pub(super) fn turn_terminal_event(id: u64, result: &Result<()>) -> (&'static str, ServerEvent) {
+    match result {
+        Ok(()) => ("completed", ServerEvent::Done { id }),
+        Err(error) if error.is::<crate::agent::TurnInterrupted>() => {
+            ("interrupted", ServerEvent::Interrupted)
+        }
+        Err(error) => (
+            "failed",
+            ServerEvent::Error {
                 id,
                 message: crate::util::format_error_chain(error),
                 retry_after_secs: error
                     .downcast_ref::<StreamError>()
                     .and_then(|stream_error| stream_error.retry_after_secs),
             },
-        };
-        let _ = tx.send(terminal_event);
-        let _ = done_tx.send((id, result, completion_report));
-    }));
+        ),
+    }
 }
 
 async fn cancel_processing_message(
@@ -3017,41 +3074,24 @@ async fn cancel_processing_message(
             "SERVER_INTERRUPT_CANCEL_SIGNALLED request_id={:?} session={} message_id={:?} wait_ms=500",
             request_id, session_label, *state.message_id
         ));
-        match tokio::time::timeout(std::time::Duration::from_millis(500), &mut handle).await {
-            Ok(_) => {
-                crate::logging::info(&format!(
-                    "SERVER_INTERRUPT_CANCEL_COOPERATIVE_DONE request_id={:?} session={} message_id={:?} elapsed_ms={}",
-                    request_id,
-                    session_label,
-                    *state.message_id,
-                    cancel_start.elapsed().as_millis()
-                ));
-            }
+        let emit_interrupted = match tokio::time::timeout(Duration::from_millis(500), &mut handle)
+            .await
+        {
+            Ok(Ok(())) => false,
+            Ok(Err(_)) => true,
             Err(_) => {
-                crate::logging::warn(&format!(
-                    "SERVER_INTERRUPT_CANCEL_COOPERATIVE_TIMEOUT request_id={:?} session={} message_id={:?} elapsed_ms={} action=abort_task",
-                    request_id,
-                    session_label,
-                    *state.message_id,
-                    cancel_start.elapsed().as_millis()
-                ));
                 handle.abort();
-                match tokio::time::timeout(std::time::Duration::from_millis(2000), handle).await {
-                    Ok(_) => crate::logging::info(&format!(
-                        "SERVER_INTERRUPT_CANCEL_ABORT_RELEASED request_id={:?} session={} elapsed_ms={}",
-                        request_id,
-                        session_label,
-                        cancel_start.elapsed().as_millis()
-                    )),
-                    Err(_) => crate::logging::warn(&format!(
-                        "SERVER_INTERRUPT_CANCEL_ABORT_RELEASE_TIMEOUT request_id={:?} session={} elapsed_ms={} wait_ms=2000",
-                        request_id,
-                        session_label,
-                        cancel_start.elapsed().as_millis()
-                    )),
+                match tokio::time::timeout(Duration::from_secs(2), handle).await {
+                    Ok(join_result) => join_result.is_err(),
+                    Err(_) => {
+                        crate::logging::warn(&format!(
+                            "Timed out waiting for cancelled generation in session {session_label} to stop"
+                        ));
+                        true
+                    }
                 }
             }
-        }
+        };
         // Only clear the cancel we fired: a newer cancel (repeated Esc, jade
         // relay, another connection) must not be erased before its target
         // observes it (issue #428).
@@ -3071,16 +3111,11 @@ async fn cancel_processing_message(
             )
             .await;
         }
-        if let Some(message_id) = state.message_id.take() {
-            let _ = client_event_tx.send(ServerEvent::Interrupted);
-            let _ = client_event_tx.send(ServerEvent::Done { id: message_id });
-            crate::logging::info(&format!(
-                "SERVER_INTERRUPT_CANCEL_EVENTS_EMITTED request_id={:?} session={} interrupted=true done_id={} total_ms={}",
-                request_id,
-                session_label,
-                message_id,
-                cancel_start.elapsed().as_millis()
-            ));
+        state.message_id.take();
+        if emit_interrupted {
+            TurnEventRelay::new(swarm.members, &session_label, Some(client_event_tx))
+                .send(ServerEvent::Interrupted)
+                .await;
         }
     } else {
         crate::logging::warn(&format!(
@@ -3119,24 +3154,7 @@ async fn cancel_processing_message(
             Some(swarm.event_tx),
         )
         .await;
-        let _ = client_event_tx.send(ServerEvent::Interrupted);
-        if let Some(message_id) = state.message_id.take() {
-            let _ = client_event_tx.send(ServerEvent::Done { id: message_id });
-            crate::logging::info(&format!(
-                "SERVER_INTERRUPT_CANCEL_EVENTS_EMITTED request_id={:?} session={} interrupted=true done_id={} total_ms={}",
-                request_id,
-                session_label,
-                message_id,
-                cancel_start.elapsed().as_millis()
-            ));
-        } else {
-            crate::logging::info(&format!(
-                "SERVER_INTERRUPT_CANCEL_EVENTS_EMITTED request_id={:?} session={} interrupted=true done_id=None total_ms={}",
-                request_id,
-                session_label,
-                cancel_start.elapsed().as_millis()
-            ));
-        }
+        state.message_id.take();
     }
 }
 
@@ -3243,6 +3261,17 @@ pub(super) async fn process_message_streaming_mpsc(
     event_tx: tokio::sync::mpsc::UnboundedSender<ServerEvent>,
 ) -> Result<()> {
     let mut agent = agent.lock().await;
+    process_locked_message_streaming_mpsc(&mut agent, content, images, system_reminder, event_tx)
+        .await
+}
+
+async fn process_locked_message_streaming_mpsc(
+    agent: &mut Agent,
+    content: &str,
+    images: Vec<(String, String)>,
+    system_reminder: Option<String>,
+    event_tx: mpsc::UnboundedSender<ServerEvent>,
+) -> Result<()> {
     let session_id = agent.session_id().to_string();
     let result = agent
         .run_once_streaming_mpsc(content, images, system_reminder, event_tx)

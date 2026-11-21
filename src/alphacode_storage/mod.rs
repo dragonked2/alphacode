@@ -624,9 +624,12 @@ fn write_bytes_inner(path: &Path, bytes: &[u8], durable: bool, secret: bool) -> 
     let pid = std::process::id();
     let nonce: u64 = rand::random();
     let tmp_path = path.with_extension(format!("tmp.{}.{}", pid, nonce));
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp_path)?;
 
     let result = (|| -> Result<()> {
-        let file = std::fs::File::create(&tmp_path)?;
         if secret {
             crate::alphacode_core::fs::set_permissions_owner_only(&tmp_path)?;
         }
@@ -639,32 +642,21 @@ fn write_bytes_inner(path: &Path, bytes: &[u8], durable: bool, secret: bool) -> 
         if durable {
             file.sync_all()?;
         }
+        drop(file);
 
         if path.exists() {
             let bak_path = path.with_extension("bak");
             if secret {
                 crate::alphacode_core::fs::set_permissions_owner_only(path)?;
             }
-            // Preserve the previous version as .bak without ever leaving the
-            // primary path missing. On Unix, rename(tmp, path) atomically
-            // replaces the destination, so the backup can be a hard link to
-            // the old inode: concurrent readers always see either the old or
-            // the new content, never ENOENT. (The old rename-away approach
-            // opened a window where the primary did not exist, which made
-            // concurrent load-all style readers silently drop entries, e.g.
-            // self-dev build requests "disappearing" from the queue.)
-            #[cfg(unix)]
-            {
-                let _ = std::fs::remove_file(&bak_path);
-                let _ = std::fs::hard_link(path, &bak_path);
-            }
-            // On Windows, rename fails when the destination exists, so the
-            // primary must be moved away first; the brief missing window is
-            // unavoidable without platform-specific replace APIs.
-            #[cfg(not(unix))]
-            {
-                let _ = std::fs::remove_file(&bak_path);
-                let _ = rename_replacing(path, &bak_path);
+            // Stage the backup beside the primary. Replacing either name
+            // leaves the old primary readable until the final atomic rename.
+            let staged_backup = path.with_extension(format!("bak.tmp.{pid}.{nonce}"));
+            if std::fs::hard_link(path, &staged_backup).is_ok() {
+                let _ = rename_replacing(&staged_backup, &bak_path);
+                // On Unix, a rename between two names for the same inode
+                // can succeed without removing the staged name.
+                let _ = std::fs::remove_file(&staged_backup);
             }
             if secret && bak_path.exists() {
                 crate::alphacode_core::fs::set_permissions_owner_only(&bak_path)?;
@@ -796,6 +788,36 @@ pub fn append_json_line_fast_no_dir<T: Serialize + ?Sized>(path: &Path, value: &
         .open(path)?;
     file.write_all(&line)?;
     Ok(line.len() as u64)
+}
+
+#[cfg(test)]
+#[test]
+fn atomic_replacement_keeps_the_previous_document_as_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    write_json(&path, &"first").unwrap();
+    write_json(&path, &"second").unwrap();
+    write_json(&path, &"third").unwrap();
+    assert_eq!(read_json::<String>(&path).unwrap(), "third");
+    assert_eq!(
+        read_json::<String>(&path.with_extension("bak")).unwrap(),
+        "second"
+    );
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+}
+
+#[cfg(test)]
+#[test]
+fn atomic_replacement_cleans_up_when_backup_already_links_to_primary() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    let backup = path.with_extension("bak");
+    write_json(&path, &"first").unwrap();
+    std::fs::hard_link(&path, &backup).unwrap();
+    write_json(&path, &"second").unwrap();
+    assert_eq!(read_json::<String>(&path).unwrap(), "second");
+    assert_eq!(read_json::<String>(&backup).unwrap(), "first");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
 }
 
 #[cfg(all(test, windows))]

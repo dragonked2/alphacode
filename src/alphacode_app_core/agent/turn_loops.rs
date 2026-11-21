@@ -292,7 +292,7 @@ impl Agent {
             let send_messages = stamped.as_deref().unwrap_or(messages_with_memory);
             let prompt_has_recent_tool_result = Self::messages_end_with_tool_result(send_messages);
             self.last_status_detail = None;
-            let mut stream = match self
+            let stream = match self
                 .provider
                 .complete_split(
                     send_messages,
@@ -341,6 +341,12 @@ impl Agent {
                     return Err(e);
                 }
             };
+
+            let provider_manages_tools = self.provider.handles_tools_internally();
+            let mut stream = crate::alphacode_provider_core::turn_stream::guard_stream(
+                stream,
+                provider_manages_tools,
+            );
 
             // The provider returned an owned stream, so the request transcript
             // copies are no longer needed while the response is consumed.
@@ -415,6 +421,8 @@ impl Agent {
             loop {
                 let next_event = std::pin::pin!(stream.next());
                 let event = tokio::select! {
+                    biased;
+                    _ = self.graceful_shutdown.notified() => break,
                     _ = keepalive.tick() => {
                         if print_output
                             && !pending_terminal_text.is_empty()
@@ -461,7 +469,9 @@ impl Agent {
                         }
                         let err_str =
                             super::response_recovery::provider_error_text_for_recovery(&e);
-                        if self.try_auto_compact_after_context_limit(&err_str) {
+                        if !provider_manages_tools
+                            && self.try_auto_compact_after_context_limit(&err_str)
+                        {
                             log_agent_provider_stream_lifecycle(
                                 logging::LogLevel::Warn,
                                 self,
@@ -506,7 +516,8 @@ impl Agent {
                                 store_reasoning_content,
                             );
                         }
-                        if text_content.is_empty()
+                        if !provider_manages_tools
+                            && text_content.is_empty()
                             && reasoning_content.is_empty()
                             && tool_calls.is_empty()
                             && let Some(delay) = self.maybe_continue_after_provider_error(
@@ -531,6 +542,20 @@ impl Agent {
                             api_start,
                             vec![("mode", "blocking".to_string()), ("error", err_str)],
                         );
+                        if print_output {
+                            flush_stream_output(
+                                &mut pending_terminal_text,
+                                &mut last_terminal_flush,
+                            )?;
+                        }
+                        self.commit_partial_stream_for_continuation(
+                            &mut text_content,
+                            &mut reasoning_content,
+                            &mut tool_calls,
+                            &provider_name,
+                            store_reasoning_content,
+                        );
+                        self.persist_session_best_effort("failed provider stream");
                         return Err(e);
                     }
                 };
@@ -813,8 +838,6 @@ impl Agent {
                         if reason.is_some() {
                             stop_reason = reason;
                         }
-                        // Don't break yet - wait for SessionId which comes after MessageEnd
-                        // (but stream close will also end the loop for providers without SessionId)
                     }
                     StreamEvent::SessionId(sid) => {
                         if trace {
@@ -822,10 +845,6 @@ impl Agent {
                         }
                         self.provider_session_id = Some(sid.clone());
                         self.session.provider_session_id = Some(sid);
-                        // We've received session_id, can exit the loop now
-                        if saw_message_end {
-                            break;
-                        }
                     }
                     StreamEvent::UpstreamProvider { provider } => {
                         // Log upstream provider for local trace output
@@ -901,7 +920,9 @@ impl Agent {
                         if trace {
                             eprintln!("[trace] stream_error {}", message);
                         }
-                        if self.try_auto_compact_after_context_limit(&message) {
+                        if !provider_manages_tools
+                            && self.try_auto_compact_after_context_limit(&message)
+                        {
                             log_agent_provider_stream_lifecycle(
                                 logging::LogLevel::Warn,
                                 self,
@@ -951,7 +972,8 @@ impl Agent {
                                 store_reasoning_content,
                             );
                         }
-                        if text_content.is_empty()
+                        if !provider_manages_tools
+                            && text_content.is_empty()
                             && reasoning_content.is_empty()
                             && tool_calls.is_empty()
                             && let Some(delay) = self.maybe_continue_after_provider_error(
@@ -985,6 +1007,20 @@ impl Agent {
                                 ),
                             ],
                         );
+                        if print_output {
+                            flush_stream_output(
+                                &mut pending_terminal_text,
+                                &mut last_terminal_flush,
+                            )?;
+                        }
+                        self.commit_partial_stream_for_continuation(
+                            &mut text_content,
+                            &mut reasoning_content,
+                            &mut tool_calls,
+                            &provider_name,
+                            store_reasoning_content,
+                        );
+                        self.persist_session_best_effort("failed provider stream");
                         return Err(StreamError::new(message, retry_after_secs).into());
                     }
                 }
@@ -1013,6 +1049,18 @@ impl Agent {
 
             if print_output {
                 flush_stream_output(&mut pending_terminal_text, &mut last_terminal_flush)?;
+            }
+
+            if self.is_graceful_shutdown() {
+                self.commit_partial_stream_for_continuation(
+                    &mut text_content,
+                    &mut reasoning_content,
+                    &mut tool_calls,
+                    &provider_name,
+                    store_reasoning_content,
+                );
+                self.persist_session_best_effort("interrupted provider stream");
+                return Err(super::TurnInterrupted.into());
             }
 
             // The stream has completed successfully only after MessageEnd.

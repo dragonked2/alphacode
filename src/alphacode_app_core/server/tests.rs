@@ -713,41 +713,28 @@ async fn wake_turn_tracks_member_status_and_emits_terminal_done() {
     .await;
     assert!(started, "idle live session should accept the wake turn");
 
-    // Member status must flip to running while the wake turn streams.
-    let observed_running = timeout(Duration::from_secs(2), async {
-        loop {
-            {
-                let members = swarm_members.read().await;
-                if members
-                    .get(&session_id)
-                    .is_some_and(|member| member.status == "running")
-                {
-                    return true;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap_or(false);
-
-    // Attached clients must see a terminal Done event so the UI can settle.
-    let saw_done = timeout(Duration::from_secs(2), async {
-        loop {
-            match member_event_rx.recv().await {
-                Some(ServerEvent::Done { .. }) => return true,
-                Some(_) => continue,
-                None => return false,
+    let mut text = String::new();
+    let mut saw_message_end = false;
+    timeout(Duration::from_secs(2), async {
+        while let Some(event) = member_event_rx.recv().await {
+            match event {
+                ServerEvent::TextDelta { text: delta } => text.push_str(&delta),
+                ServerEvent::MessageEnd { .. } => saw_message_end = true,
+                ServerEvent::Done { id: 0 } => return,
+                ServerEvent::Error { message, .. } => panic!("wake turn failed: {message}"),
+                _ => {}
             }
         }
+        panic!("wake turn closed the channel without completing");
     })
     .await
     .expect("wake turn should emit a terminal event promptly");
-    assert!(saw_done, "wake turn must emit Done to attached clients");
-    assert!(
-        observed_running,
-        "member status should be running while the wake turn streams"
-    );
+    assert_eq!(text, "Wake turn finished.");
+    assert!(saw_message_end);
+    assert!(event_history.read().await.iter().any(|record| {
+        record.session_id == session_id
+            && matches!(&record.event, super::SwarmEventType::StatusChange { new_status, .. } if new_status == "running")
+    }));
 
     // After completion the member returns to ready with a completion report.
     let (final_status, report) = timeout(Duration::from_secs(2), async {

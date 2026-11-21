@@ -462,22 +462,6 @@ pub(super) fn session_event_fanout_sender(
     tx
 }
 
-pub(super) fn session_event_fanout_sender_with_fallback(
-    session_id: String,
-    swarm_members: Arc<RwLock<HashMap<String, SwarmMember>>>,
-    fallback_tx: mpsc::UnboundedSender<ServerEvent>,
-) -> mpsc::UnboundedSender<ServerEvent> {
-    let (tx, mut rx) = mpsc::unbounded_channel::<ServerEvent>();
-    tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            if fanout_session_event(&swarm_members, &session_id, event.clone()).await == 0 {
-                let _ = fallback_tx.send(event);
-            }
-        }
-    });
-    tx
-}
-
 pub(super) fn enqueue_soft_interrupt(
     queue: &SoftInterruptQueue,
     content: String,

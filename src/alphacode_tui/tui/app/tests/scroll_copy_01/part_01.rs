@@ -73,6 +73,26 @@ fn create_scroll_test_app(
     (app, terminal)
 }
 
+fn create_prompt_jump_test_app() -> (
+    App,
+    ratatui::Terminal<ratatui::backend::TestBackend>,
+    [usize; 2],
+) {
+    let (mut app, mut terminal) = create_scroll_test_app(100, 30, 0, 40);
+    app.display_messages.push(DisplayMessage::user("Second prompt"));
+    app.display_messages
+        .push(DisplayMessage::assistant("Follow-up detail.\n\n".repeat(40)));
+    app.bump_display_messages_version();
+    render_and_snap(&app, &mut terminal);
+    let positions = crate::alphacode_tui::tui::ui::last_user_prompt_positions();
+    let [first, second] = positions.as_slice() else {
+        panic!("expected two rendered prompts, got {positions:?}");
+    };
+    let max = crate::alphacode_tui::tui::ui::last_max_scroll();
+    assert!(*first < *second && *second < max);
+    (app, terminal, [*first, *second])
+}
+
 fn create_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
     let mut app = create_test_app();
     app.display_messages = vec![
@@ -639,25 +659,21 @@ fn test_notification_file_activity_repaint_does_not_leave_trailing_digit_artifac
 }
 
 #[test]
-fn test_file_activity_scroll_reproduces_trailing_ghost_after_native_scroll_like_mutation() {
+fn test_file_activity_scroll_repaints_trailing_ghost_after_backend_mutation() {
     let _lock = scroll_render_test_lock();
 
     let mut app = create_test_app();
-    let backend = ratatui::backend::TestBackend::new(120, 12);
+    app.diagram_mode = crate::config::DiagramDisplayMode::None;
+    app.diagram_pane_enabled = false;
+    let backend = ratatui::backend::TestBackend::new(140, 12);
     let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
 
-    let mut lines = vec![
-        "⚠️ File activity: /home/jeremy/alphacode/src/lib.rs - amber previously read this file: read lines 1-9"
-            .to_string(),
-    ];
+    let mut lines = vec!["⚠️ File activity: src/lib.rs · amber read lines 1-9".to_string()];
     for idx in 1..=40 {
         lines.push(format!("filler line {idx:02}"));
     }
 
-    // Join as separate markdown paragraphs: the repro depends on the file
-    // activity line owning its row with trailing blank cells (so a blank->blank
-    // diff skips repainting the injected ghost). Single newlines now soft-wrap
-    // into one flowing paragraph, which would repaint over the ghost cells.
+    // Keep the alert on its own row so the backend artifact can occupy blank cells.
     app.display_messages = vec![DisplayMessage::assistant(lines.join("\n\n"))];
     app.bump_display_messages_version();
     app.auto_scroll_paused = true;
@@ -679,29 +695,43 @@ fn test_file_activity_scroll_reproduces_trailing_ghost_after_native_scroll_like_
         .lines()
         .position(|line| line.contains("read lines"))
         .unwrap_or_else(|| panic!("expected file activity line to be visible, got:\n{clean}"));
-    let target_line = clean.lines().nth(target_row).expect("target line text");
-    let trail_start = target_line
-        .find("read lines 1-9")
-        .expect("expected file activity suffix")
-        + "read lines 1-9".len();
+    let buffer = terminal.backend().buffer();
+    let row = target_row as u16;
+    let mut prefix = String::new();
+    let suffix_end = (0..buffer.area.width)
+        .find(|&x| {
+            prefix.push_str(buffer[(x, row)].symbol());
+            prefix.ends_with("read lines 1-9")
+        })
+        .expect("expected file activity suffix") + 1;
+    let trail_start = (suffix_end..=buffer.area.width - 4)
+        .find(|&start| (start..start + 4).all(|x| buffer[(x, row)].symbol() == " "))
+        .expect("expected four trailing blank cells after the alert");
 
     let ghost = ratatui::buffer::Buffer::with_lines(["ZZZZ"]);
     let updates = ghost
         .content()
         .iter()
         .enumerate()
-        .map(|(idx, cell)| (trail_start as u16 + idx as u16, target_row as u16, cell));
+        .map(|(idx, cell)| (trail_start + idx as u16, row, cell));
     terminal
         .backend_mut()
         .draw(updates)
-        .expect("inject trailing nines after file activity line");
+        .expect("inject a backend artifact after the file activity line");
 
-    app.scroll_offset += 1;
+    assert!(
+        (trail_start..trail_start + 4)
+            .all(|x| terminal.backend().buffer()[(x, row)].symbol() == "Z")
+    );
+    app.force_full_repaint = false;
+    assert!(app.scroll_down(1), "scroll should move the transcript");
+    assert!(app.force_full_repaint, "scroll should request a fresh repaint");
+    crate::alphacode_tui::tui::app::run_shell::invalidate_previous_terminal_buffer(&mut terminal);
     let scrolled = render_and_snap(&app, &mut terminal);
 
     assert!(
-        scrolled.contains('Z'),
-        "expected an injected ghost marker to remain after scroll-like repaint:\n{scrolled}"
+        !scrolled.contains("ZZZZ"),
+        "scroll repaint should clear the injected artifact:\n{scrolled}"
     );
 }
 
@@ -1085,10 +1115,7 @@ fn test_reconnect_target_does_not_consume_resume_session_id() {
 #[test]
 fn test_prompt_jump_ctrl_brackets() {
     let _render_lock = scroll_render_test_lock();
-    let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
-
-    // Seed max scroll estimates before key handling.
-    render_and_snap(&app, &mut terminal);
+    let (mut app, mut terminal, [first, second]) = create_prompt_jump_test_app();
 
     assert_eq!(app.scroll_offset, 0);
     assert!(!app.auto_scroll_paused);
@@ -1096,12 +1123,18 @@ fn test_prompt_jump_ctrl_brackets() {
     app.handle_key(KeyCode::Char('['), KeyModifiers::CONTROL)
         .unwrap();
     assert!(app.auto_scroll_paused);
-    assert!(app.scroll_offset > 0);
+    render_and_snap(&app, &mut terminal);
+    assert_eq!(crate::alphacode_tui::tui::ui::last_resolved_chat_scroll(), second);
+    app.handle_key(KeyCode::Char('['), KeyModifiers::CONTROL)
+        .unwrap();
+    assert_eq!(app.scroll_offset, first);
 
-    let after_up = app.scroll_offset;
     app.handle_key(KeyCode::Char(']'), KeyModifiers::CONTROL)
         .unwrap();
-    assert!(app.scroll_offset <= after_up);
+    assert_eq!(app.scroll_offset, second);
+    app.handle_key(KeyCode::Char(']'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(!app.auto_scroll_paused);
 }
 
 // NOTE: test_prompt_jump_ctrl_digits_by_recency was removed because it relied on
@@ -1112,14 +1145,12 @@ fn test_prompt_jump_ctrl_brackets() {
 #[test]
 fn test_prompt_jump_ctrl_esc_fallback_on_macos() {
     let _render_lock = scroll_render_test_lock();
-    let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
-
-    render_and_snap(&app, &mut terminal);
+    let (mut app, _terminal, [_, second]) = create_prompt_jump_test_app();
 
     assert_eq!(app.scroll_offset, 0);
     app.handle_key(KeyCode::Esc, KeyModifiers::CONTROL).unwrap();
     assert!(app.auto_scroll_paused);
-    assert!(app.scroll_offset > 0);
+    assert_eq!(app.scroll_offset, second);
 }
 
 #[test]

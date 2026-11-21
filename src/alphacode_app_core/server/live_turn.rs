@@ -10,16 +10,14 @@
 //! This module is the single shared implementation: it marks the member
 //! `running` while the turn streams, flips it back to `ready` (with a
 //! completion report) or `failed` at the end, and fans out a terminal
-//! `Done`/`Error` event (id 0) so attached clients can settle the externally
-//! started turn in their UI.
+//! event so attached clients can settle the externally started turn in their UI.
 
-use super::client_lifecycle::process_message_streaming_mpsc;
+use super::client_lifecycle::{TurnEventRelay, turn_terminal_event};
 use super::{
-    SwarmEvent, SwarmMember, session_event_fanout_sender, truncate_detail, update_member_status,
+    SwarmEvent, SwarmMember, truncate_detail, update_member_status,
     update_member_status_with_report,
 };
 use crate::alphacode_app_core::agent::Agent;
-use crate::alphacode_app_core::protocol::ServerEvent;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -85,12 +83,9 @@ pub(super) async fn idle_live_agent(
 
 /// Spawn `message` as a full tracked turn in a live session.
 ///
-/// Mirrors the client-initiated turn lifecycle: the swarm member is marked
-/// `running` before the turn starts and `ready` (with a completion report) or
-/// `failed` when it finishes. A synthetic terminal `Done { id: 0 }` (or
-/// `Error { id: 0, .. }`) is fanned out to attached clients so their UI can
-/// finish rendering the externally started turn.
-pub(super) async fn spawn_tracked_live_turn(
+/// Update member status and publish one terminal event while the turn owns
+/// the agent lock, so the next turn cannot race the previous turn's output.
+pub(super) fn spawn_tracked_live_turn(
     session_id: &str,
     agent: Arc<Mutex<Agent>>,
     message: String,
@@ -98,39 +93,33 @@ pub(super) async fn spawn_tracked_live_turn(
     status_detail: Option<String>,
     swarm: LiveTurnSwarmContext,
 ) {
-    update_member_status(
-        session_id,
-        "running",
-        status_detail,
-        &swarm.members,
-        &swarm.swarms_by_id,
-        Some(&swarm.event_history),
-        Some(&swarm.event_counter),
-        Some(&swarm.event_tx),
-    )
-    .await;
-
-    let event_tx = session_event_fanout_sender(session_id.to_string(), Arc::clone(&swarm.members));
     let session_id = session_id.to_string();
     tokio::spawn(async move {
-        let start_message_index = {
-            let agent_guard = agent.lock().await;
-            agent_guard.message_count()
-        };
-        let result = process_message_streaming_mpsc(
-            Arc::clone(&agent),
-            &message,
-            vec![],
-            system_reminder,
-            event_tx.clone(),
+        let mut agent = agent.lock().await;
+        update_member_status(
+            &session_id,
+            "running",
+            status_detail,
+            &swarm.members,
+            &swarm.swarms_by_id,
+            Some(&swarm.event_history),
+            Some(&swarm.event_counter),
+            Some(&swarm.event_tx),
         )
         .await;
+        let relay = TurnEventRelay::new(&swarm.members, &session_id, None);
+        let start_message_index = agent.message_count();
+        let generation_id = uuid::Uuid::new_v4();
+        crate::logging::info(&format!(
+            "Starting background generation {generation_id} session={session_id}"
+        ));
+        let result = relay
+            .run(&mut agent, &message, Vec::new(), system_reminder)
+            .await;
+        let (outcome, terminal_event) = turn_terminal_event(0, &result);
         match result {
             Ok(()) => {
-                let completion_report = {
-                    let agent_guard = agent.lock().await;
-                    agent_guard.latest_assistant_text_after(start_message_index)
-                };
+                let completion_report = agent.latest_assistant_text_after(start_message_index);
                 update_member_status_with_report(
                     &session_id,
                     "ready",
@@ -143,16 +132,16 @@ pub(super) async fn spawn_tracked_live_turn(
                     Some(&swarm.event_tx),
                 )
                 .await;
-                let _ = event_tx.send(ServerEvent::Done { id: 0 });
             }
             Err(error) => {
-                crate::logging::error(&format!(
-                    "Server-initiated turn failed for live session {}: {}",
-                    session_id, error
-                ));
+                let status = if error.is::<crate::agent::TurnInterrupted>() {
+                    "stopped"
+                } else {
+                    "failed"
+                };
                 update_member_status(
                     &session_id,
-                    "failed",
+                    status,
                     Some(truncate_detail(&error.to_string(), 120)),
                     &swarm.members,
                     &swarm.swarms_by_id,
@@ -161,13 +150,12 @@ pub(super) async fn spawn_tracked_live_turn(
                     Some(&swarm.event_tx),
                 )
                 .await;
-                let _ = event_tx.send(ServerEvent::Error {
-                    id: 0,
-                    message: crate::util::format_error_chain(&error),
-                    retry_after_secs: None,
-                });
             }
         }
+        crate::logging::info(&format!(
+            "Finished background generation {generation_id} session={session_id} outcome={outcome}"
+        ));
+        relay.send(terminal_event).await;
     });
 }
 
@@ -191,7 +179,6 @@ pub(super) async fn run_live_turn_if_idle(
         system_reminder,
         detail,
         swarm,
-    )
-    .await;
+    );
     true
 }

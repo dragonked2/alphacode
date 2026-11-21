@@ -81,11 +81,15 @@ impl Agent {
         &mut self,
         event_tx: mpsc::UnboundedSender<ServerEvent>,
     ) -> Result<()> {
-        crate::alphacode_provider_core::request_audit::scope(
+        let result = crate::alphacode_provider_core::request_audit::scope(
             self.session.id.clone(),
             self.run_turn_streaming_mpsc_audited(event_tx),
         )
-        .await
+        .await;
+        if self.is_graceful_shutdown() {
+            return Err(super::TurnInterrupted.into());
+        }
+        result
     }
 
     async fn run_turn_streaming_mpsc_audited(
@@ -373,7 +377,7 @@ impl Agent {
             drop(cache_signature_messages);
             drop(ephemeral_signature_messages);
             let mut keepalive = stream_keepalive_ticker();
-            let mut stream = {
+            let stream = {
                 let mut complete_future = std::pin::pin!(provider.complete_split(
                     send_messages,
                     tools,
@@ -409,7 +413,10 @@ impl Agent {
                                     )? {
                                         if delay > 0 {
                                             logging::info(&format!("Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})", Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS));
-                                            tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                                            tokio::select! {
+                                    _ = self.graceful_shutdown.notified() => return Err(super::TurnInterrupted.into()),
+                                    _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+                                }
                                         }
                                         // A zero delay means free-pool rotation
                                         // already switched models. Resync the
@@ -463,6 +470,12 @@ impl Agent {
                     }
                 }
             };
+
+            let provider_manages_tools = self.provider.handles_tools_internally();
+            let mut stream = crate::alphacode_provider_core::turn_stream::guard_stream(
+                stream,
+                provider_manages_tools,
+            );
 
             // `complete_split` has consumed the request and returned an owned
             // response stream. Keeping these full transcript snapshots alive
@@ -541,6 +554,23 @@ impl Agent {
             loop {
                 let next_event = std::pin::pin!(stream.next());
                 let event = tokio::select! {
+                    biased;
+                    _ = self.graceful_shutdown.notified() => {
+                        log_agent_provider_stream_lifecycle(
+                            logging::LogLevel::Warn,
+                            self,
+                            "stream_cancelled",
+                            api_start,
+                            vec![
+                                ("mode", "mpsc".to_string()),
+                                ("reason", "graceful_shutdown".to_string()),
+                            ],
+                        );
+                        logging::info(
+                            "Graceful shutdown/cancel while waiting for API stream event - stopping stream",
+                        );
+                        break;
+                    }
                     _ = keepalive.tick() => {
                         // Dead-stream guard: if no real stream event arrived
                         // within the timeout, the stream is hung.
@@ -566,22 +596,6 @@ impl Agent {
                         }
                         send_stream_keepalive_mpsc(&event_tx);
                         continue;
-                    }
-                    _ = self.graceful_shutdown.notified() => {
-                        log_agent_provider_stream_lifecycle(
-                            logging::LogLevel::Warn,
-                            self,
-                            "stream_cancelled",
-                            api_start,
-                            vec![
-                                ("mode", "mpsc".to_string()),
-                                ("reason", "graceful_shutdown".to_string()),
-                            ],
-                        );
-                        logging::info(
-                            "Graceful shutdown/cancel while waiting for API stream event - stopping stream",
-                        );
-                        break;
                     }
                     event = next_event => event,
                 };
@@ -619,7 +633,9 @@ impl Agent {
                     Err(e) => {
                         let err_str =
                             super::response_recovery::provider_error_text_for_recovery(&e);
-                        if self.try_auto_compact_after_context_limit(&err_str) {
+                        if !provider_manages_tools
+                            && self.try_auto_compact_after_context_limit(&err_str)
+                        {
                             log_agent_provider_stream_lifecycle(
                                 logging::LogLevel::Warn,
                                 self,
@@ -675,7 +691,8 @@ impl Agent {
                                 store_reasoning_content,
                             );
                         }
-                        if text_content.is_empty()
+                        if !provider_manages_tools
+                            && text_content.is_empty()
                             && reasoning_content.is_empty()
                             && tool_calls.is_empty()
                             && let Some(delay) = self.maybe_continue_after_provider_error(
@@ -688,7 +705,10 @@ impl Agent {
                                     "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
                                     Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
                                 ));
-                                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                                tokio::select! {
+                                    _ = self.graceful_shutdown.notified() => return Err(super::TurnInterrupted.into()),
+                                    _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+                                }
                             } else if let Some(detail) = self.last_status_detail.clone() {
                                 let _ = event_tx.send(ServerEvent::StatusDetail { detail });
                                 let _ = event_tx.send(ServerEvent::ModelChanged {
@@ -708,6 +728,14 @@ impl Agent {
                             api_start,
                             vec![("mode", "mpsc".to_string()), ("error", err_str.clone())],
                         );
+                        self.commit_partial_stream_for_continuation(
+                            &mut text_content,
+                            &mut reasoning_content,
+                            &mut tool_calls,
+                            &provider_name,
+                            store_reasoning_content,
+                        );
+                        self.persist_session_best_effort("failed provider stream");
                         return Err(super::response_recovery::annotate_final_turn_error(
                             e, &err_str,
                         ));
@@ -795,17 +823,6 @@ impl Agent {
                                 let _ =
                                     event_tx.send(ServerEvent::TextDelta { text: text.clone() });
                             }
-                        }
-                        if self.is_graceful_shutdown() {
-                            logging::info(
-                                "Graceful shutdown during streaming - checkpointing partial response",
-                            );
-                            let _ = event_tx.send(ServerEvent::TextDelta {
-                                text: "\n\n[generation interrupted - server reloading]".to_string(),
-                            });
-                            text_content
-                                .push_str("\n\n[generation interrupted - server reloading]");
-                            break;
                         }
                     }
                     StreamEvent::ToolUseStart { id, name } => {
@@ -1090,7 +1107,9 @@ impl Agent {
                         message,
                         retry_after_secs,
                     } => {
-                        if self.try_auto_compact_after_context_limit(&message) {
+                        if !provider_manages_tools
+                            && self.try_auto_compact_after_context_limit(&message)
+                        {
                             log_agent_provider_stream_lifecycle(
                                 logging::LogLevel::Warn,
                                 self,
@@ -1153,7 +1172,8 @@ impl Agent {
                                 store_reasoning_content,
                             );
                         }
-                        if text_content.is_empty()
+                        if !provider_manages_tools
+                            && text_content.is_empty()
                             && reasoning_content.is_empty()
                             && tool_calls.is_empty()
                             && let Some(delay) = self.maybe_continue_after_provider_error(
@@ -1166,7 +1186,10 @@ impl Agent {
                                     "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
                                     Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
                                 ));
-                                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                                tokio::select! {
+                                    _ = self.graceful_shutdown.notified() => return Err(super::TurnInterrupted.into()),
+                                    _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+                                }
                             } else if let Some(detail) = self.last_status_detail.clone() {
                                 let _ = event_tx.send(ServerEvent::StatusDetail { detail });
                                 let _ = event_tx.send(ServerEvent::ModelChanged {
@@ -1195,6 +1218,14 @@ impl Agent {
                                 ),
                             ],
                         );
+                        self.commit_partial_stream_for_continuation(
+                            &mut text_content,
+                            &mut reasoning_content,
+                            &mut tool_calls,
+                            &provider_name,
+                            store_reasoning_content,
+                        );
+                        self.persist_session_best_effort("failed provider stream");
                         return Err(StreamError::new(message, retry_after_secs).into());
                     }
                 }
@@ -1221,95 +1252,44 @@ impl Agent {
                 continue;
             }
 
-            // A stream that ends without a terminal MessageEnd is a dropped or
-            // truncated response, never a completed turn. Historically the loop
-            // fell through to end-of-turn handling with nothing to show, so a
-            // proxy reset, hung-stream timeout, or silent upstream cut left the
-            // agent waiting for the next user message with zero output and zero
-            // explanation (the "hidden error" hang). Retry it like any other
-            // transient provider error, and when the retry budget is exhausted
-            // surface a visible notice instead of stopping silently.
-            if !saw_message_end && !self.is_graceful_shutdown() {
-                const PREMATURE_STREAM_END_ERROR: &str = "provider stream ended unexpectedly before message_end (unexpected eof; dropped or truncated response)";
-                let has_visible_partial = !text_content.trim().is_empty();
-                let has_any_partial = has_visible_partial
-                    || !reasoning_content.trim().is_empty()
-                    || !tool_calls.is_empty();
-                let retry_delay = self.maybe_continue_after_provider_error(
-                    PREMATURE_STREAM_END_ERROR,
-                    &mut provider_error_continuations,
-                )?;
-                if let Some(delay) = retry_delay {
-                    // Resume from the exact point the stream died instead of
-                    // restarting from scratch (or ending with a half-visible
-                    // turn). Incomplete tool calls are dropped by the commit
-                    // helper; the injected reminder re-emits them.
-                    if has_any_partial {
-                        self.commit_partial_stream_for_continuation(
-                            &mut text_content,
-                            &mut reasoning_content,
-                            &mut tool_calls,
-                            &provider_name,
-                            store_reasoning_content,
-                        );
-                    }
-                    if delay > 0 {
-                        let _ = event_tx.send(ServerEvent::StatusDetail {
-                            detail: format!(
-                                "Provider connection dropped; retrying (attempt {}/{}).",
-                                provider_error_continuations,
-                                Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                            ),
+            if self.is_graceful_shutdown() {
+                if !text_content.trim().is_empty() {
+                    let during_reload = crate::server::recent_reload_state(Duration::from_secs(30))
+                        .is_some_and(|state| {
+                            state.pid == std::process::id()
+                                && state.phase == crate::server::ReloadPhase::Starting
                         });
-                        tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
-                    }
-                    log_agent_provider_stream_lifecycle(
-                        logging::LogLevel::Warn,
-                        self,
-                        "stream_eof_retry",
-                        api_start,
-                        vec![
-                            ("mode", "mpsc".to_string()),
-                            ("attempt", provider_error_continuations.to_string()),
-                            ("had_partial", has_any_partial.to_string()),
-                        ],
-                    );
-                    // Re-issue the request on the next outer-loop iteration;
-                    // usage of the dead stream was never recorded.
-                    continue;
-                }
-                // Retries are not possible (non-transient classification or
-                // exhausted budget). Explain the empty turn so the user knows
-                // what happened instead of staring at a silent transcript.
-                if !has_visible_partial {
-                    let stop_label = stop_reason
-                        .clone()
-                        .filter(|reason| !reason.trim().is_empty())
-                        .unwrap_or_else(|| "no stop reason".to_string());
-                    let notice = if has_any_partial {
-                        format!(
-                            "The provider connection dropped before any visible output arrived ({stop_label}). Only internal reasoning was received; send your message again to retry."
-                        )
+                    let marker = if during_reload {
+                        "[generation interrupted - server reloading]"
                     } else {
-                        format!(
-                            "The provider connection dropped before any response arrived ({stop_label}). This is usually a transient network or provider issue; send your message again to retry, or run /doctor to check provider health."
-                        )
+                        "[generation interrupted by user]"
                     };
-                    log_agent_provider_stream_lifecycle(
-                        logging::LogLevel::Error,
-                        self,
-                        "stream_eof_exhausted",
-                        api_start,
-                        vec![
-                            ("mode", "mpsc".to_string()),
-                            ("had_partial", has_any_partial.to_string()),
-                        ],
-                    );
-                    let _ = event_tx.send(ServerEvent::ProviderGuardrail {
-                        stop_reason: stop_reason.clone(),
-                        message: notice,
-                    });
+                    text_content.push_str("\n\n");
+                    text_content.push_str(marker);
                 }
+                self.commit_partial_stream_for_continuation(
+                    &mut text_content,
+                    &mut reasoning_content,
+                    &mut tool_calls,
+                    &provider_name,
+                    store_reasoning_content,
+                );
+                self.persist_session_best_effort("interrupted provider stream");
+                return Err(super::TurnInterrupted.into());
+            }
+
+            if !saw_message_end {
+                self.commit_partial_stream_for_continuation(
+                    &mut text_content,
+                    &mut reasoning_content,
+                    &mut tool_calls,
+                    &provider_name,
+                    store_reasoning_content,
+                );
+                self.persist_session_best_effort("interrupted provider stream");
+                return Err(anyhow::anyhow!(
+                    crate::alphacode_provider_core::turn_stream::INCOMPLETE_STREAM
+                ));
             }
 
             let api_elapsed = api_start.elapsed();
@@ -2293,7 +2273,10 @@ impl Agent {
             if let Some(delay) =
                 super::pacing::inter_call_delay(Some(self.provider.model().as_str()), true)
             {
-                tokio::time::sleep(delay).await;
+                tokio::select! {
+                    _ = self.graceful_shutdown.notified() => return Err(super::TurnInterrupted.into()),
+                    _ = tokio::time::sleep(delay) => {}
+                }
             }
         }
         Ok(())

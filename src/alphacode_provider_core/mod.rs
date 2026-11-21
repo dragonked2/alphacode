@@ -21,6 +21,7 @@ pub mod retry_after;
 pub mod selection;
 pub mod tool_description;
 pub mod transport;
+pub(crate) mod turn_stream;
 
 pub use tool_description::{
     DEFAULT_TOOL_DESCRIPTION_MAX_CHARS, MIN_TOOL_DESCRIPTION_MAX_CHARS, sanitize_tool_description,

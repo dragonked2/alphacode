@@ -691,20 +691,21 @@ impl CopilotApiProvider {
 
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
-        let mut current_tool_id = String::new();
-        let mut current_tool_name = String::new();
-        let mut current_tool_args = String::new();
+        let mut utf8 = crate::alphacode_core::util::Utf8StreamDecoder::new();
+        let mut tool_calls = std::collections::BTreeMap::<u64, CopilotToolCall>::new();
+        let mut stop_reason = None;
+        let mut saw_done = false;
         let mut input_tokens: u64 = 0;
         let mut output_tokens: u64 = 0;
         let mut saw_any_data = false;
 
-        loop {
+        'stream: loop {
             let chunk = match tokio::time::timeout(sse_chunk_timeout, stream.next()).await {
                 Ok(Some(Ok(c))) => c,
                 Ok(Some(Err(e))) => {
                     anyhow::bail!("Stream error: {}", e);
                 }
-                Ok(None) => break, // stream ended normally
+                Ok(None) => break,
                 Err(_) => {
                     crate::alphacode_base::logging::warn(&format!(
                         "Copilot SSE stream timed out (no data for {}s, saw_data={})",
@@ -719,7 +720,7 @@ impl CopilotApiProvider {
             };
             saw_any_data = true;
 
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            utf8.decode_into(&chunk, &mut buffer);
 
             // Process complete SSE lines
             while let Some(line_end) = buffer.find('\n') {
@@ -732,31 +733,13 @@ impl CopilotApiProvider {
 
                 if let Some(data) = crate::alphacode_base::util::sse_data_line(&line) {
                     if data.trim() == "[DONE]" {
-                        // Send usage info before done
-                        if input_tokens > 0 || output_tokens > 0 {
-                            let _ = tx
-                                .send(Ok(StreamEvent::TokenUsage {
-                                    input_tokens: Some(input_tokens),
-                                    output_tokens: Some(output_tokens),
-                                    cache_creation_input_tokens: None,
-                                    cache_read_input_tokens: None,
-                                }))
-                                .await;
-                        }
-                        crate::alphacode_base::copilot_usage::record_request(
-                            input_tokens,
-                            output_tokens,
-                            true,
-                        );
-                        let _ = tx
-                            .send(Ok(StreamEvent::MessageEnd { stop_reason: None }))
-                            .await;
-                        return Ok(());
+                        saw_done = true;
+                        break 'stream;
                     }
 
                     let parsed: Value = match serde_json::from_str(data) {
                         Ok(v) => v,
-                        Err(_) => continue,
+                        Err(error) => anyhow::bail!("Invalid Copilot SSE JSON: {error}"),
                     };
 
                     // Extract usage if present
@@ -774,85 +757,53 @@ impl CopilotApiProvider {
                     // Process choices
                     if let Some(choices) = parsed.get("choices").and_then(|c| c.as_array()) {
                         for choice in choices {
-                            let delta = match choice.get("delta") {
-                                Some(d) => d,
-                                None => continue,
-                            };
-
-                            // Text content
-                            if let Some(content) = delta.get("content").and_then(|c| c.as_str())
-                                && !content.is_empty()
-                            {
-                                let _ = tx
-                                    .send(Ok(StreamEvent::TextDelta(content.to_string())))
-                                    .await;
+                            if stop_reason.is_some() {
+                                continue;
                             }
-
-                            // Tool calls
-                            if let Some(tool_calls) =
-                                delta.get("tool_calls").and_then(|t| t.as_array())
-                            {
-                                for tc in tool_calls {
-                                    // New tool call start
-                                    if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
-                                        // Flush previous tool call if any
-                                        if !current_tool_id.is_empty() {
-                                            let _ = tx.send(Ok(StreamEvent::ToolUseEnd)).await;
-                                        }
-                                        current_tool_id = id.to_string();
-                                        current_tool_name = tc
-                                            .get("function")
-                                            .and_then(|f| f.get("name"))
-                                            .and_then(|n| n.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        current_tool_args.clear();
-
-                                        let _ = tx
-                                            .send(Ok(StreamEvent::ToolUseStart {
-                                                id: current_tool_id.clone(),
-                                                name: current_tool_name.clone(),
-                                            }))
-                                            .await;
-                                    }
-
-                                    // Accumulate arguments
-                                    if let Some(args) = tc
-                                        .get("function")
-                                        .and_then(|f| f.get("arguments"))
-                                        .and_then(|a| a.as_str())
-                                    {
-                                        current_tool_args.push_str(args);
-                                        let _ = tx
-                                            .send(Ok(StreamEvent::ToolInputDelta(args.to_string())))
-                                            .await;
+                            if let Some(delta) = choice.get("delta") {
+                                if let Some(content) = delta.get("content").and_then(Value::as_str)
+                                    && !content.is_empty()
+                                    && tx
+                                        .send(Ok(StreamEvent::TextDelta(content.to_string())))
+                                        .await
+                                        .is_err()
+                                {
+                                    return Ok(());
+                                }
+                                if let Some(calls) =
+                                    delta.get("tool_calls").and_then(Value::as_array)
+                                {
+                                    for call in calls {
+                                        let index = call.get("index").and_then(Value::as_u64);
+                                        // A single unindexed call comes from older compatible servers.
+                                        let index = match index {
+                                            Some(index) => index,
+                                            None if calls.len() == 1
+                                                && tool_calls.keys().all(|&index| index == 0) =>
+                                            {
+                                                0
+                                            }
+                                            None => anyhow::bail!(
+                                                "Copilot returned an ambiguous tool-call delta without an index"
+                                            ),
+                                        };
+                                        tool_calls.entry(index).or_default().apply_delta(call)?;
                                     }
                                 }
                             }
-
-                            // Finish reason
                             if let Some(finish) =
-                                choice.get("finish_reason").and_then(|f| f.as_str())
+                                choice.get("finish_reason").and_then(Value::as_str)
+                                && !finish.trim().is_empty()
                             {
-                                // Flush last tool call
-                                if !current_tool_id.is_empty() {
-                                    let _ = tx.send(Ok(StreamEvent::ToolUseEnd)).await;
-                                    current_tool_id.clear();
-                                    current_tool_name.clear();
-                                    current_tool_args.clear();
-                                }
-
-                                let stop_reason = match finish {
-                                    "stop" => "end_turn",
-                                    "tool_calls" => "tool_use",
-                                    "length" => "max_tokens",
-                                    other => other,
-                                };
-                                let _ = tx
-                                    .send(Ok(StreamEvent::MessageEnd {
-                                        stop_reason: Some(stop_reason.to_string()),
-                                    }))
-                                    .await;
+                                stop_reason = Some(
+                                    match finish {
+                                        "stop" => "end_turn",
+                                        "tool_calls" => "tool_use",
+                                        "length" => "max_tokens",
+                                        other => other,
+                                    }
+                                    .to_string(),
+                                );
                             }
                         }
                     }
@@ -860,10 +811,82 @@ impl CopilotApiProvider {
             }
         }
 
-        // Stream ended without [DONE]
-        let _ = tx
-            .send(Ok(StreamEvent::MessageEnd { stop_reason: None }))
-            .await;
+        if !saw_done && (stop_reason.is_none() || !buffer.trim().is_empty()) {
+            anyhow::bail!(crate::alphacode_provider_core::turn_stream::INCOMPLETE_STREAM);
+        }
+        if tool_calls
+            .values()
+            .any(|call| call.id.is_empty() || call.name.is_empty())
+        {
+            anyhow::bail!("Copilot returned a tool call without an ID or name");
+        }
+        for call in tool_calls.into_values() {
+            if tx
+                .send(Ok(StreamEvent::ToolUseStart {
+                    id: call.id,
+                    name: call.name,
+                }))
+                .await
+                .is_err()
+                || tx
+                    .send(Ok(StreamEvent::ToolInputDelta(call.arguments)))
+                    .await
+                    .is_err()
+                || tx.send(Ok(StreamEvent::ToolUseEnd)).await.is_err()
+            {
+                return Ok(());
+            }
+        }
+        if input_tokens > 0 || output_tokens > 0 {
+            let _ = tx
+                .send(Ok(StreamEvent::TokenUsage {
+                    input_tokens: Some(input_tokens),
+                    output_tokens: Some(output_tokens),
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                }))
+                .await;
+        }
+        crate::alphacode_base::copilot_usage::record_request(input_tokens, output_tokens, true);
+        let _ = tx.send(Ok(StreamEvent::MessageEnd { stop_reason })).await;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct CopilotToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+impl CopilotToolCall {
+    fn apply_delta(&mut self, delta: &Value) -> Result<()> {
+        if let Some(id) = delta
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            if !self.id.is_empty() && self.id != id {
+                anyhow::bail!("Copilot reused a tool-call index for a different ID");
+            }
+            self.id = id.to_string();
+        }
+        if let Some(function) = delta.get("function") {
+            if let Some(name) = function
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+            {
+                if !self.name.is_empty() && self.name != name {
+                    anyhow::bail!("Copilot changed the name of an in-progress tool call");
+                }
+                self.name = name.to_string();
+            }
+            if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
+                self.arguments.push_str(arguments);
+            }
+        }
         Ok(())
     }
 }

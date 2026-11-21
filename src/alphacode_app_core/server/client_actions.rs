@@ -1015,8 +1015,7 @@ pub(super) async fn handle_resume_all_sessions(
                 event_counter,
                 swarm_event_tx,
             ),
-        )
-        .await;
+        );
 
         resumed_sessions.push(display_name);
     }

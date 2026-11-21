@@ -1511,6 +1511,17 @@ fn compact_idle_session_stats_line(
     let separator = " · ";
     let metrics_width = UnicodeWidthStr::width(metrics.as_str());
     let marker_width = UnicodeWidthStr::width(marker);
+    if let Some(context) = context
+        && marker_width + metrics_width > max_width
+    {
+        return truncate_line_with_ellipsis(
+            Line::styled(
+                format!("ctx={context}"),
+                Style::default().fg(muted_text_color()),
+            ),
+            max_width,
+        );
+    }
     let separator_width = UnicodeWidthStr::width(separator);
     let model_budget = max_width.saturating_sub(marker_width + separator_width + metrics_width);
 
@@ -2681,6 +2692,12 @@ mod tests {
     fn compact_session_stats_respect_zero_width() {
         let line = compact_idle_session_stats_line("model", 42, Some("10%"), 0);
         assert!(line.spans.is_empty());
+    }
+
+    #[test]
+    fn compact_session_stats_prioritize_context_when_both_values_cannot_fit() {
+        let line = compact_idle_session_stats_line("model", 10_000, Some("42%"), 10);
+        assert_eq!(joined(&line.spans), "ctx=42%");
     }
 
     #[test]

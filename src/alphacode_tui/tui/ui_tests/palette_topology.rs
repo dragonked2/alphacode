@@ -8,7 +8,7 @@
 //! Run with `--ignored --nocapture` to print a fresh `Topology`; the printed
 //! counts are what belongs in the checked-in default.
 
-use super::TestState;
+use super::{TestState, viewport_snapshot_test_lock};
 use crate::alphacode_tui_messages::DisplayMessage;
 use crate::alphacode_tui_style::palette::role_for_rendered;
 use ratatui::style::Color;
@@ -19,6 +19,7 @@ type RoleArea = BTreeMap<&'static str, u32>;
 type Adjacency = BTreeMap<(&'static str, &'static str), u32>;
 
 fn measure() -> (RoleArea, Adjacency) {
+    let _render_lock = viewport_snapshot_test_lock();
     // Attribution matches rendered RGB back to role defaults, so the frame
     // must be rendered in truecolor. A hosted CI runner without COLORTERM
     // detects 256-color and quantizes every cell, which pushed most colors
@@ -28,30 +29,45 @@ fn measure() -> (RoleArea, Adjacency) {
     let mut area: RoleArea = BTreeMap::new();
     let mut touches: Adjacency = BTreeMap::new();
 
-    // A few sizes, so layout-dependent widgets (wrapping, panes) contribute.
-    for (width, height) in [(80u16, 24u16), (120, 40), (60, 20)] {
-        let message = |role: &str, content: &str| DisplayMessage {
-            role: role.to_string(),
-            content: content.to_string(),
-            tool_calls: vec![],
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        };
-        let app = TestState {
-            display_messages: vec![
-                message("user", "hello there"),
-                message(
-                    "assistant",
-                    "Here is **bold**, `code`, and a path src/main.rs to click.",
-                ),
-                message("system", "system notice"),
-                DisplayMessage::error("something failed"),
-            ],
-            input: "next question".to_string(),
-            ..Default::default()
-        };
-
+    // Sample welcome, active, and streaming frames so pinned headers, composer
+    // feedback, and transcript roles all contribute.
+    let samples = [
+        (80, 24, TestState::default()),
+        (
+            120,
+            40,
+            TestState {
+                provider_name: Some("OpenAI".into()),
+                provider_model: Some("gpt-5.2".into()),
+                working_dir: Some("projects/alphacode".into()),
+                display_messages: vec![
+                    DisplayMessage::user("Check the build"),
+                    DisplayMessage::assistant(
+                        "**Build passed.** Run `cargo test`, then review `src/main.rs`.",
+                    ),
+                    DisplayMessage::system("Workspace changed"),
+                    DisplayMessage::error("something failed"),
+                ],
+                input: "/mod".into(),
+                command_options: vec![("/model".into(), "Choose a model")],
+                ..Default::default()
+            },
+        ),
+        (
+            60,
+            20,
+            TestState {
+                display_messages: vec![DisplayMessage::user("Run the checks")],
+                status: crate::alphacode_tui::tui::ProcessingStatus::Streaming,
+                streaming_text: "**Checking** `Cargo.toml`…".into(),
+                pending_soft_interrupts: vec!["Check the lockfile too".into()],
+                current_context_tokens: Some(4_096),
+                ..Default::default()
+            },
+        ),
+    ];
+    for (width, height, app) in samples {
+        crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
         let backend = ratatui::backend::TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
         terminal
@@ -62,13 +78,16 @@ fn measure() -> (RoleArea, Adjacency) {
         let area_rect = *buffer.area();
         let role_at = |x: u16, y: u16| -> Option<&'static str> {
             let cell = &buffer[(x, y)];
-            if cell.symbol().trim().is_empty() {
+            // A painted background is visible through blank cells.
+            let color = if cell.symbol().trim().is_empty() {
+                cell.bg
+            } else {
+                cell.fg
+            };
+            if color == Color::Reset {
                 return None;
             }
-            if cell.fg == Color::Reset {
-                return None;
-            }
-            role_for_rendered(cell.fg).map(|role| role.key())
+            role_for_rendered(color).map(|role| role.key())
         };
 
         for y in area_rect.top()..area_rect.bottom() {

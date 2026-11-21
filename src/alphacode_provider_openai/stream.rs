@@ -491,14 +491,15 @@ pub fn parse_openai_response_event(
         "response.output_item.done" => {
             if let Some(item) = event.item {
                 if let Some(item_id) = streaming_tool_item_id(&item)
-                    && completed_tool_items.contains(&item_id)
                     && matches!(
                         item.get("type").and_then(|v| v.as_str()),
                         Some("function_call") | Some("custom_tool_call")
                     )
                 {
-                    completed_tool_items.remove(&item_id);
-                    return None;
+                    streaming_tool_calls.remove(&item_id);
+                    if completed_tool_items.remove(&item_id) {
+                        return None;
+                    }
                 }
                 if let Some(event) = handle_openai_output_item(item, saw_text_delta, pending) {
                     return Some(event);
@@ -520,6 +521,12 @@ pub fn parse_openai_response_event(
             return pending.pop_front();
         }
         "response.completed" => {
+            if !streaming_tool_calls.is_empty() {
+                return Some(StreamEvent::Error {
+                    message: "OpenAI response completed with unfinished tool calls".into(),
+                    retry_after_secs: None,
+                });
+            }
             let stop_reason = event
                 .response
                 .as_ref()

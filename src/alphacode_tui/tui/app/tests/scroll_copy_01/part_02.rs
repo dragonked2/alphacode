@@ -239,13 +239,10 @@ fn test_remote_ctrl_up_retrieves_pending_queue_before_prompt_history() {
 #[test]
 fn test_remote_prompt_jump_ctrl_brackets() {
     let _render_lock = scroll_render_test_lock();
-    let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
+    let (mut app, mut terminal, [first, second]) = create_prompt_jump_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
-
-    // Seed max scroll estimates before key handling.
-    render_and_snap(&app, &mut terminal);
 
     assert_eq!(app.scroll_offset, 0);
     assert!(!app.auto_scroll_paused);
@@ -253,31 +250,34 @@ fn test_remote_prompt_jump_ctrl_brackets() {
     rt.block_on(app.handle_remote_key(KeyCode::Char('['), KeyModifiers::CONTROL, &mut remote))
         .unwrap();
     assert!(app.auto_scroll_paused);
-    assert!(app.scroll_offset > 0);
+    render_and_snap(&app, &mut terminal);
+    assert_eq!(crate::alphacode_tui::tui::ui::last_resolved_chat_scroll(), second);
+    rt.block_on(app.handle_remote_key(KeyCode::Char('['), KeyModifiers::CONTROL, &mut remote))
+        .unwrap();
+    assert_eq!(app.scroll_offset, first);
 
-    let after_up = app.scroll_offset;
     rt.block_on(app.handle_remote_key(KeyCode::Char(']'), KeyModifiers::CONTROL, &mut remote))
         .unwrap();
-    assert!(app.scroll_offset <= after_up);
+    assert_eq!(app.scroll_offset, second);
+    rt.block_on(app.handle_remote_key(KeyCode::Char(']'), KeyModifiers::CONTROL, &mut remote))
+        .unwrap();
+    assert!(!app.auto_scroll_paused);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn test_remote_prompt_jump_ctrl_esc_fallback_on_macos() {
     let _render_lock = scroll_render_test_lock();
-    let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
+    let (mut app, _terminal, [_, second]) = create_prompt_jump_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
-
-    // Seed max scroll estimates before key handling.
-    render_and_snap(&app, &mut terminal);
 
     assert_eq!(app.scroll_offset, 0);
     rt.block_on(app.handle_remote_key(KeyCode::Esc, KeyModifiers::CONTROL, &mut remote))
         .unwrap();
     assert!(app.auto_scroll_paused);
-    assert!(app.scroll_offset > 0);
+    assert_eq!(app.scroll_offset, second);
 }
 
 #[test]

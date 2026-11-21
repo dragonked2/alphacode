@@ -566,6 +566,7 @@ fn ordinary_copies_and_links_in_the_working_directory_stay_allowed() {
         "tee build.log",
         "tee -a build.log",
         "ln -s ../src/lib.rs link.rs",
+        "ln -sf ../src/lib.rs link.rs",
         "rsync -a src/ /tmp/backup/",
         "install -m 644 README.md docs/README.md",
     ] {

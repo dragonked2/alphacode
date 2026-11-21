@@ -251,17 +251,20 @@ fn session_tool_policy(session_id: &str) -> Option<SessionToolPolicy> {
         .cloned()
 }
 
-/// Append a tool-specific "next step" hint to an error before it is stored in
-/// the transcript and shown to the model. The unknown-tool error in
-/// [`Registry::execute`] already proved this pattern stops hallucination
-/// spirals (#104): models recover in one retry when the error names the fix.
-/// Hints are capped at one short line each so the history does not fill with
-/// coaching text.
-/// Input/schema failures are recoverable by changing the call shape. They
-/// should remain visible to the model without exhausting the repeat guard,
-/// which is reserved for executions that failed after a valid request was
-/// dispatched.
+/// Keep captured command output in the tool result and report just the exit
+/// status to the tool lifecycle log and observer hook.
+fn tool_error_for_log(error: &anyhow::Error) -> String {
+    error.downcast_ref::<bash::CommandFailure>().map_or_else(
+        || crate::util::format_error_chain(error),
+        bash::CommandFailure::summary,
+    )
+}
+
+/// Input/schema failures can be corrected by changing the arguments.
 pub(crate) fn is_input_validation_error(error: &anyhow::Error) -> bool {
+    if error.is::<bash::CommandFailure>() {
+        return false;
+    }
     let message = error.to_string().to_ascii_lowercase();
     message.contains("missing field")
         || message.contains("expects a json object")
@@ -1694,7 +1697,10 @@ impl Registry {
             }
             Err(error) => {
                 const ERROR_LIMIT: usize = 1000;
-                let message: String = error.to_string().chars().take(ERROR_LIMIT).collect();
+                let message: String = tool_error_for_log(error)
+                    .chars()
+                    .take(ERROR_LIMIT)
+                    .collect();
                 event = event.field("ERROR", message);
             }
         }
@@ -1989,6 +1995,11 @@ impl Registry {
             crate::engagement_runtime::reserve(&ctx.session_id, &ctx.tool_call_id, resolved_name)?;
         let started_at = std::time::Instant::now();
         let result = tool.execute(input.clone(), ctx.clone()).await;
+        let result = if resolved_name == "bash" {
+            result.and_then(bash::CommandFailure::check)
+        } else {
+            result
+        };
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         if engagement_reserved {
             let (transcript, failed) = match &result {
@@ -2035,7 +2046,7 @@ impl Registry {
                 let mut fields =
                     Self::tool_lifecycle_fields("error", name, resolved_name, &input, &ctx);
                 fields.push(("elapsed_ms".to_string(), latency_ms.to_string()));
-                fields.push(("error".to_string(), crate::util::format_error_chain(&error)));
+                fields.push(("error".to_string(), tool_error_for_log(&error)));
                 crate::logging::event_warn("TOOL_LIFECYCLE", fields);
                 // A malformed call is the model's mistake, not a runtime
                 // failure, and almost every tool reports it as a bare serde

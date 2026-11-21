@@ -6,6 +6,37 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.16]
+
+### Changed
+
+- Active terminal conversations use a compact header that keeps the model,
+  provider when known, and workspace visible. Short layouts reserve room for
+  pickers, pending prompts, and alerts. Narrow idle views prioritize context
+  usage.
+
+### Fixed
+
+- Provider streams reject truncated responses, malformed or unfinished tool
+  calls, and duplicate call IDs before dispatching queued tools. Copilot
+  assembles interleaved calls by index, Claude CLI waits for the final result,
+  and OpenRouter closes its stream when the provider sends a completion marker.
+- Interactive and background daemon turns keep stream events ahead of the
+  terminal event and report cancellation as an interruption.
+- Foreground shell commands with unsuccessful exit statuses return tool errors
+  with their diagnostics. Invalid working directories are reported before the
+  shell is launched.
+- File replacement stages backups without temporarily moving the primary file
+  out of the way.
+- MCP frees pending response slots when requests time out or callers cancel.
+  A closed transport wakes callers that are still waiting.
+- Local and remote prompt-jump, scroll repaint, and palette coverage tests
+  exercise the compact terminal layout.
+- The GitHub release workflow checks the tag against the manifest and lockfile
+  before creating a draft. It stages the combined checksums before publishing.
+
+[Full changelog](https://github.com/dragonked2/alphacode/compare/v1.1.15...v1.1.16)
+
 ## [1.1.15] - 2026-11-21
 
 ### Added

@@ -162,7 +162,7 @@ impl App {
                 session_id_clone.as_deref()
             ));
 
-            let mut stream = loop {
+            let stream = loop {
                 tokio::select! {
                     biased;
                     // Handle keyboard input while waiting for API
@@ -264,6 +264,12 @@ impl App {
                     }
                 }
             };
+
+            let provider_manages_tools = self.provider.handles_tools_internally();
+            let mut stream = crate::alphacode_provider_core::turn_stream::guard_stream(
+                stream,
+                provider_manages_tools,
+            );
 
             crate::logging::info(&format!(
                 "TUI: API stream opened in {:.2}s",
@@ -813,9 +819,6 @@ impl App {
                                     }
                                     StreamEvent::SessionId(sid) => {
                                         self.provider_session_id = Some(sid);
-                                        if saw_message_end {
-                                            break;
-                                        }
                                     }
                                     StreamEvent::Error { message, .. } => {
                                         let no_partial_output = text_content.is_empty()
@@ -823,7 +826,7 @@ impl App {
                                             && current_tool.is_none()
                                             && self.streaming.streaming_text.is_empty()
                                             && !saw_message_end;
-                                        if no_partial_output
+                                        if !provider_manages_tools && no_partial_output
                                             && let Some(reason) = crate::network_retry::classify_message(&message)
                                         {
                                             let plan = crate::network_retry::wait_plan();
@@ -841,6 +844,7 @@ impl App {
                                             ));
                                             continue 'turn_loop;
                                         }
+                                        self.commit_pending_streaming_assistant_message();
                                         return Err(anyhow::anyhow!("Stream error: {}", message));
                                     }
                                     StreamEvent::ThinkingStart => {
@@ -1092,7 +1096,7 @@ impl App {
                                     && current_tool.is_none()
                                     && self.streaming.streaming_text.is_empty()
                                     && !saw_message_end;
-                                if no_partial_output
+                                if !provider_manages_tools && no_partial_output
                                     && let Some(reason) = crate::network_retry::classify_network_interruption(e.as_ref())
                                 {
                                     let plan = crate::network_retry::wait_plan();
@@ -1110,32 +1114,10 @@ impl App {
                                     ));
                                     continue 'turn_loop;
                                 }
+                                self.commit_pending_streaming_assistant_message();
                                 return Err(e);
                             }
-                            None => {
-                                let no_partial_output = text_content.is_empty()
-                                    && tool_calls.is_empty()
-                                    && current_tool.is_none()
-                                    && self.streaming.streaming_text.is_empty()
-                                    && !saw_message_end;
-                                if no_partial_output {
-                                    let plan = crate::network_retry::wait_plan();
-                                    self.push_display_message(DisplayMessage::system(format!(
-                                        "Stream ended before the model response completed; this may be a network disconnect. Waiting to retry: {}.",
-                                        plan.listener_summary
-                                    )));
-                                    self.status = ProcessingStatus::WaitingForNetwork {
-                                        listener: plan.listener_summary.clone(),
-                                    };
-                                    status_spinner_renderer.draw_full(self, terminal)?;
-                                    crate::network_retry::wait_until_probably_online().await;
-                                    self.push_display_message(DisplayMessage::system(
-                                        "Network connectivity looks restored; retrying request.".to_string(),
-                                    ));
-                                    continue 'turn_loop;
-                                }
-                                break;
-                            }
+                            None => break,
                         }
                     }
                 }

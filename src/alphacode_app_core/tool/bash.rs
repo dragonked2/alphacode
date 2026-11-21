@@ -1,4 +1,63 @@
 use super::{StdinInputRequest, Tool, ToolContext, ToolOutput};
+
+#[derive(Debug)]
+pub(super) struct CommandFailure {
+    exit_code: Option<i64>,
+    output: ToolOutput,
+}
+
+impl CommandFailure {
+    pub(super) fn check(output: ToolOutput) -> Result<ToolOutput> {
+        match output
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("process_exit_code"))
+        {
+            Some(status) if status.as_i64() != Some(0) => Err(Self {
+                exit_code: status.as_i64(),
+                output,
+            }
+            .into()),
+            _ => Ok(output),
+        }
+    }
+
+    pub(super) fn summary(&self) -> String {
+        match self.exit_code {
+            Some(code) => format!("Command exited with status {code}"),
+            None => "Command terminated without an exit code".to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}\n\n{}", self.summary(), self.output.output)
+    }
+}
+
+impl std::error::Error for CommandFailure {}
+
+#[cfg(test)]
+#[test]
+fn classify_shell_exit_preserves_failure_output_and_distinguishes_handoff() {
+    let completed = ToolOutput::new("expected output").with_metadata(serde_json::json!({
+        "process_exit_code": 0,
+    }));
+    assert!(CommandFailure::check(completed).is_ok());
+    let handoff = ToolOutput::new("still running").with_metadata(serde_json::json!({
+        "background": true,
+    }));
+    assert!(CommandFailure::check(handoff).is_ok());
+    for status in [serde_json::json!(7), serde_json::Value::Null] {
+        let failed = ToolOutput::new("command diagnostic").with_metadata(serde_json::json!({
+            "process_exit_code": status,
+        }));
+        let error = CommandFailure::check(failed).unwrap_err();
+        assert!(error.is::<CommandFailure>());
+        assert!(error.to_string().contains("command diagnostic"));
+    }
+}
 use crate::alphacode_app_core::background::TaskResult;
 use crate::alphacode_app_core::bus::{
     BackgroundTaskProgress, BackgroundTaskProgressKind, BackgroundTaskProgressSource,
@@ -1841,6 +1900,21 @@ impl Tool for BashTool {
             ));
         }
 
+        if let Some(dir) = ctx.working_dir.as_deref() {
+            let metadata = tokio::fs::metadata(dir).await.map_err(|error| {
+                anyhow::anyhow!(
+                    "Cannot access shell working directory '{}': {error}",
+                    dir.display()
+                )
+            })?;
+            if !metadata.is_dir() {
+                anyhow::bail!(
+                    "Shell working directory '{}' is not a directory",
+                    dir.display()
+                );
+            }
+        }
+
         if let Some(quoted) = crate::alphacode_command_risk::quote_curl_query_url(&params.command) {
             params.command = quoted;
         }
@@ -2097,7 +2171,7 @@ impl BashTool {
                 }
                 if !stderr.is_empty() {
                     if !output.is_empty() {
-                        output.push('\n');
+                        output.push_str("\n\nstderr:\n");
                     }
                     output.push_str(&stderr);
                 }

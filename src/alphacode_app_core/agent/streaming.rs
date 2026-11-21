@@ -4,6 +4,10 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::{self, MissedTickBehavior};
 
+#[derive(Debug, thiserror::Error)]
+#[error("Generation interrupted")]
+pub(crate) struct TurnInterrupted;
+
 fn stream_keepalive_interval() -> Duration {
     if cfg!(test) {
         Duration::from_millis(50)
