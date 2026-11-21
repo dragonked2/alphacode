@@ -8,11 +8,6 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.1.18] - 2026-11-21
 
-### Changed
-
-- Alphax Free uses a fixed model route. The model switcher and activation
-  messages reflect the fixed route, and a rate limit ends the turn.
-
 ### Fixed
 
 - Browser cookie validation explains the expected JSON array. Firefox
