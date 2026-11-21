@@ -822,7 +822,7 @@ where
             if tab_url != "about:blank" {
                 let mut landed = validate_rendered_url(requested, tab_url)?;
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                let snapshot = bridge(
+                let mut snapshot = bridge(
                     "evaluate",
                     json!({
                         "tabId": id,
@@ -833,6 +833,11 @@ where
                     }),
                 )
                 .await?;
+                // The native CLI wraps evaluate results with engine metadata.
+                let snapshot = snapshot
+                    .as_object_mut()
+                    .and_then(|object| object.remove("result"))
+                    .unwrap_or(snapshot);
                 let page: RenderedPage = serde_json::from_value(snapshot)
                     .context("Firefox omitted the rendered document URL or HTML")?;
                 let mut document =
@@ -895,7 +900,7 @@ mod tests {
                     "evaluate" => {
                         assert_eq!(input["tabId"], id);
                         assert_eq!(input["frameId"], 0);
-                        json!({"url": landed, "readyState": "complete", "html": format!("<div>drop me</div><main>{content}</main>")})
+                        json!({"engine": "firefox", "result": {"url": landed, "readyState": "complete", "html": format!("<div>drop me</div><main>{content}</main>")}})
                     }
                     _ => unreachable!(),
                 };
@@ -934,7 +939,7 @@ mod tests {
             ),
             (
                 json!({"tabId": 42, "url": requested.as_str(), "status": "complete"}),
-                json!({"html": "Missing URL", "readyState": "complete"}),
+                json!({"result": {"html": "Missing URL", "readyState": "complete"}}),
                 "omitted the rendered document URL or HTML",
             ),
             (
