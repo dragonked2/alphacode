@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.1.18"
+version = "1.1.19"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "Terminal-native coding agent with multi-model orchestration, swarm coordination, and 40+ tools — built to make the smallest change that solves the problem."
 homepage = "https://alphacli.github.io/"
@@ -205,6 +205,11 @@ test-support = []
 # alongside the binary instead of inside it; enable this only for a build that
 # knowingly accepts the embedded-host trade-off.
 embedded-gui-host = []
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The mio reader can loop inside a read after the PTY hangs up. The poll-based
+# backend checks its timeout on EOF so the input worker can detect hangup.
+crossterm = { version = "0.29", features = ["use-dev-tty"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Threading", "Win32_System_Console", "Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Power", "Win32_UI", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }

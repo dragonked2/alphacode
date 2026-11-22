@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.19] - 2026-11-22
+
+### Fixed
+
+- Linux reads terminal input on a dedicated worker while the TUI draws or
+  handles daemon events. Key-to-paint timing includes time spent in the input
+  queue.
+- Wayland clipboard text paste tries the direct clipboard reader before
+  launching the compatibility helper.
+
 ## [1.1.18] - 2026-11-21
 
 ### Fixed

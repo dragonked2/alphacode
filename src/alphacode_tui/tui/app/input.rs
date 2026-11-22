@@ -312,18 +312,23 @@ where
 }
 
 fn read_clipboard_text() -> Option<String> {
-    if std::env::var("WAYLAND_DISPLAY").is_ok()
-        && let Some(text) = read_wayland_clipboard_text()
+    let text = arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.get_text())
+        .ok();
+
+    // arboard can read Wayland directly when the compositor exposes data
+    // control. Keep wl-paste for compositors and MIME types it cannot read.
+    #[cfg(target_os = "linux")]
+    if text.as_ref().is_none_or(|text| text.trim().is_empty())
+        && std::env::var_os("WAYLAND_DISPLAY").is_some()
     {
-        return Some(text);
+        return read_wayland_clipboard_text().or(text);
     }
 
-    let Ok(mut clipboard) = arboard::Clipboard::new() else {
-        return None;
-    };
-    clipboard.get_text().ok()
+    text
 }
 
+#[cfg(target_os = "linux")]
 fn read_wayland_clipboard_text() -> Option<String> {
     let types_output = std::process::Command::new("wl-paste")
         .arg("--list-types")
@@ -346,6 +351,7 @@ fn read_wayland_clipboard_text() -> Option<String> {
     String::from_utf8(output.stdout).ok()
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn preferred_wayland_text_type(types: &str) -> Option<&'static str> {
     let has_type = |needle: &str| types.lines().any(|line| line.trim() == needle);
     if has_type("text/plain;charset=utf-8") {

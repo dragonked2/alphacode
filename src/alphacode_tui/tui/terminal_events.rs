@@ -3,7 +3,7 @@
 //! Ctrl+V/Alt+V are handled by the shared asynchronous clipboard action. Native
 //! bracketed paste arrives as one Event::Paste. Ordinary keys, including Enter,
 //! must never wait for another character or a paste-settling timer.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 use crossterm::event::EventStream;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::{FutureExt, Stream, StreamExt, stream::Fuse};
@@ -14,10 +14,10 @@ use std::{
     time::Instant,
 };
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub(super) type TerminalEventStream = ImmediateEvents<EventStream>;
-#[cfg(windows)]
-pub(super) type TerminalEventStream = ImmediateEvents<WindowsInput>;
+#[cfg(any(windows, target_os = "linux"))]
+pub(super) type TerminalEventStream = ImmediateEvents<QueuedInput>;
 
 pub(super) struct ImmediateEvents<S> {
     source: Fuse<S>,
@@ -51,22 +51,23 @@ impl ReadEvent {
 
 impl TerminalEventStream {
     pub(super) fn new() -> Self {
-        #[cfg(windows)]
-        let source = WindowsInput::new();
-        #[cfg(not(windows))]
+        #[cfg(any(windows, target_os = "linux"))]
+        let source = QueuedInput::new();
+        #[cfg(not(any(windows, target_os = "linux")))]
         let source = EventStream::new();
         Self::from_source(source)
     }
 }
 
-#[cfg(windows)]
-pub(super) struct WindowsInput {
+#[cfg(any(windows, target_os = "linux"))]
+pub(super) struct QueuedInput {
     events: tokio::sync::mpsc::Receiver<ReadEvent>,
+    #[cfg(windows)]
     reader: Option<std::thread::JoinHandle<()>>,
 }
 
-#[cfg(windows)]
-impl WindowsInput {
+#[cfg(any(windows, target_os = "linux"))]
+impl QueuedInput {
     fn new() -> Self {
         use super::app::terminal_liveness;
         use crossterm::event;
@@ -76,9 +77,16 @@ impl WindowsInput {
         // Keep reading while the UI paints or handles a daemon event. A
         // bounded queue preserves ordering and caps memory during key bursts.
         let (sender, events) = tokio::sync::mpsc::channel(128);
+        let poll_timeout = if cfg!(windows) {
+            Duration::from_millis(25)
+        } else {
+            Duration::from_millis(100)
+        };
         let reader = std::thread::spawn(move || {
             while !sender.is_closed() {
-                let event = match event::poll(Duration::from_millis(25)) {
+                let event = match event::poll(poll_timeout) {
+                    #[cfg(target_os = "linux")]
+                    Ok(false) if terminal_liveness::terminal_abandoned() => break,
                     Ok(false) => continue,
                     Ok(true) if !sender.is_closed() => event::read(),
                     Ok(true) => break,
@@ -98,15 +106,21 @@ impl WindowsInput {
                 }
             }
         });
+        // On Linux an incomplete escape sequence or paste can leave crossterm
+        // blocked inside the TTY read. Closing the queue lets the worker exit
+        // after that read returns without blocking terminal teardown.
+        #[cfg(target_os = "linux")]
+        drop(reader);
         Self {
             events,
+            #[cfg(windows)]
             reader: Some(reader),
         }
     }
 }
 
-#[cfg(windows)]
-impl Stream for WindowsInput {
+#[cfg(any(windows, target_os = "linux"))]
+impl Stream for QueuedInput {
     type Item = ReadEvent;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -115,7 +129,7 @@ impl Stream for WindowsInput {
 }
 
 #[cfg(windows)]
-impl Drop for WindowsInput {
+impl Drop for QueuedInput {
     fn drop(&mut self) {
         self.events.close();
         if let Some(reader) = self.reader.take() {
