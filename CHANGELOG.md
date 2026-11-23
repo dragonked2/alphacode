@@ -25,6 +25,16 @@ adheres to [Semantic Versioning](https://semver.org/).
   `alphacode setup-hotkey` once after the upgrade so the old hook is not
   left resident.
 
+- **`AlphaCode.Desktop.exe` now carries a VERSIONINFO resource.** The .NET/WPF
+  GUI host was built with `csc.exe /target:winexe`, which does not emit a
+  VERSIONINFO block, so the shipped binary was an unsigned, version-less PE
+  with an embedded PowerShell script. Five VirusTotal engines flagged it as
+  Trojan/Stealer because an unattributed payload with an embedded script is
+  the classic dropped-trojan shape. The same VERSIONINFO the main binary
+  gets (FileDescription, ProductName, CompanyName, FileVersion,
+  ProductVersion) is now appended to the host, so Explorer's Properties
+  dialog and reputation-based scanners read it as a product.
+
 - macOS Terminal / iTerm2 burst handling: the input worker polls every
   50 ms instead of 100 ms after a window resize or focus gain, so a burst of
   key events does not stall the UI.

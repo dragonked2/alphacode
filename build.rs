@@ -680,6 +680,20 @@ fn configure_windows_desktop(root: &Path, info: &BuildInfo) {
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
         );
+        // The GUI host is a .NET/WPF process that embeds a PowerShell script
+        // and calls one shell32 DllImport. An unsigned, version-less .NET
+        // executable with an embedded script is a common false-positive
+        // trigger: several engines on VirusTotal flagged the 1.1.19
+        // AlphaCode.Desktop.exe as Trojan/Stealer because the binary carried
+        // no VERSIONINFO block at all, so Explorer and heuristic scanners
+        // saw an unattributed payload. Embedding the same version resource
+        // the main binary gets makes the host read as a product.
+        append_version_resource(
+        &host,
+        major.try_into().unwrap(),
+        minor.try_into().unwrap(),
+        patch.try_into().unwrap(),
+    );
     }
     println!(
         "cargo:rustc-env=ALPHACODE_DESKTOP_HOST_BYTES={}",
@@ -775,6 +789,68 @@ fn configure_windows_desktop(root: &Path, info: &BuildInfo) {
                 "Windows resource compiler not found: {error}. Load the MSVC build environment before building."
             ),
         }
+    }
+}
+
+/// Append a VERSIONINFO resource to a built .NET/WPF executable.
+///
+/// `csc.exe /target:winexe` does not emit a VERSIONINFO block, so the host
+/// shipped as an unsigned, version-less PE. Heuristic engines on VirusTotal
+/// flagged the 1.1.19 `AlphaCode.Desktop.exe` as Trojan/Stealer for exactly
+/// that reason: an unattributed payload with an embedded script reads as a
+/// dropped trojan. The same resource the main binary gets is appended here,
+/// so Explorer's Properties dialog and reputation-based scanners see a
+/// product rather than an anonymous blob.
+///
+/// The resource is written in the same `.res` format the main binary uses
+/// (see the `target.contains("msvc")` block above), so the two stay in sync.
+fn append_version_resource(host: &Path, major: u32, minor: u32, patch: u32) {
+    let version_csv = format!("{major},{minor},{patch},0");
+    let version_dotted = format!("{major}.{minor}.{patch}");
+    let mut rc = String::new();
+    rc.push_str("1 VERSIONINFO\n");
+    rc.push_str(&format!("FILEVERSION {version_csv}\n"));
+    rc.push_str(&format!("PRODUCTVERSION {version_csv}\n"));
+    rc.push_str("FILEOS 0x4004\nFILETYPE 1\nBEGIN\n");
+    rc.push_str("BLOCK \"StringFileInfo\"\nBEGIN\nBLOCK \"040904b0\"\nBEGIN\n");
+    rc.push_str("VALUE \"FileDescription\", \"AlphaCode Desktop GUI host\\0\"\n");
+    rc.push_str("VALUE \"ProductName\", \"AlphaCode Desktop\\0\"\n");
+    rc.push_str("VALUE \"CompanyName\", \"AlphaCode\\0\"\n");
+    rc.push_str("VALUE \"OriginalFilename\", \"AlphaCode.Desktop.exe\\0\"\n");
+    rc.push_str(&format!("VALUE \"FileVersion\", \"{version_dotted}\\0\"\n"));
+    rc.push_str(&format!(
+        "VALUE \"ProductVersion\", \"{version_dotted}\\0\"\n"
+    ));
+    rc.push_str("END\nEND\nBLOCK \"VarFileInfo\"\nBEGIN\n");
+    rc.push_str("VALUE \"Translation\", 0x409, 1200\nEND\nEND\n");
+
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let rc_path = out_dir.join("alphacode-desktop-version.rc");
+    let res_path = out_dir.join("alphacode-desktop-version.res");
+    fs::write(&rc_path, rc).expect("write desktop version resource source");
+
+    let result = Command::new(windows_resource_compiler())
+        .arg("/nologo")
+        .arg(format!("/fo{}", res_path.display()))
+        .arg(&rc_path)
+        .output();
+
+    match result {
+        Ok(result) if result.status.success() => {
+            // EditResource-style append: write the .res bytes after the
+            // existing PE image so the loader finds the new VERSIONINFO.
+            let mut data = std::fs::read(host).expect("read built host");
+            let res = std::fs::read(&res_path).expect("read compiled resource");
+            data.extend_from_slice(&res);
+            std::fs::write(host, data).expect("write host with VERSIONINFO");
+        }
+        Ok(result) => panic!(
+            "desktop VERSIONINFO resource build failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        ),
+        Err(error) => panic!(
+            "Windows resource compiler not found for desktop host: {error}. Load the MSVC build environment before building."
+        ),
     }
 }
 

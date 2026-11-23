@@ -62,8 +62,6 @@ impl TerminalEventStream {
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub(super) struct QueuedInput {
     events: tokio::sync::mpsc::Receiver<ReadEvent>,
-    #[cfg(not(target_os = "linux"))]
-    reader: Option<std::thread::JoinHandle<()>>,
 }
 
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
@@ -113,12 +111,9 @@ impl QueuedInput {
         // blocked inside the TTY read. Closing the queue lets the worker exit
         // after that read returns without blocking terminal teardown. On
         // macOS and Windows the reader handle is kept so Drop can join it.
-        #[cfg(not(target_os = "linux"))]
         let _ = reader;
         Self {
             events,
-            #[cfg(not(target_os = "linux"))]
-            reader: Some(reader),
         }
     }
 }
@@ -129,16 +124,6 @@ impl Stream for QueuedInput {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.events.poll_recv(cx)
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-impl Drop for QueuedInput {
-    fn drop(&mut self) {
-        self.events.close();
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
-        }
     }
 }
 
