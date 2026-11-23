@@ -689,11 +689,11 @@ fn configure_windows_desktop(root: &Path, info: &BuildInfo) {
         // saw an unattributed payload. Embedding the same version resource
         // the main binary gets makes the host read as a product.
         append_version_resource(
-        &host,
-        major.try_into().unwrap(),
-        minor.try_into().unwrap(),
-        patch.try_into().unwrap(),
-    );
+            &host,
+            major.try_into().unwrap(),
+            minor.try_into().unwrap(),
+            patch.try_into().unwrap(),
+        );
     }
     println!(
         "cargo:rustc-env=ALPHACODE_DESKTOP_HOST_BYTES={}",

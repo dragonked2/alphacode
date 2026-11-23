@@ -112,9 +112,7 @@ impl QueuedInput {
         // after that read returns without blocking terminal teardown. On
         // macOS and Windows the reader handle is kept so Drop can join it.
         let _ = reader;
-        Self {
-            events,
-        }
+        Self { events }
     }
 }
 
