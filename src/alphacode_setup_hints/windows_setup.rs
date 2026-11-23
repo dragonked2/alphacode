@@ -1,4 +1,16 @@
+//! Windows launch-hotkey listener.
+//!
+//! The listener (`alphacode setup-hotkey --listen-windows-hotkey`) registers
+//! every configured chord with `RegisterHotKey` and pumps a `GetMessageW` loop
+//! that dispatches `WM_HOTKEY` to a terminal-launch thread. There is no
+//! `SetWindowsHookEx` / `WH_KEYBOARD_LL` anywhere in this binary: the low-level
+//! global keyboard hook previously used to capture the physical Copilot key
+//! (Win+Shift+F23) is what triggered Kaspersky's `Trojan-Spy.Win32.Stealer.fxcr`
+//! heuristic, because a global keyboard sniffer is the exact shape that
+//! heuristic looks for. `RegisterHotKey` handles the same chord now.
+
 use super::{SetupHintsState, StartupHints, read_choice};
+
 use crate::alphacode_config_types::{LaunchHotkeyEntry, LaunchHotkeysConfig};
 use crate::alphacode_setup_hints::windows_hotkeys::{self, WindowsHotkey};
 use crate::alphacode_storage as storage;
@@ -92,7 +104,8 @@ pub(super) fn find_alacritty_path() -> Option<String> {
 
 /// Resolve the `[launch_hotkeys]` config into Windows listener entries.
 /// Empty config keeps the shared macOS/Linux launch layout (mapped to Alt on
-/// Windows) and adds the native Copilot-key chord (Win+Shift+F23).
+/// Windows) and adds the native Copilot-key chord (Win+Shift+F23), which
+/// `RegisterHotKey` registers directly — no low-level keyboard hook is needed.
 fn resolve_windows_hotkeys() -> Vec<WindowsHotkey> {
     let config = effective_windows_launch_hotkeys_config();
     if config.enabled == Some(false) {
@@ -137,6 +150,9 @@ pub(super) fn primary_hotkey_display() -> Option<(String, String)> {
         })
 }
 
+/// Default launch entries on Windows: the shared macOS/Linux layout (Alt+;
+/// and Alt+Shift+' for self-dev) plus the physical Copilot key mapped to
+/// Win+Shift+F23. All are registered with `RegisterHotKey`; no low-level hook.
 fn default_windows_launch_entries() -> Vec<LaunchHotkeyEntry> {
     let mut entries = crate::alphacode_setup_hints::launch_hotkeys::default_launch_entries();
     entries.push(LaunchHotkeyEntry {
@@ -395,78 +411,13 @@ fn wide_null(text: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-const COPILOT_HOOK_MESSAGE: u32 = 0x8000 + 0x4A;
-#[cfg(windows)]
-static COPILOT_HOOK_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-#[cfg(windows)]
-static COPILOT_F23_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Capture the physical Copilot key even when Windows Shell reserves
-/// Win+Shift+F23 and rejects `RegisterHotKey`. The hook only posts a private
-/// message to the listener thread; terminal launch work stays outside the hook.
-#[cfg(windows)]
-unsafe extern "system" fn copilot_keyboard_hook(
-    code: i32,
-    wparam: windows_sys::Win32::Foundation::WPARAM,
-    lparam: windows_sys::Win32::Foundation::LPARAM,
-) -> windows_sys::Win32::Foundation::LRESULT {
-    use std::sync::atomic::Ordering;
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_F23, VK_LWIN, VK_RWIN, VK_SHIFT,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, KBDLLHOOKSTRUCT, PostThreadMessageW, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
-        WM_SYSKEYUP,
-    };
-
-    if code >= 0 {
-        let event = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-        if event.vkCode == u32::from(VK_F23) {
-            let message = wparam as u32;
-            if message == WM_KEYDOWN || message == WM_SYSKEYDOWN {
-                let win_down = unsafe { GetAsyncKeyState(i32::from(VK_LWIN)) } < 0
-                    || unsafe { GetAsyncKeyState(i32::from(VK_RWIN)) } < 0;
-                let shift_down = unsafe { GetAsyncKeyState(i32::from(VK_SHIFT)) } < 0;
-                if win_down && shift_down {
-                    let first_press = !COPILOT_F23_HELD.swap(true, Ordering::Relaxed);
-                    if first_press {
-                        let thread_id = COPILOT_HOOK_THREAD_ID.load(Ordering::Relaxed);
-                        if thread_id != 0 {
-                            let posted = unsafe {
-                                PostThreadMessageW(thread_id, COPILOT_HOOK_MESSAGE, 0, 0)
-                            } != 0;
-                            if !posted {
-                                COPILOT_F23_HELD.store(false, Ordering::Relaxed);
-                                return unsafe {
-                                    CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
-                                };
-                            }
-                        }
-                    }
-                    return 1;
-                }
-            } else if (message == WM_KEYUP || message == WM_SYSKEYUP)
-                && COPILOT_F23_HELD.swap(false, Ordering::Relaxed)
-            {
-                return 1;
-            }
-        }
-    }
-
-    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
-}
-
-#[cfg(windows)]
 fn windows_native_hotkey_loop(entries: Vec<WindowsHotkey>) -> Result<()> {
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
-    use windows_sys::Win32::System::Threading::{CreateMutexW, GetCurrentThreadId};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey,
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
-        WH_KEYBOARD_LL, WM_HOTKEY,
-    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
 
     const MUTEX_NAME: &str = "Local\\AlphacodeLaunchHotkeyListener";
 
@@ -494,16 +445,11 @@ fn windows_native_hotkey_loop(entries: Vec<WindowsHotkey>) -> Result<()> {
     };
 
     let mut registered: Vec<(i32, WindowsHotkey)> = Vec::new();
-    let mut copilot_entry: Option<(i32, WindowsHotkey)> = None;
     for (index, entry) in entries.into_iter().enumerate() {
         let Some((mods, vk)) = windows_hotkeys::hotkey_to_win32(&entry) else {
             continue;
         };
         let id = 0x4A00_i32 + index as i32;
-        if windows_hotkeys::is_copilot_hotkey(&entry) {
-            copilot_entry = Some((id, entry));
-            continue;
-        }
         let ok = unsafe { RegisterHotKey(std::ptr::null_mut(), id, mods | MOD_NOREPEAT, vk) } != 0;
         if ok {
             registered.push((id, entry));
@@ -515,38 +461,7 @@ fn windows_native_hotkey_loop(entries: Vec<WindowsHotkey>) -> Result<()> {
         }
     }
 
-    let mut copilot_hook = std::ptr::null_mut();
-    if copilot_entry.is_some() {
-        // `PostThreadMessageW` requires a thread message queue. Create it before
-        // the global hook can receive the first physical Copilot-key event.
-        let mut queue_probe: MSG = unsafe { std::mem::zeroed() };
-        unsafe {
-            PeekMessageW(&mut queue_probe, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
-        }
-        COPILOT_HOOK_THREAD_ID.store(
-            unsafe { GetCurrentThreadId() },
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        COPILOT_F23_HELD.store(false, std::sync::atomic::Ordering::Relaxed);
-        copilot_hook = unsafe {
-            SetWindowsHookExW(
-                WH_KEYBOARD_LL,
-                Some(copilot_keyboard_hook),
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if copilot_hook.is_null() {
-            crate::alphacode_logging::warn(&format!(
-                "failed to install Windows Copilot-key hook: {}",
-                std::io::Error::last_os_error()
-            ));
-            COPILOT_HOOK_THREAD_ID.store(0, std::sync::atomic::Ordering::Relaxed);
-            copilot_entry = None;
-        }
-    }
-
-    if registered.is_empty() && copilot_entry.is_none() {
+    if registered.is_empty() {
         unsafe {
             CloseHandle(mutex);
         }
@@ -563,17 +478,14 @@ fn windows_native_hotkey_loop(entries: Vec<WindowsHotkey>) -> Result<()> {
             if rc < 0 {
                 return Err(std::io::Error::last_os_error()).context("GetMessageW failed");
             }
-            let entry = if msg.message == WM_HOTKEY {
-                let id = msg.wParam as i32;
-                registered
-                    .iter()
-                    .find(|(registered_id, _)| *registered_id == id)
-                    .map(|(_, entry)| entry)
-            } else if msg.message == COPILOT_HOOK_MESSAGE {
-                copilot_entry.as_ref().map(|(_, entry)| entry)
-            } else {
-                None
-            };
+            if msg.message != WM_HOTKEY {
+                continue;
+            }
+            let id = msg.wParam as i32;
+            let entry = registered
+                .iter()
+                .find(|(registered_id, _)| *registered_id == id)
+                .map(|(_, entry)| entry);
             if let Some(entry) = entry.cloned() {
                 std::thread::spawn(move || {
                     if let Err(err) = launch_windows_hotkey(&entry) {
@@ -592,13 +504,6 @@ fn windows_native_hotkey_loop(entries: Vec<WindowsHotkey>) -> Result<()> {
             UnregisterHotKey(std::ptr::null_mut(), *id);
         }
     }
-    if !copilot_hook.is_null() {
-        unsafe {
-            UnhookWindowsHookEx(copilot_hook);
-        }
-    }
-    COPILOT_HOOK_THREAD_ID.store(0, std::sync::atomic::Ordering::Relaxed);
-    COPILOT_F23_HELD.store(false, std::sync::atomic::Ordering::Relaxed);
     unsafe {
         CloseHandle(mutex);
     }

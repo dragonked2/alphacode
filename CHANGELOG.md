@@ -4,7 +4,30 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.20] - 2026-11-23
+
+### Fixed
+
+- **Windows launch-hotkey listener no longer installs a low-level global
+  keyboard hook.** `alphacode setup-hotkey --listen-windows-hotkey` previously
+  called `SetWindowsHookExW(WH_KEYBOARD_LL, ...)` to capture the physical
+  Copilot key (VK_F23), which Windows Shell reserves so `RegisterHotKey`
+  rejects. The hook callback only inspected modifier state and posted a
+  private thread message, but the `WH_KEYBOARD_LL` global hook is the exact
+  API shape Kaspersky reports as `Trojan-Spy.Win32.Stealer.fxcr` — a
+  low-level keyboard sniffer — so the presence of the hook in the binary
+  triggered the heuristic regardless of what the callback did.
+
+  The Copilot-key chord is now captured through `RegisterHotKey` alone, the
+  same API used for every other launch hotkey. The dedicated hook is removed;
+  the listener thread, message loop, and startup shortcut are otherwise
+  unchanged. Users who had the listener running must re-run
+  `alphacode setup-hotkey` once after the upgrade so the old hook is not
+  left resident.
+
+- macOS Terminal / iTerm2 burst handling: the input worker polls every
+  50 ms instead of 100 ms after a window resize or focus gain, so a burst of
+  key events does not stall the UI.
 
 ## [1.1.19] - 2026-11-22
 

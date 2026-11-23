@@ -3,7 +3,7 @@
 //! Ctrl+V/Alt+V are handled by the shared asynchronous clipboard action. Native
 //! bracketed paste arrives as one Event::Paste. Ordinary keys, including Enter,
 //! must never wait for another character or a paste-settling timer.
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 use crossterm::event::EventStream;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::{FutureExt, Stream, StreamExt, stream::Fuse};
@@ -14,9 +14,9 @@ use std::{
     time::Instant,
 };
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub(super) type TerminalEventStream = ImmediateEvents<EventStream>;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub(super) type TerminalEventStream = ImmediateEvents<QueuedInput>;
 
 pub(super) struct ImmediateEvents<S> {
@@ -51,22 +51,22 @@ impl ReadEvent {
 
 impl TerminalEventStream {
     pub(super) fn new() -> Self {
-        #[cfg(any(windows, target_os = "linux"))]
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         let source = QueuedInput::new();
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         let source = EventStream::new();
         Self::from_source(source)
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub(super) struct QueuedInput {
     events: tokio::sync::mpsc::Receiver<ReadEvent>,
-    #[cfg(windows)]
+    #[cfg(not(target_os = "linux"))]
     reader: Option<std::thread::JoinHandle<()>>,
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 impl QueuedInput {
     fn new() -> Self {
         use super::app::terminal_liveness;
@@ -79,14 +79,17 @@ impl QueuedInput {
         let (sender, events) = tokio::sync::mpsc::channel(128);
         let poll_timeout = if cfg!(windows) {
             Duration::from_millis(25)
+        } else if cfg!(target_os = "macos") {
+            // macOS Terminal / iTerm2 can deliver a burst of key events
+            // immediately after a window resize or focus gain. A shorter
+            // poll keeps the worker responsive without starving the UI.
+            Duration::from_millis(50)
         } else {
             Duration::from_millis(100)
         };
         let reader = std::thread::spawn(move || {
             while !sender.is_closed() {
                 let event = match event::poll(poll_timeout) {
-                    #[cfg(target_os = "linux")]
-                    Ok(false) if terminal_liveness::terminal_abandoned() => break,
                     Ok(false) => continue,
                     Ok(true) if !sender.is_closed() => event::read(),
                     Ok(true) => break,
@@ -108,18 +111,19 @@ impl QueuedInput {
         });
         // On Linux an incomplete escape sequence or paste can leave crossterm
         // blocked inside the TTY read. Closing the queue lets the worker exit
-        // after that read returns without blocking terminal teardown.
-        #[cfg(target_os = "linux")]
-        drop(reader);
+        // after that read returns without blocking terminal teardown. On
+        // macOS and Windows the reader handle is kept so Drop can join it.
+        #[cfg(not(target_os = "linux"))]
+        let _ = reader;
         Self {
             events,
-            #[cfg(windows)]
+            #[cfg(not(target_os = "linux"))]
             reader: Some(reader),
         }
     }
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 impl Stream for QueuedInput {
     type Item = ReadEvent;
 
@@ -128,7 +132,7 @@ impl Stream for QueuedInput {
     }
 }
 
-#[cfg(windows)]
+#[cfg(not(target_os = "linux"))]
 impl Drop for QueuedInput {
     fn drop(&mut self) {
         self.events.close();

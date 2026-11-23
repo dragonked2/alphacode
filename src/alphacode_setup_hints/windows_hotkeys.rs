@@ -1,10 +1,11 @@
 //! Config-driven global launch hotkeys on Windows.
 //!
-//! Windows registers normal global hotkeys through `RegisterHotKey`. Because
-//! Windows Shell reserves the physical Copilot chord, Win+Shift+F23 uses a
-//! low-level keyboard hook in the first-party Rust listener (`alphacode setup-hotkey
-//! --listen-windows-hotkey`). This pure module keeps mapping and legacy script
-//! rendering testable without touching the machine.
+//! Windows registers global hotkeys through `RegisterHotKey`, which handles
+//! every chord in the resolved config — including the physical Copilot key
+//! (Win+Shift+F23). The first-party Rust listener (`alphacode setup-hotkey
+//! --listen-windows-hotkey`) uses `RegisterHotKey` exclusively; there is no
+//! low-level keyboard hook anywhere in the binary, so the module is purely
+//! about mapping config chords onto Win32 hotkey registration parameters.
 //!
 //! This module is the **pure** layer, mirroring `linux_niri`/`linux_env`:
 //!
@@ -67,13 +68,6 @@ pub(crate) fn chord_to_win32(chord: &KeyChord) -> Option<(u32, u32)> {
 /// Map a full Windows hotkey onto `(modifier_flags, virtual_key_code)`.
 pub(crate) fn hotkey_to_win32(hotkey: &WindowsHotkey) -> Option<(u32, u32)> {
     chord_to_win32_with_super(&hotkey.chord, hotkey.win_modifier)
-}
-
-/// The physical Windows Copilot key emits Win+Shift+F23. Windows Shell can
-/// reserve that chord before `RegisterHotKey` sees it, so the native listener
-/// captures this exact entry with a low-level keyboard hook instead.
-pub(crate) fn is_copilot_hotkey(hotkey: &WindowsHotkey) -> bool {
-    hotkey_to_win32(hotkey) == Some((MOD_WIN | MOD_SHIFT, 0x86))
 }
 
 fn chord_to_win32_with_super(chord: &KeyChord, super_as_win: bool) -> Option<(u32, u32)> {
@@ -385,13 +379,16 @@ mod tests {
             (MOD_WIN | MOD_SHIFT, 0x86)
         );
         assert_eq!(display_windows_hotkey(&hotkey), "Win+Shift+F23");
-        assert!(is_copilot_hotkey(&hotkey));
-        assert!(!is_copilot_hotkey(&hk(
-            "cmd+shift+f23",
-            "$HOME",
-            "alt",
-            false
-        )));
+    }
+
+    #[test]
+    fn cmd_shift_f23_maps_to_alt_not_win() {
+        let hotkey = hk("cmd+shift+f23", "$HOME", "alt", false);
+        assert_eq!(
+            hotkey_to_win32(&hotkey).unwrap(),
+            (MOD_ALT | MOD_SHIFT, 0x86)
+        );
+        assert_eq!(display_windows_hotkey(&hotkey), "Alt+Shift+F23");
     }
 
     #[test]
