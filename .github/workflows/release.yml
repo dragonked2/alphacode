@@ -568,7 +568,6 @@ jobs:
         run: gh release edit "$RELEASE_TAG" --draft=false --latest
 
       - name: Post release announcement to Discord
-        if: ${{ secrets.DISCORD_WEBHOOK_URL != '' }}
         shell: bash
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -577,6 +576,13 @@ jobs:
           CHANGELOG_FILE: ${{ steps.changelog.outputs.path }}
         run: |
           set -euo pipefail
+          # The `secrets` context is not available in a step-level `if:`
+          # (GitHub rejects the workflow at load time), so the "is a webhook
+          # configured?" check happens here instead.
+          if [ -z "${WEBHOOK_URL:-}" ]; then
+            echo "DISCORD_WEBHOOK_URL is not set; skipping the release announcement."
+            exit 0
+          fi
           # Read changelog content
           if [ -f "$CHANGELOG_FILE" ] && [ -s "$CHANGELOG_FILE" ]; then
             CHANGELOG_CONTENT=$(cat "$CHANGELOG_FILE")
