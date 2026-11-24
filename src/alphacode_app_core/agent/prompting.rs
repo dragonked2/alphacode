@@ -22,6 +22,30 @@ const AUTHORIZED_SECURITY_ASSISTANCE_GUIDANCE: &str = concat!(
 /// `skill_manage load` / `action=read`.
 const MAX_AUTO_SKILL_PROMPT_CHARS: usize = 32 * 1024;
 
+/// Truncate a task-routed skill prompt to [`MAX_AUTO_SKILL_PROMPT_CHARS`].
+///
+/// Returns the prompt unchanged when it already fits, and otherwise cuts it on
+/// a character boundary and appends an explicit pointer to the full text so the
+/// model knows the rest exists and how to load it.
+fn bounded_skill_prompt(prompt: &str, name: &str) -> String {
+    if prompt.len() <= MAX_AUTO_SKILL_PROMPT_CHARS {
+        return prompt.to_string();
+    }
+    let mut truncated: String = prompt
+        .char_indices()
+        .take_while(|(index, _)| *index < MAX_AUTO_SKILL_PROMPT_CHARS)
+        .map(|(_, ch)| ch)
+        .collect();
+    truncated.push_str(&format!(
+        "\n\n[...truncated for prompt budget: {} of {} bytes shown. Load the full \
+         text with `skill_manage` (action=load, name=\"{name}\"); load one reference \
+         at a time with action=read when it becomes relevant.]\n",
+        MAX_AUTO_SKILL_PROMPT_CHARS,
+        prompt.len(),
+    ));
+    truncated
+}
+
 fn security_request(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     [
@@ -331,24 +355,7 @@ pub(crate) fn routed_skill_context(
             // otherwise add tens of thousands of tokens to every turn. The
             // full text stays reachable on demand — `skill_manage load` and the
             // per-reference `read` path are unchanged.
-            let prompt = skill.get_prompt();
-            if prompt.len() <= MAX_AUTO_SKILL_PROMPT_CHARS {
-                return prompt;
-            }
-            let mut truncated: String = prompt
-                .char_indices()
-                .take_while(|(index, _)| *index < MAX_AUTO_SKILL_PROMPT_CHARS)
-                .map(|(_, ch)| ch)
-                .collect();
-            truncated.push_str(&format!(
-                "\n\n[...truncated for prompt budget: {} of {} bytes shown. Load the \
-                 full text with `skill_manage` (action=load, name=\"{}\"); load one \
-                 reference at a time with action=read when it becomes relevant.]\n",
-                MAX_AUTO_SKILL_PROMPT_CHARS,
-                prompt.len(),
-                skill.name
-            ));
-            truncated
+            bounded_skill_prompt(&skill.get_prompt(), skill.name)
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -823,8 +830,41 @@ fn security_observation_checkpoint(count: usize) -> String {
 
 #[cfg(test)]
 mod probe_burst_tests {
+    use super::bounded_skill_prompt;
     use super::probe_burst_reminder;
     use super::tool_call_is_network_probe;
+
+    #[test]
+    fn bounded_skill_prompt_leaves_small_skills_untouched() {
+        let prompt = "# Skill: small\n\nshort body";
+        assert_eq!(bounded_skill_prompt(prompt, "small"), prompt);
+    }
+
+    #[test]
+    fn bounded_skill_prompt_caps_a_large_skill_and_points_at_the_full_text() {
+        // `playbook` is 161 KB with `auto-invoke: true`; uncapped it would add
+        // ~40k tokens to a routed turn.
+        let prompt = format!("# Skill: playbook\n\n{}", "x".repeat(200_000));
+        let bounded = bounded_skill_prompt(&prompt, "playbook");
+        assert!(
+            bounded.len() < 33 * 1024,
+            "bounded prompt is {} bytes, over the budget",
+            bounded.len()
+        );
+        assert!(bounded.starts_with("# Skill: playbook"));
+        assert!(bounded.contains("truncated for prompt budget"));
+        assert!(bounded.contains("name=\"playbook\""));
+    }
+
+    #[test]
+    fn bounded_skill_prompt_cuts_on_a_character_boundary() {
+        // Multi-byte characters must not be split, or the prompt is invalid.
+        let prompt = "🎉".repeat(40_000);
+        let bounded = bounded_skill_prompt(&prompt, "emoji");
+        assert!(bounded.contains("truncated for prompt budget"));
+        let head = bounded.split("\n\n[...").next().unwrap();
+        assert!(head.chars().all(|ch| ch == '🎉'));
+    }
 
     fn bash(command: &str) -> (String, String) {
         (
