@@ -4,7 +4,7 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.21] - 2026-11-24
 
 ### Fixed
 
@@ -15,10 +15,6 @@ adheres to [Semantic Versioning](https://semver.org/).
   reader, and made typing wait behind events that never redraw. macOS now also
   polls at 25 ms (same as Windows) and drains every already-ready event before
   sleeping again.
-
-## [1.1.21] - 2026-11-24
-
-### Fixed
 
 - **Windows binaries no longer trip infostealer/dropper antivirus heuristics.**
   The 1.1.20 `alphacode.exe` was reported malicious by 4 engines on VirusTotal

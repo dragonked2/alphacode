@@ -105,6 +105,9 @@ impl QueuedInput {
                     Ok(true) if sender.is_closed() => break,
                     Ok(true) => {}
                     Err(error) => {
+                        // Poll failed: forward the error, then back off and
+                        // restart the outer wait. Do not enter the drain loop —
+                        // `event::read` is only safe after a successful poll.
                         if terminal_liveness::terminal_abandoned() {
                             break;
                         }
