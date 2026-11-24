@@ -72,6 +72,13 @@ adheres to [Semantic Versioning](https://semver.org/).
   renders, keeping the newest messages when the conversation exceeds the reply
   budget.
 
+- **Task-routed skill injection is now bounded to 32 KB.** Several large
+  skills auto-invoke (`playbook` 161 KB, `bugbounty` 41 KB, `ctf` 41 KB including
+  its ~145-entry reference list), so a single incidental keyword in a request
+  could add tens of thousands of tokens to the system prompt on every turn. The
+  bounded body still carries the leading guidance and a pointer to the full text;
+  `skill_manage load` and per-reference `read` are unchanged.
+
 - **A stale engagement ledger no longer forces the security playbook into
   ordinary turns.** One security-adjacent word in one turn created an empty
   `hunt.md`, and its bare existence then re-injected the whole bug-bounty skill

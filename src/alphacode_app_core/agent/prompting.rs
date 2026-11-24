@@ -11,6 +11,17 @@ const AUTHORIZED_SECURITY_ASSISTANCE_GUIDANCE: &str = concat!(
     "Never infer authorization from reachability, and never bypass scope exclusions or access controls."
 );
 
+/// Upper bound, in bytes, on how much of a skill body a *task-routed* turn may
+/// inject into the system prompt.
+///
+/// Several bundled skills auto-invoke and several are large: `playbook` is
+/// 161 KB, `bugbounty` 41 KB, `ctf` 41 KB including its reference list. Without
+/// a bound, one keyword in a request could add tens of thousands of tokens to
+/// the prompt on every turn. 32 KB (~8k tokens) keeps the leading guidance and
+/// the discovery pointer while the full text stays available on demand via
+/// `skill_manage load` / `action=read`.
+const MAX_AUTO_SKILL_PROMPT_CHARS: usize = 32 * 1024;
+
 fn security_request(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     [
@@ -313,7 +324,32 @@ pub(crate) fn routed_skill_context(
     let mut skill_prompt = selected_skills
         .into_iter()
         .filter_map(|name| skills.get(name))
-        .map(|skill| skill.get_prompt())
+        .map(|skill| {
+            // Bound what a *task-routed* skill may inject into the system
+            // prompt. `playbook` is 161 KB (a ~40k-token body) and several
+            // skills auto-invoke, so one incidental keyword in a request could
+            // otherwise add tens of thousands of tokens to every turn. The
+            // full text stays reachable on demand — `skill_manage load` and the
+            // per-reference `read` path are unchanged.
+            let prompt = skill.get_prompt();
+            if prompt.len() <= MAX_AUTO_SKILL_PROMPT_CHARS {
+                return prompt;
+            }
+            let mut truncated: String = prompt
+                .char_indices()
+                .take_while(|(index, _)| *index < MAX_AUTO_SKILL_PROMPT_CHARS)
+                .map(|(_, ch)| ch)
+                .collect();
+            truncated.push_str(&format!(
+                "\n\n[...truncated for prompt budget: {} of {} bytes shown. Load the \
+                 full text with `skill_manage` (action=load, name=\"{}\"); load one \
+                 reference at a time with action=read when it becomes relevant.]\n",
+                MAX_AUTO_SKILL_PROMPT_CHARS,
+                prompt.len(),
+                skill.name
+            ));
+            truncated
+        })
         .collect::<Vec<_>>()
         .join("\n\n");
 
