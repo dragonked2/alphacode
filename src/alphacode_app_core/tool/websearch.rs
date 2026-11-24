@@ -493,9 +493,11 @@ impl WebSearchTool {
             })?;
 
         let endpoint = format!("{}/search", base.trim_end_matches('/'));
-        let user_agent = crate::alphacode_provider_core::with_alphacode_brand(
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-        );
+        // Neutral crawler token, not a desktop platform literal: a Windows
+        // build carrying X11/macOS client identities is a known
+        // false-positive marker (see scripts/verify-no-av-triggers.py).
+        let user_agent =
+            crate::alphacode_provider_core::with_alphacode_brand("Mozilla/5.0 (compatible)");
         let response = self
             .client
             .get(&endpoint)

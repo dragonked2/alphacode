@@ -272,8 +272,7 @@ pub(crate) fn routed_skill_context(
         .ok()
         .flatten()
         .is_some_and(|state| {
-            !state.exchanges.is_empty()
-                || !state.research.investigation.leads().is_empty()
+            !state.exchanges.is_empty() || !state.research.investigation.leads().is_empty()
         });
     let security = ctf
         || engagement_active
