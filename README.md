@@ -1359,6 +1359,9 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before submitting a change.
 Thanks to everyone who has contributed code, tests, or reviews.
 
 - [@levz0r](https://github.com/levz0r): lifecycle hooks now inherit the attached client's terminal environment ([#20](https://github.com/dragonked2/alphacode/issues/20)), so hooks target the pane a session is actually shown in.
+- [@thaer-assfour](https://github.com/thaer-assfour): reported two desktop/TUI defects with clear reproductions — pasted text losing its first character ([#37](https://github.com/dragonked2/alphacode/issues/37)) and the GUI showing only the last assistant message ([#38](https://github.com/dragonked2/alphacode/issues/38)). Both are fixed in 1.1.21.
+- [@mharsikarim](https://github.com/mharsikarim): reported the Kaspersky `Trojan-Spy.Win32.Stealer.fxcr` false positive ([#36](https://github.com/dragonked2/alphacode/issues/36)) with the exact hash, engine version, and VirusTotal link. That report led us to the root cause — security-methodology documentation shipping as plaintext inside the binary — and to the fix and release guard in 1.1.21.
+- [@Ahmed-Makled](https://github.com/Ahmed-Makled): fixed a macOS/iTerm2 input freeze caused by mouse-move event floods ([#39](https://github.com/dragonked2/alphacode/pull/39)).
 
 ## Support AlphaCode
 
