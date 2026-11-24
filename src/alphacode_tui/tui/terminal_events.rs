@@ -64,6 +64,20 @@ pub(super) struct QueuedInput {
     events: tokio::sync::mpsc::Receiver<ReadEvent>,
 }
 
+/// Mouse-move records never change a cell and are discarded by every run loop
+/// before redraw. With mouse capture on (the default), Terminal.app / iTerm2
+/// can emit dozens of moves per second; enqueueing them fills the bounded
+/// input queue, blocks the reader on `blocking_send`, and makes ordinary
+/// typing wait behind work that paints nothing — the freeze/lag users report.
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+fn should_enqueue_terminal_event(event: &io::Result<Event>) -> bool {
+    !matches!(
+        event,
+        Ok(Event::Mouse(mouse))
+            if matches!(mouse.kind, crossterm::event::MouseEventKind::Moved)
+    )
+}
+
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 impl QueuedInput {
     fn new() -> Self {
@@ -75,35 +89,59 @@ impl QueuedInput {
         // Keep reading while the UI paints or handles a daemon event. A
         // bounded queue preserves ordering and caps memory during key bursts.
         let (sender, events) = tokio::sync::mpsc::channel(128);
-        let poll_timeout = if cfg!(windows) {
+        // Windows and macOS both need a short poll: macOS Terminal / iTerm2
+        // can deliver a burst of key events right after resize or focus gain,
+        // and a 100 ms idle wake left those bursts stacked behind the next
+        // paint. Match Windows at 25 ms so typing stays ahead of redraws.
+        let poll_timeout = if cfg!(any(windows, target_os = "macos")) {
             Duration::from_millis(25)
-        } else if cfg!(target_os = "macos") {
-            // macOS Terminal / iTerm2 can deliver a burst of key events
-            // immediately after a window resize or focus gain. A shorter
-            // poll keeps the worker responsive without starving the UI.
-            Duration::from_millis(50)
         } else {
             Duration::from_millis(100)
         };
         let reader = std::thread::spawn(move || {
             while !sender.is_closed() {
-                let event = match event::poll(poll_timeout) {
+                match event::poll(poll_timeout) {
                     Ok(false) => continue,
-                    Ok(true) if !sender.is_closed() => event::read(),
-                    Ok(true) => break,
-                    Err(error) => Err(error),
-                };
-                let failed = event.is_err();
-                if failed && terminal_liveness::terminal_abandoned() {
-                    // Drop the sender after queued inputs are delivered. It
-                    // reports EOF once instead of waking the UI with retries.
-                    break;
+                    Ok(true) if sender.is_closed() => break,
+                    Ok(true) => {}
+                    Err(error) => {
+                        if terminal_liveness::terminal_abandoned() {
+                            break;
+                        }
+                        if sender.blocking_send(ReadEvent::from(Err(error))).is_err() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(25));
+                        continue;
+                    }
                 }
-                if sender.blocking_send(ReadEvent::from(event)).is_err() {
-                    break;
-                }
-                if failed {
-                    std::thread::sleep(Duration::from_millis(25));
+                // Drain every already-ready event before sleeping again so a
+                // mouse-move flood or key burst does not wait a full poll
+                // timeout between records.
+                loop {
+                    if sender.is_closed() {
+                        return;
+                    }
+                    let event = event::read();
+                    let failed = event.is_err();
+                    if failed && terminal_liveness::terminal_abandoned() {
+                        // Drop the sender after queued inputs are delivered. It
+                        // reports EOF once instead of waking the UI with retries.
+                        return;
+                    }
+                    if should_enqueue_terminal_event(&event)
+                        && sender.blocking_send(ReadEvent::from(event)).is_err()
+                    {
+                        return;
+                    }
+                    if failed {
+                        std::thread::sleep(Duration::from_millis(25));
+                        break;
+                    }
+                    match event::poll(Duration::ZERO) {
+                        Ok(true) => continue,
+                        _ => break,
+                    }
                 }
             }
         });
@@ -211,6 +249,36 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn mouse_moves_are_not_enqueued() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let moved = Ok(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        }));
+        let click = Ok(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        }));
+        let key = Ok(Event::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        )));
+
+        assert!(!should_enqueue_terminal_event(&moved));
+        assert!(should_enqueue_terminal_event(&click));
+        assert!(should_enqueue_terminal_event(&key));
+        assert!(should_enqueue_terminal_event(&Err(io::Error::other(
+            "keep errors"
+        ))));
+    }
 
     #[tokio::test]
     async fn text_burst_leaves_submit_and_following_text_in_order() {
