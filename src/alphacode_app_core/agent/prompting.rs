@@ -262,15 +262,18 @@ pub(crate) fn routed_skill_context(
     // existence then re-injected the whole bug-bounty playbook (~40 KB of skill
     // body plus the reasoning brief) on every later request -- including "fix a
     // compile error". That was most of a ~104k-token average request. Require
-    // observed exchanges, leads, or tool calls before treating the session as an
-    // active engagement; a fresh turn still re-enters on the task's own words.
+    // an actual hunt observation -- an HTTP exchange or an investigation lead --
+    // before treating the session as an active engagement. Generic tool calls
+    // do not count: an ordinary coding session records hundreds of `read`/`bash`
+    // calls, and treating those as hunt evidence kept the playbook pinned on for
+    // the whole session. A turn that genuinely resumes a hunt still re-enters on
+    // the task's own words.
     let engagement_active = crate::engagement_runtime::read(&session.id)
         .ok()
         .flatten()
         .is_some_and(|state| {
             !state.exchanges.is_empty()
                 || !state.research.investigation.leads().is_empty()
-                || state.ledger.tool_calls > 0
         });
     let security = ctf
         || engagement_active
