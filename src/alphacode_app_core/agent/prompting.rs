@@ -46,6 +46,24 @@ fn bounded_skill_prompt(prompt: &str, name: &str) -> String {
     truncated
 }
 
+/// Whether a user-role message was injected by the harness rather than typed by
+/// the user, and so must never drive skill routing.
+///
+/// Reminders arrive in two shapes: the older `<system-reminder>` block, and the
+/// newer markdown reminder that begins with a `# System Reminder` heading (used
+/// for background-task completion notices). Only the first shape was skipped, so
+/// a completion notice — whose body lists live capabilities such as "CTF
+/// forensics reversing and crypto" — was read as the user's task and auto-loaded
+/// the 41 KB `ctf` skill on unrelated turns.
+fn is_system_injected_message(text: &str) -> bool {
+    text.starts_with("<system-reminder>") || text.starts_with("# System Reminder")
+}
+
+/// Truncate a task-routed skill prompt to [`MAX_AUTO_SKILL_PROMPT_CHARS`].
+///
+/// Returns the prompt unchanged when it already fits, and otherwise cuts it on
+/// a character boundary and appends an explicit pointer to the full text so the
+/// model knows the rest exists and how to load it.
 fn security_request(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     [
@@ -355,7 +373,7 @@ pub(crate) fn routed_skill_context(
             // otherwise add tens of thousands of tokens to every turn. The
             // full text stays reachable on demand — `skill_manage load` and the
             // per-reference `read` path are unchanged.
-            bounded_skill_prompt(&skill.get_prompt(), skill.name)
+            bounded_skill_prompt(&skill.get_prompt(), &skill.name)
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -453,7 +471,7 @@ pub(super) fn latest_task_text(
                     ContentBlock::Text { text, .. } => {
                         let text = text.trim();
                         (!text.is_empty()
-                            && !text.starts_with("<system-reminder>")
+                            && !is_system_injected_message(text)
                             && !crate::todo::is_auto_poke_message(text))
                         .then_some(text)
                     }
