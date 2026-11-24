@@ -46,17 +46,21 @@ fn bounded_skill_prompt(prompt: &str, name: &str) -> String {
     truncated
 }
 
-/// Whether a user-role message was injected by the harness rather than typed by
-/// the user, and so must never drive skill routing.
+/// Remove harness-injected reminder text from a message so its vocabulary cannot
+/// be mistaken for the user's request.
 ///
-/// Reminders arrive in two shapes: the older `<system-reminder>` block, and the
-/// newer markdown reminder that begins with a `# System Reminder` heading (used
-/// for background-task completion notices). Only the first shape was skipped, so
-/// a completion notice — whose body lists live capabilities such as "CTF
-/// forensics reversing and crypto" — was read as the user's task and auto-loaded
-/// the 41 KB `ctf` skill on unrelated turns.
-fn is_system_injected_message(text: &str) -> bool {
-    text.starts_with("<system-reminder>") || text.starts_with("# System Reminder")
+/// A reminder can be the whole message (`# System Reminder`), or — as with the
+/// background-task completion notice — appended to the user's own text after a
+/// `<system-reminder>` marker. In the appended case the user's real request is
+/// everything before the marker, so keep that and discard the rest.
+fn strip_system_reminder(text: &str) -> &str {
+    if let Some(index) = text.find("<system-reminder>") {
+        return text[..index].trim();
+    }
+    if text.starts_with("# System Reminder") {
+        return "";
+    }
+    text
 }
 
 /// Truncate a task-routed skill prompt to [`MAX_AUTO_SKILL_PROMPT_CHARS`].
@@ -469,11 +473,11 @@ pub(super) fn latest_task_text(
                 .iter()
                 .filter_map(|block| match block {
                     ContentBlock::Text { text, .. } => {
-                        let text = text.trim();
-                        (!text.is_empty()
-                            && !is_system_injected_message(text)
-                            && !crate::todo::is_auto_poke_message(text))
-                        .then_some(text)
+                        // Drop any harness-injected reminder trailing the user's
+                        // own text before it can influence skill routing.
+                        let text = strip_system_reminder(text).trim();
+                        (!text.is_empty() && !crate::todo::is_auto_poke_message(text))
+                            .then_some(text)
                     }
                     _ => None,
                 })

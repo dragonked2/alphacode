@@ -530,12 +530,9 @@ fn configure_bundled_skills(root: &Path) {
     );
 
     let packed = fs::read(&raw).expect("read packed bundled skills");
-    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
-    std::io::Write::write_all(&mut encoder, &packed).expect("deflate bundled skills");
-    let compressed = encoder.finish().expect("finish bundled skills deflate");
-
     let target = out.join("bundled-skills.bin");
-    fs::write(&target, compressed).expect("write compressed bundled skills");
+    // The packer already deflates the body data, so write its output as-is.
+    fs::write(&target, packed).expect("write compressed bundled skills");
     println!(
         "cargo:rustc-env=ALPHACODE_BUNDLED_SKILLS_BYTES={}",
         target.display()

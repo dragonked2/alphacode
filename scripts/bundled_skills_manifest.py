@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import struct
 import sys
+import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -124,8 +125,14 @@ def build_blob(skills: list[dict]) -> bytes:
         entries.append({"name": skill["name"], "body": body, "references": references})
 
     index = json.dumps(entries, separators=(",", ":")).encode("utf-8")
-    header = MAGIC + struct.pack("<II", len(index), offset)
-    return header + index + b"".join(data_parts)
+    data = b"".join(data_parts)
+    # Deflate only the body data, and keep the index (skill names + reference
+    # keys) as plaintext. The literals that trip antivirus heuristics live in the
+    # bodies; the names are ordinary identifiers and stay greppable so release
+    # verification can confirm the bundled skills are present in the image.
+    compressed = zlib.compress(data, 9)
+    header = MAGIC + struct.pack("<III", len(index), len(data), len(compressed))
+    return header + index + compressed
 
 
 def main() -> int:

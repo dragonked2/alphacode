@@ -437,6 +437,9 @@ jobs:
             unzip -q "${ARCHIVE_BASE}.zip" -d "$TMP_DIR"
           elif [ -f "${ARCHIVE_BASE}.tar.gz" ]; then
             tar -xzf "${ARCHIVE_BASE}.tar.gz" -C "$TMP_DIR"
+          else
+            echo "::error::no archive found for ${ARCHIVE_BASE}"
+            exit 1
           fi
           BIN="$(find "$TMP_DIR" -maxdepth 3 -type f \( -name alphacode -o -name alphacode.exe \) -print -quit)"
           if [ -z "$BIN" ]; then
@@ -563,3 +566,60 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: gh release edit "$RELEASE_TAG" --draft=false --latest
+
+      - name: Post release announcement to Discord
+        if: ${{ secrets.DISCORD_WEBHOOK_URL != '' }}
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          CHANGELOG_FILE: ${{ steps.changelog.outputs.path }}
+        run: |
+          set -euo pipefail
+          # Read changelog content
+          if [ -f "$CHANGELOG_FILE" ] && [ -s "$CHANGELOG_FILE" ]; then
+            CHANGELOG_CONTENT=$(cat "$CHANGELOG_FILE")
+          else
+            CHANGELOG_CONTENT="No changelog available for this release."
+          fi
+          # Truncate changelog if too long for Discord (2000 char limit per field)
+          if [ ${#CHANGELOG_CONTENT} -gt 1800 ]; then
+            CHANGELOG_CONTENT="${CHANGELOG_CONTENT:0:1797}..."
+          fi
+          # Build JSON payload
+          cat > /tmp/discord_payload.json <<EOF
+          {
+            "username": "AlphaCode Release Bot",
+            "avatar_url": "https://raw.githubusercontent.com/dragonked2/alphacode/main/logo.png",
+            "embeds": [{
+              "title": "🚀 AlphaCode ${RELEASE_TAG} Released",
+              "url": "https://github.com/${REPO}/releases/tag/${RELEASE_TAG}",
+              "color": 5814783,
+              "description": "**New version available!**",
+              "fields": [
+                {
+                  "name": "📦 Version",
+                  "value": "${RELEASE_TAG}",
+                  "inline": true
+                },
+                {
+                  "name": "🔗 Release Page",
+                  "value": "[View on GitHub](https://github.com/${REPO}/releases/tag/${RELEASE_TAG})",
+                  "inline": true
+                },
+                {
+                  "name": "📝 Changelog",
+                  "value": "${CHANGELOG_CONTENT}",
+                  "inline": false
+                }
+              ],
+              "footer": {
+                "text": "AlphaCode - Terminal-native coding agent",
+                "icon_url": "https://raw.githubusercontent.com/dragonked2/alphacode/main/logo.png"
+              },
+              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            }]
+          }
+          EOF
+          curl -sS -H "Content-Type: application/json" -d @/tmp/discord_payload.json "$WEBHOOK_URL"

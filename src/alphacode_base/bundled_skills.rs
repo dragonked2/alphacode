@@ -59,25 +59,68 @@ static PACKED: &[u8] = include_bytes!(env!("ALPHACODE_BUNDLED_SKILLS_BYTES"));
 const MAGIC: &[u8; 8] = b"ACSKILL1";
 
 fn decode_packed() -> Vec<BundledSkill> {
-    let unpacked =
+    let parsed =
         unpack().unwrap_or_else(|error| panic!("bundled skill corpus is corrupt: {error}"));
-    parse_index(&unpacked)
+    parse_index(&parsed.index, &parsed.data)
 }
 
-/// Decompress `PACKED` and split the `ACSKILL1` container.
+/// Split the decompressed `ACSKILL1` container.
 ///
 /// Layer order matters and is mirrored in `scripts/bundled_skills_manifest.py`
-/// (which writes the inner container) and `build.rs` (which deflates it):
-/// `deflate( MAGIC | u32 index_len | u32 data_len | index_json | concatenated data )`.
-fn unpack() -> Result<Vec<u8>, String> {
+/// (which writes it): the header and index are plaintext, and only the body data
+/// is deflated:
+/// `MAGIC | u32 index_len | u32 data_len | u32 compressed_len | index_json | deflate(data)`.
+///
+/// The index (skill names and reference keys) stays plaintext because those are
+/// ordinary identifiers, not the documentation literals antivirus heuristics
+/// match, and release verification greps the binary for them.
+struct Unpacked {
+    index: Vec<u8>,
+    data: Vec<u8>,
+}
+
+fn unpack() -> Result<Unpacked, String> {
     use std::io::Read;
 
-    let mut decoder = flate2::read::DeflateDecoder::new(PACKED);
-    let mut buffer = Vec::with_capacity(PACKED.len() * 6);
+    let header_len = MAGIC.len() + 12;
+    if PACKED.len() < header_len {
+        return Err("container shorter than its header".to_string());
+    }
+    if &PACKED[..MAGIC.len()] != MAGIC {
+        return Err("bad magic; rebuild so build.rs regenerates the corpus".to_string());
+    }
+    let header = &PACKED[MAGIC.len()..header_len];
+    let index_len = u32::from_le_bytes(header[..4].try_into().expect("index length")) as usize;
+    let data_len = u32::from_le_bytes(header[4..8].try_into().expect("data length")) as usize;
+    let compressed_len =
+        u32::from_le_bytes(header[8..12].try_into().expect("compressed length")) as usize;
+    let index_start = header_len;
+    let data_start = index_start
+        .checked_add(index_len)
+        .ok_or_else(|| "index length overflow".to_string())?;
+    let index = PACKED
+        .get(index_start..data_start)
+        .ok_or_else(|| "index length exceeds container".to_string())?
+        .to_vec();
+    let compressed = PACKED
+        .get(data_start..data_start + compressed_len)
+        .ok_or_else(|| "compressed length exceeds container".to_string())?;
+
+    let mut decoder = flate2::read::ZlibDecoder::new(compressed);
+    let mut buffer = Vec::with_capacity(data_len);
     decoder
         .read_to_end(&mut buffer)
-        .map_err(|error| format!("deflate decode failed: {error}"))?;
-    Ok(buffer)
+        .map_err(|error| format!("zlib decode failed: {error}"))?;
+    if buffer.len() != data_len {
+        return Err(format!(
+            "data length mismatch: header says {data_len}, decoded {}",
+            buffer.len()
+        ));
+    }
+    Ok(Unpacked {
+        index,
+        data: buffer,
+    })
 }
 
 /// Span of one packed file inside the concatenated data section.
@@ -111,17 +154,7 @@ struct EntryIndex {
     references: Vec<(String, Span)>,
 }
 
-fn parse_index(buffer: &[u8]) -> Vec<BundledSkill> {
-    let (index_json, data_len, data_start) = split_container(buffer)
-        .unwrap_or_else(|error| panic!("bundled skill container is corrupt: {error}"));
-    let data = &buffer[data_start..];
-    assert_eq!(
-        data.len(),
-        data_len,
-        "bundled skill data section length mismatch: header says {data_len}, container has {}",
-        data.len()
-    );
-
+fn parse_index(index_json: &[u8], data: &[u8]) -> Vec<BundledSkill> {
     let entries: Vec<EntryIndex> = decode_index(index_json)
         .unwrap_or_else(|error| panic!("bundled skill index is corrupt: {error}"));
 
@@ -159,25 +192,6 @@ fn parse_index(buffer: &[u8]) -> Vec<BundledSkill> {
 /// allocation per file for the life of the process, not a per-call leak.
 fn leak(value: impl Into<String>) -> &'static str {
     Box::leak(value.into().into_boxed_str())
-}
-
-fn split_container(buffer: &[u8]) -> Result<(&[u8], usize, usize), String> {
-    if buffer.len() < MAGIC.len() + 8 {
-        return Err("container shorter than its header".to_string());
-    }
-    if &buffer[..MAGIC.len()] != MAGIC {
-        return Err("bad magic; rebuild so build.rs regenerates the corpus".to_string());
-    }
-    let header = &buffer[MAGIC.len()..MAGIC.len() + 8];
-    let index_len =
-        u32::from_le_bytes(header[..4].try_into().expect("4-byte index length")) as usize;
-    let data_len =
-        u32::from_le_bytes(header[4..8].try_into().expect("4-byte data length")) as usize;
-    let data_start = MAGIC.len() + 8 + index_len;
-    let index = buffer
-        .get(MAGIC.len() + 8..data_start)
-        .ok_or_else(|| "index length exceeds container".to_string())?;
-    Ok((index, data_len, data_start))
 }
 
 /// The index is a flat JSON array emitted by the packer. Decoding is hand-rolled
@@ -500,11 +514,18 @@ mod tests {
              leaked back into the image",
             PACKED.len()
         );
-        // `PACKED` is the raw deflate stream, so assert the container magic on
-        // the *decompressed* bytes (which is what any plaintext literal would
-        // have to survive to reach the image).
-        let unpacked = unpack().expect("packed corpus must decompress");
-        assert_eq!(&unpacked[..MAGIC.len()], MAGIC, "packed corpus header");
+        assert_eq!(&PACKED[..MAGIC.len()], MAGIC, "packed corpus header");
+        // The body data must actually be compressed, or the documentation
+        // literals that trip antivirus rules would be back in the image.
+        let parsed = unpack().expect("packed corpus must decompress");
+        let body_bytes: usize = bundled_skills().iter().map(|skill| skill.body.len()).sum();
+        assert!(
+            body_bytes > parsed.data.len(),
+            "body data ({} bytes across all skills) should be compressed below its \
+             decompressed size ({} bytes)",
+            body_bytes,
+            parsed.data.len()
+        );
     }
 
     #[test]
