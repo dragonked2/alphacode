@@ -188,23 +188,54 @@ fn parse_port(line: &str) -> Option<u16> {
 /// Requires a severity-ish or template-ish marker so that ordinary output
 /// (headers, URLs, banners) is not recorded as a finding.
 fn is_vulnerability_line(line: &str) -> bool {
-    const MARKERS: &[&str] = &[
-        "[critical]",
-        "[high]",
-        "[medium]",
-        "[low]",
-        "[info]",
+    let lower = line.to_ascii_lowercase();
+
+    // Severity tags come from `nuclei`/`nikto` as a bracketed token. Matching
+    // them with a plain `contains` was wrong in both directions: it fired on the
+    // bare word "info" ("information") and the tag "low" matched ordinary words
+    // like "allow", "follow" and "below", so recon chatter became scanner leads.
+    const SEVERITY_TAGS: &[&str] = &["[critical]", "[high]", "[medium]", "[low]", "[info]"];
+    if SEVERITY_TAGS.iter().any(|tag| lower.contains(tag)) {
+        return true;
+    }
+
+    // Free-text markers are matched only as whole words for the same reason:
+    // `contains("exploit")` also matches "exploitation" (fine) but
+    // `contains("vulnerable")` used to match inside unrelated identifiers.
+    const WORD_MARKERS: &[&str] = &[
         "vulnerability",
         "vulnerable",
-        "found:",
-        "reflected",
         "injection",
         "misconfiguration",
         "disclosure",
         "exploit",
     ];
-    let lower = line.to_ascii_lowercase();
-    MARKERS.iter().any(|marker| lower.contains(marker))
+    if WORD_MARKERS.iter().any(|marker| has_word(&lower, marker)) {
+        return true;
+    }
+
+    // These are unambiguous as prefixes.
+    lower.contains("found:") || lower.contains("reflected")
+}
+
+/// Whether `haystack` contains `needle` delimited by non-alphanumeric bytes.
+///
+/// Both inputs are expected to be lowercase ASCII. Hyphens and underscores count
+/// as delimiters, so `sql-injection` and `injection_found` still match.
+fn has_word(haystack: &str, needle: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    if needle.is_empty() || needle.len() > bytes.len() {
+        return false;
+    }
+    for (begin, _) in haystack.match_indices(needle) {
+        let end = begin + needle.len();
+        let left_ok = begin == 0 || !bytes[begin - 1].is_ascii_alphanumeric();
+        let right_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if left_ok && right_ok {
+            return true;
+        }
+    }
+    false
 }
 
 /// Consecutive completed turns that produce no new signal before the hunt is
@@ -250,7 +281,12 @@ fn retry_is_safe(error: &str) -> bool {
         "would block",
         "broken pipe",
         "unexpected eof",
-        "dns",
+        // A bare `"dns"` marker was wrong: it classified a permanent
+        // misconfiguration ("dns name does not exist", "invalid dns record")
+        // as transient. Only the resolver's retryable conditions belong here.
+        "temporary failure in name resolution",
+        "could not resolve host",
+        "dns lookup failed",
     ];
     TRANSIENT.iter().any(|marker| lower.contains(marker))
 }

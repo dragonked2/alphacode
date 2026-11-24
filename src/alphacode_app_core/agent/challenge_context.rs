@@ -43,6 +43,53 @@ pub(super) fn is_ctf_request(text: &str) -> bool {
         || text.to_ascii_lowercase().contains("capture the flag")
 }
 
+/// Whether a skill name is one of the security workflows whose text already
+/// carries the bug-bounty methodology.
+///
+/// Used to avoid appending the standalone `bug-bounty-methodology` skill on top
+/// of a workflow that already contains it. Stacking both was ~14 KB of
+/// duplicated guidance on every security-routed turn.
+pub(super) fn is_security_skill(skill: Option<&str>) -> bool {
+    skill.is_some_and(|skill| {
+        matches!(
+            skill,
+            "bugbounty"
+                | "bug-bounty-methodology"
+                | "security-research"
+                | "web-app-testing"
+                | "vuln-hunter"
+                | "security-audit"
+        )
+    })
+}
+
+#[cfg(test)]
+mod security_skill_tests {
+    use super::is_security_skill;
+
+    #[test]
+    fn bugbounty_workflow_counts_as_loaded_security_guidance() {
+        // These names all inject methodology text, so the standalone
+        // `bug-bounty-methodology` skill must not be stacked on top of them.
+        for name in [
+            "bugbounty",
+            "bug-bounty-methodology",
+            "security-research",
+            "web-app-testing",
+        ] {
+            assert!(is_security_skill(Some(name)), "{name} should be recognised");
+        }
+    }
+
+    #[test]
+    fn unrelated_skills_do_not_count() {
+        assert!(!is_security_skill(None));
+        assert!(!is_security_skill(Some("ctf")));
+        assert!(!is_security_skill(Some("debug")));
+        assert!(!is_security_skill(Some("refactor")));
+    }
+}
+
 impl super::Agent {
     pub(super) fn ctf_goal_active(&self) -> bool {
         self.active_skill

@@ -1182,10 +1182,18 @@ pub(super) fn strip_terminal_control_sequences(text: &str) -> std::borrow::Cow<'
                 // string sequences terminated by BEL (\x07) or ST (ESC \).
                 index += 1;
                 index = osc_string_end(bytes, index);
-            } else if index < bytes.len() {
-                // Two-character escape such as ESC O.
-                index += 1;
             }
+            // Any other byte after ESC is left in place. A lone ESC is a
+            // remnant (it is what a torn read or Windows VT input leaves behind
+            // before ordinary text), and a two-character escape such as ESC O
+            // shares its final byte range with printable ASCII. Consuming the
+            // next byte unconditionally therefore deleted the first character
+            // of a paste that a stray ESC preceded: `ESC` + "try to hunt
+            // something" became "ry to hunt something" (issue #37). Dropping
+            // only the ESC means the worst case is a single stray letter from a
+            // genuinely torn multi-byte escape, never silent loss of the user's
+            // text. The `[` and string-introducer branches above still consume
+            // their bodies, so real remnants are removed as before.
             continue;
         }
         // 8-bit CSI introducer (UTF-8 encoded U+009B).
@@ -4494,6 +4502,13 @@ mod terminal_control_sequence_tests {
             ("\x1b[<65;5", ""),
             // Unterminated OSC: drop the rest.
             ("\x1b]11;rgb:", ""),
+            // A stray ESC before ordinary text drops only the ESC. Consuming
+            // the following byte here deleted the first character of a paste
+            // that a torn read preceded (issue #37).
+            ("\x1btry to hunt something", "try to hunt something"),
+            ("\x1bhello", "hello"),
+            ("\x1b9lives", "9lives"),
+            ("\x1b\x1btext", "text"),
         ] {
             assert_eq!(
                 strip_terminal_control_sequences(input),

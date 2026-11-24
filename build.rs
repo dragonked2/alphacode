@@ -126,6 +126,7 @@ fn main() {
 
     emit_build_environment(&info);
     configure_mmdr();
+    configure_bundled_skills(&repo_root);
     configure_windows_desktop(&repo_root, &info);
 }
 
@@ -475,6 +476,96 @@ fn emit_build_environment(info: &BuildInfo) {
 
 fn emit_env(name: &str, value: &str) {
     println!("cargo:rustc-env={name}={value}");
+}
+
+// -----------------------------------------------------------------------------
+// bundled skills
+// -----------------------------------------------------------------------------
+
+/// Compress the bundled skill corpus into a single deflated blob.
+///
+/// The manifest is read from `src/alphacode_base/bundled_skills.rs`, packed by
+/// `scripts/bundled_skills_manifest.py`, then deflated here and emitted as one
+/// `include_bytes!` target. This replaces ~290 `include_str!` calls whose
+/// contents were several megabytes of *plaintext documentation* inside the
+/// shipped executable.
+///
+/// That plaintext was the single largest source of false antivirus verdicts:
+/// generic heuristics and crowdsourced YARA rules matched inert methodology
+/// text (browser-credential forensics recipes, `webhook.site/` callback
+/// examples, event-log clearing commands, hypervisor MAC prefixes, tool-name
+/// lists) and labelled the program a stealer/dropper. Nothing in that text was
+/// ever executed, but a scanner cannot know that from a byte match.
+///
+/// Storing the corpus deflated removes every one of those literals from the
+/// image while serving the model exactly the same bytes at runtime.
+fn configure_bundled_skills(root: &Path) {
+    let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let manifest = root
+        .join("src")
+        .join("alphacode_base")
+        .join("bundled_skills.json");
+    let packer = root.join("scripts").join("bundled_skills_manifest.py");
+
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rerun-if-changed={}", packer.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("src")
+            .join("alphacode_base")
+            .join("bundled_skills")
+            .display()
+    );
+
+    let raw = out.join("bundled-skills.pack");
+    let status = Command::new(python_interpreter())
+        .arg(&packer)
+        .arg(&raw)
+        .status()
+        .expect("run bundled-skills packer");
+    assert!(
+        status.success(),
+        "bundled-skills packer failed: {}",
+        packer.display()
+    );
+
+    let packed = fs::read(&raw).expect("read packed bundled skills");
+    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+    std::io::Write::write_all(&mut encoder, &packed).expect("deflate bundled skills");
+    let compressed = encoder.finish().expect("finish bundled skills deflate");
+
+    let target = out.join("bundled-skills.bin");
+    fs::write(&target, compressed).expect("write compressed bundled skills");
+    println!(
+        "cargo:rustc-env=ALPHACODE_BUNDLED_SKILLS_BYTES={}",
+        target.display()
+    );
+}
+
+/// Locate a Python interpreter for the packer.
+///
+/// `PYTHON` wins so a caller can pin one; otherwise try the names each platform
+/// actually ships (`python` on Windows and most Unix images, `python3`
+/// elsewhere). A missing interpreter is a hard error rather than a silent
+/// fallback: shipping uncompressed documentation is the defect this prevents.
+fn python_interpreter() -> String {
+    if let Some(explicit) = env::var_os("PYTHON") {
+        return explicit.to_string_lossy().into_owned();
+    }
+    for candidate in ["python", "python3", "py"] {
+        let found = Command::new(candidate)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if matches!(found, Ok(status) if status.success()) {
+            return candidate.to_string();
+        }
+    }
+    panic!(
+        "no Python interpreter found for scripts/bundled_skills_manifest.py; \
+         set PYTHON to one that works in this build environment"
+    );
 }
 
 // -----------------------------------------------------------------------------

@@ -1,0 +1,1205 @@
+[
+ {
+  "name": "bug-bounty-methodology",
+  "body": "bundled_skills/bug-bounty-methodology/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "engineering-workflow",
+  "body": "bundled_skills/engineering-workflow/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "finding-validation",
+  "body": "bundled_skills/finding-validation/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "recon-ops",
+  "body": "bundled_skills/recon-ops/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "security-audit",
+  "body": "bundled_skills/security-audit/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "security-research",
+  "body": "bundled_skills/security-research/SKILL.md",
+  "references": [
+   {
+    "key": "handbook",
+    "path": "bundled_skills/security-research/handbook/SKILL.md"
+   }
+  ]
+ },
+ {
+  "name": "vuln-hunter",
+  "body": "bundled_skills/vuln-hunter/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "web-app-testing",
+  "body": "bundled_skills/web-app-testing/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "nodejs-security",
+  "body": "bundled_skills/nodejs-security/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "ctf-workflow",
+  "body": "bundled_skills/ctf-workflow/SKILL.md",
+  "references": [
+   {
+    "key": "solver-engineering",
+    "path": "bundled_skills/ctf-workflow/solver-engineering/SKILL.md"
+   }
+  ]
+ },
+ {
+  "name": "playbook",
+  "body": "bundled_skills/playbook/SKILL.md",
+  "references": [
+   {
+    "key": "extended",
+    "path": "bundled_skills/playbook/extended/SKILL.md"
+   }
+  ]
+ },
+ {
+  "name": "bugbounty",
+  "body": "bundled_skills/bugbounty/SKILL.md",
+  "references": [
+   {
+    "key": "researcher-reasoning",
+    "path": "bundled_skills/bugbounty/researcher-reasoning/SKILL.md"
+   },
+   {
+    "key": "reasoning-cases",
+    "path": "bundled_skills/bugbounty/reasoning-cases/SKILL.md"
+   },
+   {
+    "key": "experiment-design",
+    "path": "bundled_skills/bugbounty/experiment-design/SKILL.md"
+   },
+   {
+    "key": "investigation-control",
+    "path": "bundled_skills/bugbounty/investigation-control/SKILL.md"
+   },
+   {
+    "key": "cross-feature-workflows",
+    "path": "bundled_skills/bugbounty/cross-feature-workflows/SKILL.md"
+   },
+   {
+    "key": "current-research",
+    "path": "bundled_skills/bugbounty/current-research/SKILL.md"
+   },
+   {
+    "key": "hunting-intelligence",
+    "path": "bundled_skills/bugbounty/hunting-intelligence/SKILL.md"
+   },
+   {
+    "key": "real-world-validation",
+    "path": "bundled_skills/bugbounty/real-world-validation/SKILL.md"
+   },
+   {
+    "key": "orchestrate",
+    "path": "bundled_skills/bugbounty/orchestrate/SKILL.md"
+   },
+   {
+    "key": "advanced-techniques",
+    "path": "bundled_skills/bugbounty/advanced-techniques/SKILL.md"
+   },
+   {
+    "key": "client-reverse",
+    "path": "bundled_skills/bugbounty/client-reverse/SKILL.md"
+   },
+   {
+    "key": "credential-attack",
+    "path": "bundled_skills/bugbounty/credential-attack/SKILL.md"
+   },
+   {
+    "key": "hunt-api",
+    "path": "bundled_skills/bugbounty/hunt-api/SKILL.md"
+   },
+   {
+    "key": "hunt-graphql",
+    "path": "bundled_skills/bugbounty/hunt-graphql/SKILL.md"
+   },
+   {
+    "key": "hunt-idor",
+    "path": "bundled_skills/bugbounty/hunt-idor/SKILL.md"
+   },
+   {
+    "key": "hunt-memory",
+    "path": "bundled_skills/bugbounty/hunt-memory/SKILL.md"
+   },
+   {
+    "key": "hunt-oauth",
+    "path": "bundled_skills/bugbounty/hunt-oauth/SKILL.md"
+   },
+   {
+    "key": "hunt-sqli",
+    "path": "bundled_skills/bugbounty/hunt-sqli/SKILL.md"
+   },
+   {
+    "key": "hunt-ssrf",
+    "path": "bundled_skills/bugbounty/hunt-ssrf/SKILL.md"
+   },
+   {
+    "key": "hunt-xss",
+    "path": "bundled_skills/bugbounty/hunt-xss/SKILL.md"
+   },
+   {
+    "key": "llm-redteam",
+    "path": "bundled_skills/bugbounty/llm-redteam/SKILL.md"
+   },
+   {
+    "key": "recon",
+    "path": "bundled_skills/bugbounty/recon/SKILL.md"
+   },
+   {
+    "key": "recon-js",
+    "path": "bundled_skills/bugbounty/recon-js/SKILL.md"
+   },
+   {
+    "key": "scope",
+    "path": "bundled_skills/bugbounty/scope/SKILL.md"
+   },
+   {
+    "key": "report",
+    "path": "bundled_skills/bugbounty/report/SKILL.md"
+   },
+   {
+    "key": "security-arsenal",
+    "path": "bundled_skills/bugbounty/security-arsenal/SKILL.md"
+   },
+   {
+    "key": "web3-audit",
+    "path": "bundled_skills/bugbounty/web3-audit/SKILL.md"
+   },
+   {
+    "key": "pentest-ops",
+    "path": "bundled_skills/bugbounty/pentest-ops/SKILL.md"
+   },
+   {
+    "key": "knowledge-broker",
+    "path": "bundled_skills/bugbounty/knowledge-broker/SKILL.md"
+   },
+   {
+    "key": "findings-lifecycle",
+    "path": "bundled_skills/bugbounty/findings-lifecycle/SKILL.md"
+   },
+   {
+    "key": "evidence-locker",
+    "path": "bundled_skills/bugbounty/evidence-locker/SKILL.md"
+   },
+   {
+    "key": "tool-doctor",
+    "path": "bundled_skills/bugbounty/tool-doctor/SKILL.md"
+   },
+   {
+    "key": "runbook",
+    "path": "bundled_skills/bugbounty/runbook/SKILL.md"
+   },
+   {
+    "key": "network-cloud-triage",
+    "path": "bundled_skills/bugbounty/network-cloud-triage/SKILL.md"
+   },
+   {
+    "key": "redteam-ops",
+    "path": "bundled_skills/bugbounty/redteam-ops/SKILL.md"
+   },
+   {
+    "key": "hunt-cors",
+    "path": "bundled_skills/bugbounty/hunt-cors/SKILL.md"
+   },
+   {
+    "key": "hunt-ssrf-advanced",
+    "path": "bundled_skills/bugbounty/hunt-ssrf-advanced/SKILL.md"
+   },
+   {
+    "key": "hunt-race",
+    "path": "bundled_skills/bugbounty/hunt-race/SKILL.md"
+   },
+   {
+    "key": "hunt-desync",
+    "path": "bundled_skills/bugbounty/hunt-desync/SKILL.md"
+   },
+   {
+    "key": "llm-injection",
+    "path": "bundled_skills/bugbounty/llm-injection/SKILL.md"
+   },
+   {
+    "key": "modern-2026-surfaces",
+    "path": "bundled_skills/bugbounty/modern-2026-surfaces/SKILL.md"
+   },
+   {
+    "key": "hunt-subdomain-takeover",
+    "path": "bundled_skills/bugbounty/hunt-subdomain-takeover/SKILL.md"
+   },
+   {
+    "key": "hunt-cache-poisoning",
+    "path": "bundled_skills/bugbounty/hunt-cache-poisoning/SKILL.md"
+   },
+   {
+    "key": "hunt-ssti",
+    "path": "bundled_skills/bugbounty/hunt-ssti/SKILL.md"
+   },
+   {
+    "key": "hunt-deserialization",
+    "path": "bundled_skills/bugbounty/hunt-deserialization/SKILL.md"
+   },
+   {
+    "key": "hunt-websocket",
+    "path": "bundled_skills/bugbounty/hunt-websocket/SKILL.md"
+   },
+   {
+    "key": "hunt-headers",
+    "path": "bundled_skills/bugbounty/hunt-headers/SKILL.md"
+   },
+   {
+    "key": "hunt-apikey-leak",
+    "path": "bundled_skills/bugbounty/hunt-apikey-leak/SKILL.md"
+   },
+   {
+    "key": "hunt-open-redirect",
+    "path": "bundled_skills/bugbounty/hunt-open-redirect/SKILL.md"
+   },
+   {
+    "key": "hunt-csrf",
+    "path": "bundled_skills/bugbounty/hunt-csrf/SKILL.md"
+   },
+   {
+    "key": "hunt-jwt",
+    "path": "bundled_skills/bugbounty/hunt-jwt/SKILL.md"
+   },
+   {
+    "key": "hunt-xxe",
+    "path": "bundled_skills/bugbounty/hunt-xxe/SKILL.md"
+   },
+   {
+    "key": "hunt-crlf",
+    "path": "bundled_skills/bugbounty/hunt-crlf/SKILL.md"
+   },
+   {
+    "key": "hunt-prototype-pollution",
+    "path": "bundled_skills/bugbounty/hunt-prototype-pollution/SKILL.md"
+   },
+   {
+    "key": "hunt-path-traversal",
+    "path": "bundled_skills/bugbounty/hunt-path-traversal/SKILL.md"
+   },
+   {
+    "key": "control-verification",
+    "path": "bundled_skills/bugbounty/control-verification/SKILL.md"
+   },
+   {
+    "key": "severity-engine",
+    "path": "bundled_skills/bugbounty/severity-engine/SKILL.md"
+   },
+   {
+    "key": "chain-reasoning",
+    "path": "bundled_skills/bugbounty/chain-reasoning/SKILL.md"
+   },
+   {
+    "key": "manual-blackbox",
+    "path": "bundled_skills/bugbounty/manual-blackbox/SKILL.md"
+   },
+   {
+    "key": "recon-deep",
+    "path": "bundled_skills/bugbounty/recon-deep/SKILL.md"
+   },
+   {
+    "key": "hunt-business-logic",
+    "path": "bundled_skills/bugbounty/hunt-business-logic/SKILL.md"
+   },
+   {
+    "key": "hunt-realtime",
+    "path": "bundled_skills/bugbounty/hunt-realtime/SKILL.md"
+   },
+   {
+    "key": "hunt-storage",
+    "path": "bundled_skills/bugbounty/hunt-storage/SKILL.md"
+   },
+   {
+    "key": "cloud-config",
+    "path": "bundled_skills/bugbounty/cloud-config/SKILL.md"
+   },
+   {
+    "key": "supply-chain",
+    "path": "bundled_skills/bugbounty/supply-chain/SKILL.md"
+   },
+   {
+    "key": "hunt-otp",
+    "path": "bundled_skills/bugbounty/hunt-otp/SKILL.md"
+   },
+   {
+    "key": "hunt-auth-bypass",
+    "path": "bundled_skills/bugbounty/hunt-auth-bypass/SKILL.md"
+   },
+   {
+    "key": "hunt-cspt",
+    "path": "bundled_skills/bugbounty/hunt-cspt/SKILL.md"
+   },
+   {
+    "key": "writeup-corpus",
+    "path": "bundled_skills/bugbounty/writeup-corpus/SKILL.md"
+   },
+   {
+    "key": "scripts/install_bugbounty_tools.sh",
+    "path": "bundled_skills/bugbounty/scripts/install_bugbounty_tools.sh"
+   },
+   {
+    "key": "scripts/install_bugbounty_tools.ps1",
+    "path": "bundled_skills/bugbounty/scripts/install_bugbounty_tools.ps1"
+   }
+  ]
+ },
+ {
+  "name": "optimization",
+  "body": "bundled_skills/optimization/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "refactor",
+  "body": "bundled_skills/refactor/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "test-writer",
+  "body": "bundled_skills/test-writer/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "api-design",
+  "body": "bundled_skills/api-design/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "dependency-audit",
+  "body": "bundled_skills/dependency-audit/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "architecture-review",
+  "body": "bundled_skills/architecture-review/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "performance-profiling",
+  "body": "bundled_skills/performance-profiling/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "incident-response",
+  "body": "bundled_skills/incident-response/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "data-pipeline",
+  "body": "bundled_skills/data-pipeline/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "migration-planner",
+  "body": "bundled_skills/migration-planner/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "observability",
+  "body": "bundled_skills/observability/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "api-security",
+  "body": "bundled_skills/api-security/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "crypto-audit",
+  "body": "bundled_skills/crypto-audit/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "cloud-security",
+  "body": "bundled_skills/cloud-security/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "code-audit",
+  "body": "bundled_skills/code-audit/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "exploit-dev",
+  "body": "bundled_skills/exploit-dev/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "frontend-design",
+  "body": "bundled_skills/frontend-design/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "git-workflow",
+  "body": "bundled_skills/git-workflow/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "docker",
+  "body": "bundled_skills/docker/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "database",
+  "body": "bundled_skills/database/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "code-review",
+  "body": "bundled_skills/code-review/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "debug",
+  "body": "bundled_skills/debug/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "documentation",
+  "body": "bundled_skills/documentation/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "devops",
+  "body": "bundled_skills/devops/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "regex",
+  "body": "bundled_skills/regex/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "testing",
+  "body": "bundled_skills/testing/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "api-builder",
+  "body": "bundled_skills/api-builder/SKILL.md",
+  "references": []
+ },
+ {
+  "name": "ctf",
+  "body": "bundled_skills/ctf/SKILL.md",
+  "references": [
+   {
+    "key": "workflow/solver-engineering",
+    "path": "bundled_skills/ctf-workflow/solver-engineering/SKILL.md"
+   },
+   {
+    "key": "ctf/advanced-reasoning",
+    "path": "bundled_skills/ctf/ctf/advanced-reasoning/SKILL.md"
+   },
+   {
+    "key": "ctf/adversarial-thinking",
+    "path": "bundled_skills/ctf/ctf/adversarial-thinking/SKILL.md"
+   },
+   {
+    "key": "ctf/ai-llm",
+    "path": "bundled_skills/ctf/ctf/ai-llm/SKILL.md"
+   },
+   {
+    "key": "ctf/ai-ml",
+    "path": "bundled_skills/ctf/ctf/ai-ml/SKILL.md"
+   },
+   {
+    "key": "ctf/ai-ml/adversarial-ml.md",
+    "path": "bundled_skills/ctf/ctf/ai-ml/adversarial-ml.md"
+   },
+   {
+    "key": "ctf/ai-ml/llm-attacks.md",
+    "path": "bundled_skills/ctf/ctf/ai-ml/llm-attacks.md"
+   },
+   {
+    "key": "ctf/ai-ml/model-attacks.md",
+    "path": "bundled_skills/ctf/ctf/ai-ml/model-attacks.md"
+   },
+   {
+    "key": "ctf/api-security",
+    "path": "bundled_skills/ctf/ctf/api-security/SKILL.md"
+   },
+   {
+    "key": "ctf/cloud",
+    "path": "bundled_skills/ctf/ctf/cloud/SKILL.md"
+   },
+   {
+    "key": "ctf/crypto",
+    "path": "bundled_skills/ctf/ctf/crypto/SKILL.md"
+   },
+   {
+    "key": "ctf/crypto/advanced-math.md",
+    "path": "bundled_skills/ctf/ctf/crypto/advanced-math.md"
+   },
+   {
+    "key": "ctf/crypto/classic-ciphers.md",
+    "path": "bundled_skills/ctf/ctf/crypto/classic-ciphers.md"
+   },
+   {
+    "key": "ctf/crypto/dh-attacks.md",
+    "path": "bundled_skills/ctf/ctf/crypto/dh-attacks.md"
+   },
+   {
+    "key": "ctf/crypto/ecc-attacks.md",
+    "path": "bundled_skills/ctf/ctf/crypto/ecc-attacks.md"
+   },
+   {
+    "key": "ctf/crypto/exotic-crypto.md",
+    "path": "bundled_skills/ctf/ctf/crypto/exotic-crypto.md"
+   },
+   {
+    "key": "ctf/crypto/exotic-crypto-2.md",
+    "path": "bundled_skills/ctf/ctf/crypto/exotic-crypto-2.md"
+   },
+   {
+    "key": "ctf/crypto/historical.md",
+    "path": "bundled_skills/ctf/ctf/crypto/historical.md"
+   },
+   {
+    "key": "ctf/crypto/lattice-and-lwe.md",
+    "path": "bundled_skills/ctf/ctf/crypto/lattice-and-lwe.md"
+   },
+   {
+    "key": "ctf/crypto/modern-ciphers.md",
+    "path": "bundled_skills/ctf/ctf/crypto/modern-ciphers.md"
+   },
+   {
+    "key": "ctf/crypto/modern-ciphers-2.md",
+    "path": "bundled_skills/ctf/ctf/crypto/modern-ciphers-2.md"
+   },
+   {
+    "key": "ctf/crypto/modern-ciphers-3.md",
+    "path": "bundled_skills/ctf/ctf/crypto/modern-ciphers-3.md"
+   },
+   {
+    "key": "ctf/crypto/modern-ciphers-4.md",
+    "path": "bundled_skills/ctf/ctf/crypto/modern-ciphers-4.md"
+   },
+   {
+    "key": "ctf/crypto/post-quantum.md",
+    "path": "bundled_skills/ctf/ctf/crypto/post-quantum.md"
+   },
+   {
+    "key": "ctf/crypto/prng.md",
+    "path": "bundled_skills/ctf/ctf/crypto/prng.md"
+   },
+   {
+    "key": "ctf/crypto/prng-attacks.md",
+    "path": "bundled_skills/ctf/ctf/crypto/prng-attacks.md"
+   },
+   {
+    "key": "ctf/crypto/rsa-attacks.md",
+    "path": "bundled_skills/ctf/ctf/crypto/rsa-attacks.md"
+   },
+   {
+    "key": "ctf/crypto/rsa-attacks-2.md",
+    "path": "bundled_skills/ctf/ctf/crypto/rsa-attacks-2.md"
+   },
+   {
+    "key": "ctf/crypto/stream-ciphers.md",
+    "path": "bundled_skills/ctf/ctf/crypto/stream-ciphers.md"
+   },
+   {
+    "key": "ctf/crypto/zkp-and-advanced.md",
+    "path": "bundled_skills/ctf/ctf/crypto/zkp-and-advanced.md"
+   },
+   {
+    "key": "ctf/pwn/scripts/fmtstr_payload_suite.py",
+    "path": "bundled_skills/ctf/ctf/pwn/scripts/fmtstr_payload_suite.py"
+   },
+   {
+    "key": "ctf/pwn/scripts/ret2libc_two_stage.py",
+    "path": "bundled_skills/ctf/ctf/pwn/scripts/ret2libc_two_stage.py"
+   },
+   {
+    "key": "ctf/pwn/scripts/seccomp_orw_generator.py",
+    "path": "bundled_skills/ctf/ctf/pwn/scripts/seccomp_orw_generator.py"
+   },
+   {
+    "key": "ctf/pwn/scripts/shellcraft_asm.py",
+    "path": "bundled_skills/ctf/ctf/pwn/scripts/shellcraft_asm.py"
+   },
+   {
+    "key": "ctf/pwn/scripts/srop_execve.py",
+    "path": "bundled_skills/ctf/ctf/pwn/scripts/srop_execve.py"
+   },
+   {
+    "key": "ctf/web/scripts/async_fuzz.py",
+    "path": "bundled_skills/ctf/ctf/web/scripts/async_fuzz.py"
+   },
+   {
+    "key": "ctf/dfir",
+    "path": "bundled_skills/ctf/ctf/dfir/SKILL.md"
+   },
+   {
+    "key": "ctf/forensics",
+    "path": "bundled_skills/ctf/ctf/forensics/SKILL.md"
+   },
+   {
+    "key": "ctf/forensics/3d-printing.md",
+    "path": "bundled_skills/ctf/ctf/forensics/3d-printing.md"
+   },
+   {
+    "key": "ctf/forensics/disk-advanced.md",
+    "path": "bundled_skills/ctf/ctf/forensics/disk-advanced.md"
+   },
+   {
+    "key": "ctf/forensics/disk-and-memory.md",
+    "path": "bundled_skills/ctf/ctf/forensics/disk-and-memory.md"
+   },
+   {
+    "key": "ctf/forensics/disk-recovery.md",
+    "path": "bundled_skills/ctf/ctf/forensics/disk-recovery.md"
+   },
+   {
+    "key": "ctf/forensics/linux-forensics.md",
+    "path": "bundled_skills/ctf/ctf/forensics/linux-forensics.md"
+   },
+   {
+    "key": "ctf/forensics/network.md",
+    "path": "bundled_skills/ctf/ctf/forensics/network.md"
+   },
+   {
+    "key": "ctf/forensics/network-advanced.md",
+    "path": "bundled_skills/ctf/ctf/forensics/network-advanced.md"
+   },
+   {
+    "key": "ctf/forensics/peripheral-capture.md",
+    "path": "bundled_skills/ctf/ctf/forensics/peripheral-capture.md"
+   },
+   {
+    "key": "ctf/forensics/signals-and-hardware.md",
+    "path": "bundled_skills/ctf/ctf/forensics/signals-and-hardware.md"
+   },
+   {
+    "key": "ctf/forensics/steganography.md",
+    "path": "bundled_skills/ctf/ctf/forensics/steganography.md"
+   },
+   {
+    "key": "ctf/forensics/stego-advanced.md",
+    "path": "bundled_skills/ctf/ctf/forensics/stego-advanced.md"
+   },
+   {
+    "key": "ctf/forensics/stego-advanced-2.md",
+    "path": "bundled_skills/ctf/ctf/forensics/stego-advanced-2.md"
+   },
+   {
+    "key": "ctf/forensics/stego-image.md",
+    "path": "bundled_skills/ctf/ctf/forensics/stego-image.md"
+   },
+   {
+    "key": "ctf/forensics/windows.md",
+    "path": "bundled_skills/ctf/ctf/forensics/windows.md"
+   },
+   {
+    "key": "LICENSE.ctf-skills",
+    "path": "bundled_skills/ctf/LICENSE.ctf-skills"
+   },
+   {
+    "key": "ctf/malware-analysis",
+    "path": "bundled_skills/ctf/ctf/malware-analysis/SKILL.md"
+   },
+   {
+    "key": "ctf/malware-analysis/c2-and-protocols.md",
+    "path": "bundled_skills/ctf/ctf/malware-analysis/c2-and-protocols.md"
+   },
+   {
+    "key": "ctf/malware-analysis/pe-and-dotnet.md",
+    "path": "bundled_skills/ctf/ctf/malware-analysis/pe-and-dotnet.md"
+   },
+   {
+    "key": "ctf/malware-analysis/scripts-and-obfuscation.md",
+    "path": "bundled_skills/ctf/ctf/malware-analysis/scripts-and-obfuscation.md"
+   },
+   {
+    "key": "ctf/master-brain",
+    "path": "bundled_skills/ctf/ctf/master-brain/SKILL.md"
+   },
+   {
+    "key": "ctf/methodology",
+    "path": "bundled_skills/ctf/ctf/methodology/SKILL.md"
+   },
+   {
+    "key": "ctf/misc",
+    "path": "bundled_skills/ctf/ctf/misc/SKILL.md"
+   },
+   {
+    "key": "ctf/misc/bashjails.md",
+    "path": "bundled_skills/ctf/ctf/misc/bashjails.md"
+   },
+   {
+    "key": "ctf/misc/ctfd-navigation.md",
+    "path": "bundled_skills/ctf/ctf/misc/ctfd-navigation.md"
+   },
+   {
+    "key": "ctf/misc/dns.md",
+    "path": "bundled_skills/ctf/ctf/misc/dns.md"
+   },
+   {
+    "key": "ctf/misc/encodings.md",
+    "path": "bundled_skills/ctf/ctf/misc/encodings.md"
+   },
+   {
+    "key": "ctf/misc/encodings-advanced.md",
+    "path": "bundled_skills/ctf/ctf/misc/encodings-advanced.md"
+   },
+   {
+    "key": "ctf/misc/games-and-vms.md",
+    "path": "bundled_skills/ctf/ctf/misc/games-and-vms.md"
+   },
+   {
+    "key": "ctf/misc/games-and-vms-2.md",
+    "path": "bundled_skills/ctf/ctf/misc/games-and-vms-2.md"
+   },
+   {
+    "key": "ctf/misc/games-and-vms-3.md",
+    "path": "bundled_skills/ctf/ctf/misc/games-and-vms-3.md"
+   },
+   {
+    "key": "ctf/misc/games-and-vms-4.md",
+    "path": "bundled_skills/ctf/ctf/misc/games-and-vms-4.md"
+   },
+   {
+    "key": "ctf/misc/linux-privesc.md",
+    "path": "bundled_skills/ctf/ctf/misc/linux-privesc.md"
+   },
+   {
+    "key": "ctf/misc/pyjails.md",
+    "path": "bundled_skills/ctf/ctf/misc/pyjails.md"
+   },
+   {
+    "key": "ctf/misc/rf-sdr.md",
+    "path": "bundled_skills/ctf/ctf/misc/rf-sdr.md"
+   },
+   {
+    "key": "ctf/osint",
+    "path": "bundled_skills/ctf/ctf/osint/SKILL.md"
+   },
+   {
+    "key": "ctf/osint/geolocation-and-media.md",
+    "path": "bundled_skills/ctf/ctf/osint/geolocation-and-media.md"
+   },
+   {
+    "key": "ctf/osint/social-media.md",
+    "path": "bundled_skills/ctf/ctf/osint/social-media.md"
+   },
+   {
+    "key": "ctf/osint/web-and-dns.md",
+    "path": "bundled_skills/ctf/ctf/osint/web-and-dns.md"
+   },
+   {
+    "key": "ctf/pwn",
+    "path": "bundled_skills/ctf/ctf/pwn/SKILL.md"
+   },
+   {
+    "key": "ctf/pwn/advanced.md",
+    "path": "bundled_skills/ctf/ctf/pwn/advanced.md"
+   },
+   {
+    "key": "ctf/pwn/advanced-exploits.md",
+    "path": "bundled_skills/ctf/ctf/pwn/advanced-exploits.md"
+   },
+   {
+    "key": "ctf/pwn/advanced-exploits-2.md",
+    "path": "bundled_skills/ctf/ctf/pwn/advanced-exploits-2.md"
+   },
+   {
+    "key": "ctf/pwn/advanced-exploits-3.md",
+    "path": "bundled_skills/ctf/ctf/pwn/advanced-exploits-3.md"
+   },
+   {
+    "key": "ctf/pwn/advanced-exploits-4.md",
+    "path": "bundled_skills/ctf/ctf/pwn/advanced-exploits-4.md"
+   },
+   {
+    "key": "ctf/pwn/advanced-exploits-5.md",
+    "path": "bundled_skills/ctf/ctf/pwn/advanced-exploits-5.md"
+   },
+   {
+    "key": "ctf/pwn/field-notes.md",
+    "path": "bundled_skills/ctf/ctf/pwn/field-notes.md"
+   },
+   {
+    "key": "ctf/pwn/format-string.md",
+    "path": "bundled_skills/ctf/ctf/pwn/format-string.md"
+   },
+   {
+    "key": "ctf/pwn/heap-fsop.md",
+    "path": "bundled_skills/ctf/ctf/pwn/heap-fsop.md"
+   },
+   {
+    "key": "ctf/pwn/heap-techniques.md",
+    "path": "bundled_skills/ctf/ctf/pwn/heap-techniques.md"
+   },
+   {
+    "key": "ctf/pwn/heap-techniques-2.md",
+    "path": "bundled_skills/ctf/ctf/pwn/heap-techniques-2.md"
+   },
+   {
+    "key": "ctf/pwn/kernel.md",
+    "path": "bundled_skills/ctf/ctf/pwn/kernel.md"
+   },
+   {
+    "key": "ctf/pwn/kernel-bypass.md",
+    "path": "bundled_skills/ctf/ctf/pwn/kernel-bypass.md"
+   },
+   {
+    "key": "ctf/pwn/kernel-techniques.md",
+    "path": "bundled_skills/ctf/ctf/pwn/kernel-techniques.md"
+   },
+   {
+    "key": "ctf/pwn/overflow-basics.md",
+    "path": "bundled_skills/ctf/ctf/pwn/overflow-basics.md"
+   },
+   {
+    "key": "ctf/pwn/rop-advanced.md",
+    "path": "bundled_skills/ctf/ctf/pwn/rop-advanced.md"
+   },
+   {
+    "key": "ctf/pwn/rop-and-shellcode.md",
+    "path": "bundled_skills/ctf/ctf/pwn/rop-and-shellcode.md"
+   },
+   {
+    "key": "ctf/pwn/sandbox-escape.md",
+    "path": "bundled_skills/ctf/ctf/pwn/sandbox-escape.md"
+   },
+   {
+    "key": "ctf/rev",
+    "path": "bundled_skills/ctf/ctf/rev/SKILL.md"
+   },
+   {
+    "key": "ctf/rev/anti-analysis.md",
+    "path": "bundled_skills/ctf/ctf/rev/anti-analysis.md"
+   },
+   {
+    "key": "ctf/rev/anti-analysis-ctf.md",
+    "path": "bundled_skills/ctf/ctf/rev/anti-analysis-ctf.md"
+   },
+   {
+    "key": "ctf/rev/field-notes.md",
+    "path": "bundled_skills/ctf/ctf/rev/field-notes.md"
+   },
+   {
+    "key": "ctf/rev/languages.md",
+    "path": "bundled_skills/ctf/ctf/rev/languages.md"
+   },
+   {
+    "key": "ctf/rev/languages-compiled.md",
+    "path": "bundled_skills/ctf/ctf/rev/languages-compiled.md"
+   },
+   {
+    "key": "ctf/rev/languages-platforms.md",
+    "path": "bundled_skills/ctf/ctf/rev/languages-platforms.md"
+   },
+   {
+    "key": "ctf/rev/patterns.md",
+    "path": "bundled_skills/ctf/ctf/rev/patterns.md"
+   },
+   {
+    "key": "ctf/rev/patterns-ctf.md",
+    "path": "bundled_skills/ctf/ctf/rev/patterns-ctf.md"
+   },
+   {
+    "key": "ctf/rev/patterns-ctf-2.md",
+    "path": "bundled_skills/ctf/ctf/rev/patterns-ctf-2.md"
+   },
+   {
+    "key": "ctf/rev/patterns-ctf-3.md",
+    "path": "bundled_skills/ctf/ctf/rev/patterns-ctf-3.md"
+   },
+   {
+    "key": "ctf/rev/patterns-runtime.md",
+    "path": "bundled_skills/ctf/ctf/rev/patterns-runtime.md"
+   },
+   {
+    "key": "ctf/rev/platforms.md",
+    "path": "bundled_skills/ctf/ctf/rev/platforms.md"
+   },
+   {
+    "key": "ctf/rev/platforms-hardware.md",
+    "path": "bundled_skills/ctf/ctf/rev/platforms-hardware.md"
+   },
+   {
+    "key": "ctf/rev/tools.md",
+    "path": "bundled_skills/ctf/ctf/rev/tools.md"
+   },
+   {
+    "key": "ctf/rev/tools-advanced.md",
+    "path": "bundled_skills/ctf/ctf/rev/tools-advanced.md"
+   },
+   {
+    "key": "ctf/rev/tools-advanced-2.md",
+    "path": "bundled_skills/ctf/ctf/rev/tools-advanced-2.md"
+   },
+   {
+    "key": "ctf/rev/tools-dynamic.md",
+    "path": "bundled_skills/ctf/ctf/rev/tools-dynamic.md"
+   },
+   {
+    "key": "ctf/rev/tools-emulation.md",
+    "path": "bundled_skills/ctf/ctf/rev/tools-emulation.md"
+   },
+   {
+    "key": "ctf/rev/unicorn-emulation.md",
+    "path": "bundled_skills/ctf/ctf/rev/unicorn-emulation.md"
+   },
+   {
+    "key": "scripts/install_ctf_tools.sh",
+    "path": "bundled_skills/ctf/scripts/install_ctf_tools.sh"
+   },
+   {
+    "key": "ctf/siem",
+    "path": "bundled_skills/ctf/ctf/siem/SKILL.md"
+   },
+   {
+    "key": "ctf/solution-verifier",
+    "path": "bundled_skills/ctf/ctf/solution-verifier/SKILL.md"
+   },
+   {
+    "key": "ctf/solve-challenge",
+    "path": "bundled_skills/ctf/ctf/solve-challenge/SKILL.md"
+   },
+   {
+    "key": "ctf/toolkit",
+    "path": "bundled_skills/ctf/ctf/toolkit/SKILL.md"
+   },
+   {
+    "key": "ctf/web",
+    "path": "bundled_skills/ctf/ctf/web/SKILL.md"
+   },
+   {
+    "key": "ctf/web/auth-and-access.md",
+    "path": "bundled_skills/ctf/ctf/web/auth-and-access.md"
+   },
+   {
+    "key": "ctf/web/auth-and-access-2.md",
+    "path": "bundled_skills/ctf/ctf/web/auth-and-access-2.md"
+   },
+   {
+    "key": "ctf/web/auth-infra.md",
+    "path": "bundled_skills/ctf/ctf/web/auth-infra.md"
+   },
+   {
+    "key": "ctf/web/auth-jwt.md",
+    "path": "bundled_skills/ctf/ctf/web/auth-jwt.md"
+   },
+   {
+    "key": "ctf/web/client-side.md",
+    "path": "bundled_skills/ctf/ctf/web/client-side.md"
+   },
+   {
+    "key": "ctf/web/client-side-advanced.md",
+    "path": "bundled_skills/ctf/ctf/web/client-side-advanced.md"
+   },
+   {
+    "key": "ctf/web/cves.md",
+    "path": "bundled_skills/ctf/ctf/web/cves.md"
+   },
+   {
+    "key": "ctf/web/field-notes.md",
+    "path": "bundled_skills/ctf/ctf/web/field-notes.md"
+   },
+   {
+    "key": "ctf/web/node-and-prototype.md",
+    "path": "bundled_skills/ctf/ctf/web/node-and-prototype.md"
+   },
+   {
+    "key": "ctf/web/pat-reference.md",
+    "path": "bundled_skills/ctf/ctf/web/pat-reference.md"
+   },
+   {
+    "key": "ctf/web/python-requests.md",
+    "path": "bundled_skills/ctf/ctf/web/python-requests.md"
+   },
+   {
+    "key": "ctf/web/server-side.md",
+    "path": "bundled_skills/ctf/ctf/web/server-side.md"
+   },
+   {
+    "key": "ctf/web/server-side-2.md",
+    "path": "bundled_skills/ctf/ctf/web/server-side-2.md"
+   },
+   {
+    "key": "ctf/web/server-side-advanced.md",
+    "path": "bundled_skills/ctf/ctf/web/server-side-advanced.md"
+   },
+   {
+    "key": "ctf/web/server-side-advanced-2.md",
+    "path": "bundled_skills/ctf/ctf/web/server-side-advanced-2.md"
+   },
+   {
+    "key": "ctf/web/server-side-advanced-3.md",
+    "path": "bundled_skills/ctf/ctf/web/server-side-advanced-3.md"
+   },
+   {
+    "key": "ctf/web/server-side-advanced-4.md",
+    "path": "bundled_skills/ctf/ctf/web/server-side-advanced-4.md"
+   },
+   {
+    "key": "ctf/web/server-side-deser.md",
+    "path": "bundled_skills/ctf/ctf/web/server-side-deser.md"
+   },
+   {
+    "key": "ctf/web/server-side-exec.md",
+    "path": "bundled_skills/ctf/ctf/web/server-side-exec.md"
+   },
+   {
+    "key": "ctf/web/server-side-exec-2.md",
+    "path": "bundled_skills/ctf/ctf/web/server-side-exec-2.md"
+   },
+   {
+    "key": "ctf/web/sql-injection.md",
+    "path": "bundled_skills/ctf/ctf/web/sql-injection.md"
+   },
+   {
+    "key": "ctf/web/web3.md",
+    "path": "bundled_skills/ctf/ctf/web/web3.md"
+   },
+   {
+    "key": "ctf/web3",
+    "path": "bundled_skills/ctf/ctf/web3/SKILL.md"
+   },
+   {
+    "key": "ctf/writeup",
+    "path": "bundled_skills/ctf/ctf/writeup/SKILL.md"
+   }
+  ]
+ },
+ {
+  "name": "frontend-dev",
+  "body": "bundled_skills/frontend-dev/SKILL.md",
+  "references": [
+   {
+    "key": "react",
+    "path": "bundled_skills/frontend-dev/react/SKILL.md"
+   },
+   {
+    "key": "nextjs",
+    "path": "bundled_skills/frontend-dev/nextjs/SKILL.md"
+   },
+   {
+    "key": "tailwind",
+    "path": "bundled_skills/frontend-dev/tailwind/SKILL.md"
+   },
+   {
+    "key": "components",
+    "path": "bundled_skills/frontend-dev/components/SKILL.md"
+   },
+   {
+    "key": "performance",
+    "path": "bundled_skills/frontend-dev/performance/SKILL.md"
+   },
+   {
+    "key": "testing",
+    "path": "bundled_skills/frontend-dev/testing/SKILL.md"
+   }
+  ]
+ },
+ {
+  "name": "backend-dev",
+  "body": "bundled_skills/backend-dev/SKILL.md",
+  "references": [
+   {
+    "key": "nodejs",
+    "path": "bundled_skills/backend-dev/nodejs/SKILL.md"
+   },
+   {
+    "key": "python",
+    "path": "bundled_skills/backend-dev/python/SKILL.md"
+   },
+   {
+    "key": "rust",
+    "path": "bundled_skills/backend-dev/rust/SKILL.md"
+   },
+   {
+    "key": "database",
+    "path": "bundled_skills/backend-dev/database/SKILL.md"
+   },
+   {
+    "key": "auth",
+    "path": "bundled_skills/backend-dev/auth/SKILL.md"
+   },
+   {
+    "key": "caching",
+    "path": "bundled_skills/backend-dev/caching/SKILL.md"
+   }
+  ]
+ },
+ {
+  "name": "web3-security-research",
+  "body": "bundled_skills/web3-security-research/SKILL.md",
+  "references": [
+   {
+    "key": "protocol-model",
+    "path": "bundled_skills/web3-security-research/protocol-model/SKILL.md"
+   },
+   {
+    "key": "defi-accounting",
+    "path": "bundled_skills/web3-security-research/defi-accounting/SKILL.md"
+   },
+   {
+    "key": "oracle-security",
+    "path": "bundled_skills/web3-security-research/oracle-security/SKILL.md"
+   },
+   {
+    "key": "lending-amm",
+    "path": "bundled_skills/web3-security-research/lending-amm/SKILL.md"
+   },
+   {
+    "key": "token-security",
+    "path": "bundled_skills/web3-security-research/token-security/SKILL.md"
+   },
+   {
+    "key": "bridge-security",
+    "path": "bundled_skills/web3-security-research/bridge-security/SKILL.md"
+   },
+   {
+    "key": "governance-proxy",
+    "path": "bundled_skills/web3-security-research/governance-proxy/SKILL.md"
+   },
+   {
+    "key": "signature-security",
+    "path": "bundled_skills/web3-security-research/signature-security/SKILL.md"
+   },
+   {
+    "key": "economic-attacks",
+    "path": "bundled_skills/web3-security-research/economic-attacks/SKILL.md"
+   },
+   {
+    "key": "exploit-chaining",
+    "path": "bundled_skills/web3-security-research/exploit-chaining/SKILL.md"
+   },
+   {
+    "key": "bytecode-analysis",
+    "path": "bundled_skills/web3-security-research/bytecode-analysis/SKILL.md"
+   },
+   {
+    "key": "known-incidents",
+    "path": "bundled_skills/web3-security-research/known-incidents/SKILL.md"
+   },
+   {
+    "key": "swarm-playbook",
+    "path": "bundled_skills/web3-security-research/swarm-playbook/SKILL.md"
+   },
+   {
+    "key": "finding-templates",
+    "path": "bundled_skills/web3-security-research/finding-templates/SKILL.md"
+   }
+  ]
+ }
+]

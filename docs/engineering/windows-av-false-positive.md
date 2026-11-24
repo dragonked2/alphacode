@@ -187,3 +187,75 @@ Before tagging 1.0.93, run the gates once with no other writer active.
 - The effectiveness of the change on vendor verdicts is unmeasured until 1.0.93
   is uploaded and re-analysed. Do not claim the detection is "fixed" before that
   scan; the *cause* is fixed and structurally prevented from returning.
+
+## 1.1.21: plaintext documentation corpus (second root cause)
+
+The nested-PE fix above removed the *dropper* shape. It did not remove the
+*stealer* shape, because a second, independent root cause remained.
+
+### The report
+
+Two files were submitted. `alphacode.exe` (sha256
+`13be563d...`) was reported by 4 engines — `UDS:Trojan-Spy.Win32.Stealer.fxdp`
+(Kaspersky), `Stealer.Agent!8.C2` (Rising), `W64/ABRisk.OUTT-5081` (Varist),
+`Detected` (Google) — with the popular label `trojan.stealer/abrisk`. Zenbox
+sandbox graded it 64% malicious. `AlphaCode.Desktop.exe` (sha256
+`26d070ce...`) was reported by 5 more (APEX, Bkav, Cylance, Kingsoft,
+Trapmine).
+
+### Root cause
+
+Thirteen crowdsourced YARA rules matched the main binary. Every one matched
+**inert documentation text**, not code:
+
+| Rule | What it matched in our docs |
+|---|---|
+| `SQLQuery_ConfidentialDataStore` | browser credential-store queries in the CTF forensics bundle (`... from logins`, `... from cookies`, `password_value`) |
+| `NoneWindowsUA` | macOS and X11 browser user-agent literals |
+| `References_PublicServiceInterface` | `webhook.site/` out-of-band callback examples |
+| `ClearWinLogs` | `wevtutil cl Application` / `cl Security` |
+| `VM_Evasion_MACAddrComb` | hypervisor MAC prefixes (`00:0C:29`, `00:50:56`, `08:00:27`) |
+| `Mimikatz_Strings`, `Impacket` | tool-name lists |
+
+The bundled skill corpus shipped as ~290 `include_str!` calls, so 4.38 MB of
+security-methodology prose landed in `.rdata` as contiguous plaintext. An
+assessment agent documents exactly these techniques; an infostealer scanner
+cannot tell the difference between the documentation and the tool.
+
+Two further contributors:
+
+- **Build-machine paths.** `strip = true` removes the symbol table but not the
+  `file!()` string literals every dependency emits, so the binary carried the
+  builder's account name 2,121 times. That is a privacy leak and a reputation
+  signal (an unsigned PE full of one home directory reads as a dropped payload).
+- **Non-Windows user agents** in `webfetch`/`websearch`, which the `NoneWindowsUA`
+  rule matched directly.
+
+### What changed
+
+- The corpus is packed by `scripts/bundled_skills_manifest.py` and deflated by
+  `build.rs::configure_bundled_skills`. The manifest moved to
+  `src/alphacode_base/bundled_skills.json`; `bundled_skills.rs` decodes the blob
+  on first use and keeps serving identical `&'static str` bodies.
+  **Measured:** 4.38 MB plaintext -> 1.50 MB deflate (66% smaller), and the
+  trigger literals vanish (`from logins` x2 -> 0, `webhook.site/` x10 -> 0,
+  `mimikatz` x8 -> 0, and so on).
+- The Windows release build passes `--remap-path-prefix` for the workspace and
+  the cargo registry.
+- `webfetch`/`websearch` use Windows/neutral user agents only.
+- `scripts/verify-no-av-triggers.py` scans the shipped bytes (ASCII and
+  UTF-16LE) for all of those literals and fails the release. Wired into
+  `release.yml` and `scripts/release-build.sh`.
+- Three orphaned duplicate `SKILL.md` files under `bundled_skills/bugbounty/`
+  (`methodology`, `code-security-audit`, `vuln-hunter`) were removed.
+
+### Negative control
+
+`verify-no-av-triggers.py` run against the shipped 1.1.20 binary reproduces
+16 trigger matches across 7 rule families — i.e. the guard detects the exact
+artifact VirusTotal flagged. A guard that passes everything would be worthless.
+
+### Still needs a human
+
+Code signing remains the single strongest remaining input to reputation-based
+detection and SmartScreen (see item 1 above). No source change substitutes for it.

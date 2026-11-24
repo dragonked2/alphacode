@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.1.20"
+version = "1.1.21"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "Terminal-native coding agent with multi-model orchestration, swarm coordination, and 40+ tools — built to make the smallest change that solves the problem."
 homepage = "https://alphacli.github.io/"
@@ -31,6 +31,10 @@ name = "alphacode"
 path = "src/main.rs"
 
 [build-dependencies]
+# Compresses the bundled skill corpus at build time so several megabytes of
+# documentation never ship as plaintext inside the executable (see
+# `build.rs::configure_bundled_skills`).
+flate2 = "1"
 
 [dependencies]
 # Memory allocator

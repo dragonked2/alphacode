@@ -59,6 +59,11 @@ echo "==> single-PE guard"
 python3 scripts/verify-pe-single-image.py "$BIN" || exit 1
 python3 scripts/verify-pe-single-image.py "$HOST" || exit 1
 
+echo "==> AV trigger guard"
+# The bundled skill corpus ships deflated; if it regressed to plaintext
+# include_str! storage the binary matches infostealer YARA rules again.
+python3 scripts/verify-no-av-triggers.py "$BIN" || exit 1
+
 echo "==> package"
 ARCHIVE="alphacode-windows-x86_64"
 mkdir -p dist

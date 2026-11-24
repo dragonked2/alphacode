@@ -234,6 +234,27 @@ jobs:
         # would still try to upload the bare exe.
         run: |
           set -euo pipefail
+          # Strip the build machine's absolute paths out of the binary.
+          #
+          # A release build used to embed thousands of `C:\Users\<builder>\...`
+          # strings: std formats a panic location and every dependency emits
+          # `file!()` breadcrumbs, and `strip = true` only removes the symbol
+          # table, not those string literals. The shipped 1.1.20 binary carried
+          # the maintainer's account name 2,121 times. That is both a privacy
+          # leak and a reputation signal: an unsigned, debuggable-looking PE
+          # full of one person's home directory paths is a common
+          # false-positive trigger.
+          #
+          # Remapping to a stable virtual prefix keeps panic messages useful
+          # (`src/alphacode_tui/ui.rs:1234`) while removing the host layout.
+          # `--remap-path-prefix` is applied to the local registry and the
+          # workspace separately: the registry path is what most of the leaked
+          # strings came from (`...\.cargo\registry\src\index.crates.io-...`).
+          # Append to the workflow's RUSTFLAGS rather than replacing it: the
+          # top-level `-D warnings` must still apply to the Windows release.
+          workspace="$(cygpath -m "$PWD")"
+          registry="$HOME/.cargo/registry"
+          export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${workspace}=/alphacode --remap-path-prefix=${registry}=/cargo/registry"
           cargo build --release --locked --target "$TARGET" --bin alphacode
 
       - name: Package Windows archive (binary + GUI host)
@@ -291,6 +312,12 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/verify-pe-single-image.py "target/$TARGET/release/alphacode.exe"
+          # The 1.1.20 release was flagged by 4 engines and matched 13
+          # crowdsourced YARA rules purely because it embedded ~4 MiB of
+          # security-methodology documentation as plaintext. The corpus is now
+          # deflated (build.rs::configure_bundled_skills); this fails the
+          # release if any of those literals come back.
+          python scripts/verify-no-av-triggers.py "target/$TARGET/release/alphacode.exe"
           python scripts/verify-pe-single-image.py "target/$TARGET/release/AlphaCode.Desktop.exe"
           # The archive must carry both files at its root as siblings.
           listing="$(unzip -Z1 "${ARCHIVE_BASE}.zip")"

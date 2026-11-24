@@ -255,20 +255,46 @@ pub(crate) fn routed_skill_context(
         .as_deref()
         .and_then(super::challenge_context::hunt_ledger_context);
     let ctf = ctf_requested || ledger.is_some();
+    // A recorded engagement with real work behind it keeps the session in
+    // security mode across turns, so a resumed hunt does not lose its coverage
+    // ledger. Merely *having* a ledger file must not: one security-adjacent
+    // word in one ordinary turn used to create an empty `hunt.md`, and its bare
+    // existence then re-injected the whole bug-bounty playbook (~40 KB of skill
+    // body plus the reasoning brief) on every later request -- including "fix a
+    // compile error". That was most of a ~104k-token average request. Require
+    // observed exchanges, leads, or tool calls before treating the session as an
+    // active engagement; a fresh turn still re-enters on the task's own words.
+    let engagement_active = crate::engagement_runtime::read(&session.id)
+        .ok()
+        .flatten()
+        .is_some_and(|state| {
+            !state.exchanges.is_empty()
+                || !state.research.investigation.leads().is_empty()
+                || state.ledger.tool_calls > 0
+        });
     let security = ctf
-        || hunt_ledger.is_some()
+        || engagement_active
         || security_request(&task)
         || selected
             .as_deref()
             .is_some_and(|name| matches!(name, "bugbounty" | "vuln-hunter" | "nodejs-security"))
         || crate::tool::scope::session_scope_policy(&session.id)
             .is_some_and(|policy| !policy.in_scope.is_empty());
+    // Whether the turn already selected the bug-bounty workflow. When it did,
+    // the workflow text is already in context, so the generic methodology must
+    // not be appended on top of it.
+    let workflow_loaded = selected.as_deref() == Some("bugbounty")
+        || super::challenge_context::is_security_skill(active_skill);
     if security {
         let workflow = if ctf { "ctf-workflow" } else { "bugbounty" };
         if !selected_skills.contains(&workflow) {
             selected_skills.push(workflow);
         }
-        if !ctf && !selected_skills.contains(&"bug-bounty-methodology") {
+        // Do NOT also push `bug-bounty-methodology` (11 KB) here: the
+        // `bugbounty` parent already carries that methodology, and stacking the
+        // two is most of the always-on token cost of a security turn. The
+        // standalone skill stays registered and reachable by explicit name.
+        if !ctf && !selected_skills.contains(&"bug-bounty-methodology") && !workflow_loaded {
             selected_skills.push("bug-bounty-methodology");
         }
         if !selected_skills.contains(&"nodejs-security")

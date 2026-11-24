@@ -65,3 +65,6 @@ google*.html
 # Container Cargo cache (release workflow)
 .alpine-cargo/
 target-strict
+
+# Local scratch (analysis artifacts, downloaded samples, build logs)
+tmp/

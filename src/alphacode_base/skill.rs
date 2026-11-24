@@ -745,7 +745,7 @@ impl SkillRegistry {
     /// skills, matching the historical load order.
     fn load_bundled_skills(registry: &mut Self) {
         use crate::alphacode_base::bundled_skills::BUNDLED_SKILLS;
-        for skill in BUNDLED_SKILLS {
+        for skill in BUNDLED_SKILLS.iter() {
             match Self::parse_embedded_skill(skill.name, skill.body, skill.references) {
                 Ok(parsed) => {
                     // Project-local overlay still wins over bundled, so use
@@ -2063,7 +2063,7 @@ mod tests {
         use crate::alphacode_base::bundled_skills::BUNDLED_SKILLS;
         let mut registry = SkillRegistry::default();
         registry.reload_global().expect("reload");
-        for skill in BUNDLED_SKILLS {
+        for skill in BUNDLED_SKILLS.iter() {
             let loaded = registry.get(skill.name).unwrap_or_else(|| {
                 panic!(
                     "bundled skill '{}' is embedded but did not load",
@@ -2115,7 +2115,7 @@ mod tests {
             .into_iter()
             .map(|s| s.name.clone())
             .collect();
-        for skill in BUNDLED_SKILLS {
+        for skill in BUNDLED_SKILLS.iter() {
             assert!(
                 names_after.contains(skill.name),
                 "reload_global dropped bundled skill '{}'; after={:?}",
@@ -2581,7 +2581,7 @@ mod tests {
 
         let mut found = false;
         let mut registry = SkillRegistry::default();
-        for skill in BUNDLED_SKILLS {
+        for skill in BUNDLED_SKILLS.iter() {
             if skill.name == "bugbounty" {
                 let parsed =
                     SkillRegistry::parse_embedded_skill(skill.name, skill.body, skill.references)

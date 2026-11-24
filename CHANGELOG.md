@@ -4,6 +4,115 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.21] - 2026-11-24
+
+### Fixed
+
+- **Windows binaries no longer trip infostealer/dropper antivirus heuristics.**
+  The 1.1.20 `alphacode.exe` was reported malicious by 4 engines on VirusTotal
+  (`UDS:Trojan-Spy.Win32.Stealer.fxdp`, `trojan.stealer/abrisk`) and matched 13
+  crowdsourced YARA rules (`SQLQuery_ConfidentialDataStore`, `NoneWindowsUA`,
+  `References_PublicServiceInterface`, `ClearWinLogs`, `VM_Evasion_MACAddrComb`,
+  `Mimikatz_Strings`, `Impacket`). None of it was behaviour. Every match was
+  **inert documentation text** embedded verbatim in the executable: the bundled
+  skill corpus shipped as ~290 `include_str!` calls, putting about 4 MiB of
+  security-methodology prose into `.rdata` as plaintext. Browser
+  credential-forensics recipes, out-of-band callback examples, event-log
+  clearing commands, hypervisor MAC prefixes and tool-name lists are ordinary
+  documentation for an assessment agent, and textbook indicators for a scanner
+  that cannot tell which the file contains.
+
+  The corpus is now packed by `scripts/bundled_skills_manifest.py` and deflated
+  by `build.rs::configure_bundled_skills` into a single blob. The image carries
+  no plaintext documentation, and the model is served byte-identical skill text
+  at runtime. Measured on the shipped corpus: 4.38 MB compresses to 1.50 MB
+  (66% smaller) and every trigger literal disappears.
+  `src/alphacode_base/bundled_skills.json` is the manifest's source of truth;
+  `bundled_skills.rs` decodes it on first use.
+
+- **Release builds strip the build machine's paths from the binary.** A release
+  build embedded thousands of absolute paths under the builder's user profile:
+  `std` formats a panic location and every dependency emits `file!()`
+  breadcrumbs, and `strip = true` removes the symbol table but not those string
+  literals. The shipped 1.1.20 binary carried the maintainer's account name
+  2,121 times, both a privacy leak and a reputation signal. The Windows release
+  step now passes `--remap-path-prefix` for the workspace and the cargo
+  registry, so panic messages stay useful (`src/alphacode_tui/ui.rs:1234`)
+  without the host layout.
+
+- **Non-Windows browser user agents removed from the shipped binary.** A
+  Windows-only executable that also carries macOS and X11 browser client
+  identities is a known false-positive marker; `webfetch` and `websearch` now
+  use Windows or neutral crawler user agents only.
+
+- **`release.yml` and `scripts/release-build.sh` fail on reintroduced AV
+  triggers.** `scripts/verify-no-av-triggers.py` scans the shipped bytes for the
+  exact strings the rules match (ASCII and UTF-16LE) and fails the release if any
+  return. It reproduces all 13 of the 1.1.20 matches, so the fix is verified
+  against a known-bad artifact rather than assumed.
+
+- **Removed three orphaned duplicate `SKILL.md` files** under
+  `bundled_skills/bugbounty/` (`methodology`, `code-security-audit`,
+  `vuln-hunter`). They shadowed standalone skills, were registered nowhere, and
+  shipped as dead weight in the corpus.
+
+- **Pasting no longer drops the first character (issue #37).** A stray `ESC`
+  byte delivered ahead of pasted text — which Windows VT input and torn reads
+  both produce — was treated as the introducer of a two-character escape, so the
+  sanitiser consumed the ESC *and* the byte after it: `ESC` + `try to hunt
+  something` became `ry to hunt something`. Only the ESC is dropped now. A
+  genuinely torn multi-byte escape can leave at most one stray character instead
+  of silently deleting the start of the user's text.
+
+- **The desktop app shows the whole conversation, not just the last answer
+  (issue #38).** The GUI snapshot returned only the most recent assistant
+  message, so after a multi-step task ("search subdomains", then "search for
+  bugs") earlier results appeared to have vanished while the terminal showed
+  them. The snapshot now builds the same role-labelled transcript the terminal
+  renders, keeping the newest messages when the conversation exceeds the reply
+  budget.
+
+- **A stale engagement ledger no longer forces the security playbook into
+  ordinary turns.** One security-adjacent word in one turn created an empty
+  `hunt.md`, and its bare existence then re-injected the whole bug-bounty skill
+  body (40.6 KB) plus the standalone methodology (10.9 KB) plus the reasoning
+  brief on every later request — including "fix a compile error" — which was the
+  dominant share of a ~104k-token average request. A session now stays in
+  security mode only when the engagement has real recorded work (observed
+  exchanges, leads, or tool calls); an ordinary turn re-enters on its own words.
+
+### Changed
+
+- **A security-routed turn no longer pays roughly 14 KB of duplicated
+  guidance.** When a turn already selected the `bugbounty` workflow, the
+  standalone `bug-bounty-methodology` skill (10.9 KB) was appended on top of it
+  even though the parent already carries that methodology. In this repository's
+  own sessions that meant 40.6 KB `bugbounty` plus 10.9 KB methodology plus a
+  72-entry reference list plus the 16-lesson reasoning brief on every turn whose
+  message merely mentioned a security-adjacent word, including "fix" and
+  "release". The methodology is now appended only when no security workflow is
+  already loaded, and the standalone skill stays reachable by explicit name.
+
+- **`ResourceLedger::exhausted()` and `should_stop()` now implement real
+  logic.** Both were inert stubs (`exhausted()` returned `false`,
+  `should_stop()` always returned `Continue`), so budget governance never
+  applied. `exhausted()` checks all six budget dimensions with "zero means
+  unconfigured, not zero allowed"; `should_stop()` blocks on an exhausted
+  budget, repeated actions and a failure streak, and rejects actions whose
+  expected gain does not clear their cost, with a raised bar near a budget
+  limit. The former tests asserted the no-op
+  (`never_stops_on_repeated_action`) and are replaced with tests of the actual
+  contract.
+
+- **Bug-bounty signal harvesting is more precise.** `is_vulnerability_line`
+  matched the severity words "info"/"low" as substrings, so ordinary recon
+  output containing "information", "allow" or "follow" became a scanner lead;
+  free-text markers now match as whole words and severity tags as bracketed
+  tokens. `retry_is_safe` treated the bare substring "dns" as transient,
+  misclassifying a permanent DNS misconfiguration as retryable; it now matches
+  only the resolver's retryable conditions.
+
+
 ## [1.1.20] - 2026-11-23
 
 ### Fixed

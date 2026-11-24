@@ -22,10 +22,16 @@ const MAX_REDIRECTS: usize = 5;
 /// User-Agent strings tried in order when anti-bot challenges are detected.
 /// The first is a generic bot UA (fast, low footprint); subsequent ones mimic
 /// real browsers to bypass Cloudflare/bot-detection heuristics.
+///
+/// Windows-host user agents only. A shipped Windows executable that also
+/// carries macOS/X11/iOS browser user-agent literals is a common
+/// false-positive marker for generic malware heuristics (it is what
+/// infostealer toolkits rotate to blend in), and this program never needs a
+/// non-Windows client identity for a Cloudflare retry.
 const USER_AGENTS: &[&str] = &[
     "Mozilla/5.0 (compatible; AlphacodeBot)",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
 ];
 
 /// Parse the IP literal spellings a resolver will accept, or `None` if the

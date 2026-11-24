@@ -74,8 +74,43 @@ impl ResourceLedger {
         }
     }
 
+    /// Whether any configured budget dimension is used up.
+    ///
+    /// A zero budget means "unconfigured", not "zero allowed": a caller that
+    /// never set a dimension must not have every action blocked by it.
+    /// `>=` rather than `>` is deliberate — the ledger records completed work,
+    /// so reaching exactly the budget leaves nothing for another action.
     pub fn exhausted(&self) -> bool {
-        false
+        self.token_budget_exhausted()
+            || self.model_call_budget_exhausted()
+            || self.tool_call_budget_exhausted()
+            || self.network_budget_exhausted()
+            || self.agent_budget_exhausted()
+            || self.wall_clock_budget_exhausted()
+    }
+
+    fn token_budget_exhausted(&self) -> bool {
+        self.tokens_budget > 0 && self.tokens_used >= self.tokens_budget
+    }
+
+    fn model_call_budget_exhausted(&self) -> bool {
+        self.model_call_budget > 0 && self.model_calls >= self.model_call_budget
+    }
+
+    fn tool_call_budget_exhausted(&self) -> bool {
+        self.tool_call_budget > 0 && self.tool_calls >= self.tool_call_budget
+    }
+
+    fn network_budget_exhausted(&self) -> bool {
+        self.network_budget > 0 && self.network_requests >= self.network_budget
+    }
+
+    fn agent_budget_exhausted(&self) -> bool {
+        self.agent_budget > 0 && self.agents_spawned >= self.agent_budget
+    }
+
+    fn wall_clock_budget_exhausted(&self) -> bool {
+        self.wall_clock_budget_secs > 0 && self.wall_clock_secs >= self.wall_clock_budget_secs
     }
 
     /// Fraction of the most-consumed budget. Used to tighten thresholds.
@@ -108,8 +143,28 @@ impl ResourceLedger {
     }
 }
 
+/// How many consecutive failures mean the current approach is not working.
+///
+/// Three is the smallest count where "it failed twice, but the third try might
+/// differ" is no longer a reasonable hope: the caller has had two chances to
+/// change the input and the outcome did not move.
+pub const FAILURE_STREAK_LIMIT: u32 = 3;
+
+/// Below this expected information gain another action is not worth its cost.
+pub const MIN_USEFUL_INFO_GAIN: f32 = 0.05;
+
+/// Cost at which value has to be genuinely high to justify another action.
+pub const HIGH_COST: f32 = 1.0;
+
 /// Adaptive stopping: continue only when another action is likely to produce
 /// meaningful information. Avoids "one more scan" loops and repeats.
+///
+/// Order matters. Exhausted resources outrank everything: when the budget is
+/// gone, the honest answer is that the remaining coverage was not completed,
+/// which is exactly what [`TerminationState::Blocked`] records. A repeated
+/// action next, because repeating something that already produced its answer
+/// cannot produce a new one. Then the failure streak, then a value-versus-cost
+/// decision.
 pub fn should_stop(
     expected_info_gain: f32,
     expected_cost: f32,
@@ -117,13 +172,41 @@ pub fn should_stop(
     repeated_action: bool,
     ledger: &ResourceLedger,
 ) -> TerminationState {
-    let _ = (
-        expected_info_gain,
-        expected_cost,
-        consecutive_failures,
-        repeated_action,
-        ledger,
-    );
+    if ledger.exhausted() {
+        return TerminationState::Blocked;
+    }
+
+    // Repeating an action that already ran cannot add information, no matter
+    // how promising the estimate claims to be.
+    if repeated_action {
+        return TerminationState::LowValue;
+    }
+
+    if consecutive_failures >= FAILURE_STREAK_LIMIT {
+        return TerminationState::Blocked;
+    }
+
+    // A budget dimension in its last quarter raises the bar for spending more
+    // of it. `pressure` is the most-consumed configured dimension, so this only
+    // fires when the run genuinely is near a limit.
+    let pressure = ledger.pressure();
+    let gain_floor = MIN_USEFUL_INFO_GAIN * (1.0 + pressure);
+
+    if expected_info_gain < gain_floor {
+        return TerminationState::LowValue;
+    }
+
+    // Value must beat cost, not merely exist. Without this an action that costs
+    // more than it can return still keeps the loop alive forever.
+    if expected_cost > 0.0 && expected_info_gain < expected_cost {
+        return TerminationState::LowValue;
+    }
+
+    // Under heavy pressure, only a clearly worthwhile action continues.
+    if pressure >= 0.75 && expected_cost >= HIGH_COST && expected_info_gain < expected_cost * 2.0 {
+        return TerminationState::LowValue;
+    }
+
     TerminationState::Continue
 }
 
@@ -150,28 +233,96 @@ pub fn is_duplicate(
 mod tests {
     use super::*;
 
-    #[test]
-    fn never_stops_on_repeated_action() {
-        let ledger = ResourceLedger::default();
-        assert_eq!(
-            should_stop(0.8, 0.2, 0, true, &ledger),
-            TerminationState::Continue
-        );
+    fn ledger_with_room() -> ResourceLedger {
+        ResourceLedger::with_budgets(1_000, 100, 100, 100, 10, 3_600)
     }
 
     #[test]
-    fn never_blocks_on_exhausted_budget() {
-        let mut ledger = ResourceLedger::with_budgets(100, 10, 10, 10, 5, 60);
-        ledger.tool_calls = 10;
+    fn exhausted_is_false_for_an_unconfigured_ledger() {
+        // A default ledger sets no budgets. "Unconfigured" must not be read as
+        // "zero remaining", or every fresh run would stop immediately.
+        assert!(!ResourceLedger::default().exhausted());
+    }
+
+    #[test]
+    fn exhausted_tracks_every_budget_dimension() {
+        let base = ResourceLedger::with_budgets(100, 10, 10, 10, 5, 60);
+
+        let mut tokens = base.clone();
+        tokens.tokens_used = 100;
+        assert!(tokens.exhausted(), "token budget");
+
+        let mut model = base.clone();
+        model.model_calls = 10;
+        assert!(model.exhausted(), "model-call budget");
+
+        let mut tools = base.clone();
+        tools.tool_calls = 10;
+        assert!(tools.exhausted(), "tool-call budget");
+
+        let mut network = base.clone();
+        network.network_requests = 10;
+        assert!(network.exhausted(), "network budget");
+
+        let mut agents = base.clone();
+        agents.agents_spawned = 5;
+        assert!(agents.exhausted(), "agent budget");
+
+        let mut wall = base.clone();
+        wall.wall_clock_secs = 60;
+        assert!(wall.exhausted(), "wall-clock budget");
+    }
+
+    #[test]
+    fn exhausted_is_false_while_budget_remains() {
+        let mut ledger = ledger_with_room();
+        ledger.tool_calls = 99;
+        assert!(
+            !ledger.exhausted(),
+            "one call remaining must not read as exhausted"
+        );
+        ledger.tool_calls = 100;
+        assert!(ledger.exhausted(), "reaching the budget is exhausted");
+    }
+
+    #[test]
+    fn stopping_blocks_when_the_budget_is_gone() {
+        let mut ledger = ledger_with_room();
+        ledger.tool_calls = 100;
         assert_eq!(
             should_stop(0.9, 0.1, 0, false, &ledger),
-            TerminationState::Continue
+            // Remaining coverage cannot be completed, and saying so is more
+            // honest than reporting a clean surface.
+            TerminationState::Blocked
         );
     }
 
     #[test]
-    fn continues_when_value_high() {
-        let ledger = ResourceLedger::default();
+    fn stopping_rejects_a_repeated_action() {
+        let ledger = ledger_with_room();
+        assert_eq!(
+            should_stop(0.8, 0.2, 0, true, &ledger),
+            TerminationState::LowValue
+        );
+    }
+
+    #[test]
+    fn stopping_blocks_after_a_failure_streak() {
+        let ledger = ledger_with_room();
+        assert_eq!(
+            should_stop(0.9, 0.1, FAILURE_STREAK_LIMIT, false, &ledger),
+            TerminationState::Blocked
+        );
+        assert_eq!(
+            should_stop(0.9, 0.1, FAILURE_STREAK_LIMIT - 1, false, &ledger),
+            TerminationState::Continue,
+            "one short of the streak limit still permits another attempt"
+        );
+    }
+
+    #[test]
+    fn stopping_continues_when_value_clearly_exceeds_cost() {
+        let ledger = ledger_with_room();
         assert_eq!(
             should_stop(0.8, 0.2, 0, false, &ledger),
             TerminationState::Continue
@@ -179,24 +330,67 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_detection() {
+    fn stopping_rejects_an_action_that_costs_more_than_it_returns() {
+        let ledger = ledger_with_room();
+        assert_eq!(
+            should_stop(0.1, 0.9, 0, false, &ledger),
+            TerminationState::LowValue
+        );
+    }
+
+    #[test]
+    fn stopping_rejects_near_zero_gain() {
+        let ledger = ledger_with_room();
+        assert_eq!(
+            should_stop(0.0, 0.0, 0, false, &ledger),
+            TerminationState::LowValue
+        );
+    }
+
+    #[test]
+    fn near_a_limit_the_gain_floor_rises() {
+        // 90% of the tool budget is spent, so cheap low-value probes stop.
+        let mut ledger = ledger_with_room();
+        ledger.tool_calls = 90;
+
+        assert_eq!(
+            should_stop(0.06, 0.01, 0, false, &ledger),
+            TerminationState::LowValue,
+            "a marginal gain is not worth spending the last tenth of the budget"
+        );
+        assert_eq!(
+            should_stop(0.5, 0.1, 0, false, &ledger),
+            TerminationState::Continue,
+            "a substantial gain still justifies the remaining budget"
+        );
+    }
+
+    #[test]
+    fn is_duplicate_matches_every_identity_field() {
         let existing = vec![(
-            "xss".to_string(),
-            Some("/s".to_string()),
+            "sqli".to_string(),
+            Some("/search".to_string()),
             Some("q".to_string()),
             Some("GET".to_string()),
         )];
         assert!(is_duplicate(
+            "sqli",
+            Some("/search"),
+            Some("q"),
+            Some("GET"),
+            &existing
+        ));
+        assert!(!is_duplicate(
             "xss",
-            Some("/s"),
+            Some("/search"),
             Some("q"),
             Some("GET"),
             &existing
         ));
         assert!(!is_duplicate(
             "sqli",
-            Some("/s"),
-            Some("q"),
+            Some("/search"),
+            Some("page"),
             Some("GET"),
             &existing
         ));

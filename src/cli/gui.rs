@@ -307,14 +307,35 @@ impl Bridge {
         .await
         .ok()?
         .ok()?;
-        value
-            .get("messages")?
-            .as_array()?
-            .iter()
-            .rev()
-            .find(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
-            .and_then(|message| message.get("content").and_then(Value::as_str))
-            .map(|text| display_text(text, 8000))
+        // Render the whole conversation, not just the last assistant turn.
+        //
+        // This used to `.rev().find(assistant)`, so the desktop showed only the
+        // most recent answer while the terminal showed every exchange. After a
+        // multi-step task ("search subdomains", then "search for bugs") the GUI
+        // looked like earlier results had vanished (issue #38). Build the same
+        // role-labelled transcript the terminal renders, keeping the most recent
+        // messages when the conversation exceeds the reply budget.
+        let messages = value.get("messages")?.as_array()?;
+        let mut conversation = String::new();
+        for message in messages {
+            let role = match message.get("role").and_then(Value::as_str) {
+                Some("user") => "You",
+                Some("assistant") => "AlphaCode",
+                _ => continue,
+            };
+            let Some(body) = message.get("content").and_then(Value::as_str) else {
+                continue;
+            };
+            if body.trim().is_empty() {
+                continue;
+            }
+            append_reply(
+                &mut conversation,
+                &format!("{role}\n{}\n\n", display_text(body, 8000)),
+            );
+        }
+        (!conversation.trim().is_empty())
+            .then(|| display_text(conversation.trim_end(), MAX_REPLY_BYTES))
     }
 
     async fn refresh_runtime_context(&mut self, selected: Option<&str>) {
@@ -1152,8 +1173,21 @@ async fn run_owned_chat(
                     state.reply.clear();
                     append_reply(&mut state.reply, &text);
                 }
-                ServerEvent::ToolStart { name, .. } | ServerEvent::ToolExec { name, .. } => {
-                    state.detail = format!("Running {name}")
+                ServerEvent::ReasoningDelta { .. } => state.detail = "Thinking...".to_string(),
+                ServerEvent::ReasoningDone { .. } => {
+                    state.detail = "Writing a response...".to_string()
+                }
+                ServerEvent::ToolStart { name, .. } => state.detail = format!("Preparing {name}"),
+                ServerEvent::ToolInput { .. } => {
+                    // Argument streaming: keep the previous phase so the label
+                    // does not bounce on every JSON fragment.
+                }
+                ServerEvent::ToolExec { name, .. } => state.detail = format!("Running {name}"),
+                ServerEvent::ToolDone { name, error, .. } => {
+                    state.detail = match error {
+                        Some(_) => format!("{name} failed - continuing"),
+                        None => format!("{name} finished"),
+                    }
                 }
                 ServerEvent::Done { id } if id == request_id => {
                     state.busy = false;

@@ -433,9 +433,11 @@ impl WebSearchTool {
             urlencoding::encode(market)
         );
 
-        let user_agent = crate::alphacode_provider_core::with_alphacode_brand(
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-        );
+        // A desktop platform literal here would not describe this host and is
+        // a known false-positive marker in a Windows executable; a neutral
+        // crawler token is accurate and carries the same request semantics.
+        let user_agent =
+            crate::alphacode_provider_core::with_alphacode_brand("Mozilla/5.0 (compatible)");
         let response = self
             .client
             .get(&url)
