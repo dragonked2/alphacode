@@ -4,21 +4,18 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Fixed
-
-- **Terminal input lag / freeze under mouse capture.** Mouse-move events are
-  dropped in the dedicated input worker before they enter the bounded queue.
-  With mouse capture on (the default), Terminal.app and iTerm2 can emit dozens
-  of moves per second; enqueueing them filled the 128-slot queue, blocked the
-  reader, and made typing wait behind events that never redraw. macOS now also
-  polls at 25 ms (same as Windows) and drains every already-ready event before
-  sleeping again.
-
 ## [1.1.21] - 2026-11-24
 
 ### Fixed
+
+- **Terminal input lag / freeze under mouse capture (macOS/iTerm2).**
+  Mouse-move events are dropped in the dedicated input worker before they enter
+  the bounded queue. With mouse capture on (the default), Terminal.app and iTerm2
+  can emit dozens of moves per second; enqueueing them filled the 128-slot
+  queue, blocked the reader, and made typing wait behind events that never
+  redraw. macOS now also polls at 25 ms (same as Windows) and drains every
+  already-ready event before sleeping again. (PR #39, contributed by
+  [@Ahmed-Makled](https://github.com/Ahmed-Makled).)
 
 - **Windows binaries no longer trip infostealer/dropper antivirus heuristics.**
   The 1.1.20 `alphacode.exe` was reported malicious by 4 engines on VirusTotal
