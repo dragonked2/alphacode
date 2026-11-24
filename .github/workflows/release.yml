@@ -583,11 +583,12 @@ jobs:
           else
             CHANGELOG_CONTENT="No changelog available for this release."
           fi
-          # Truncate changelog if too long for Discord (2000 char limit per field)
-          if [ ${#CHANGELOG_CONTENT} -gt 1800 ]; then
-            CHANGELOG_CONTENT="${CHANGELOG_CONTENT:0:1797}..."
+          # Build a short summary for the embed (first ~1500 chars)
+          SUMMARY="${CHANGELOG_CONTENT}"
+          if [ ${#SUMMARY} -gt 1500 ]; then
+            SUMMARY="${SUMMARY:0:1497}..."
           fi
-          # Build JSON payload
+          # Build JSON payload for embed (summary only)
           cat > /tmp/discord_payload.json <<EOF
           {
             "username": "AlphaCode Release Bot",
@@ -596,7 +597,7 @@ jobs:
               "title": "🚀 AlphaCode ${RELEASE_TAG} Released",
               "url": "https://github.com/${REPO}/releases/tag/${RELEASE_TAG}",
               "color": 5814783,
-              "description": "**New version available!**",
+              "description": "**New version available!** Full changelog attached as file.",
               "fields": [
                 {
                   "name": "📦 Version",
@@ -609,8 +610,8 @@ jobs:
                   "inline": true
                 },
                 {
-                  "name": "📝 Changelog",
-                  "value": "${CHANGELOG_CONTENT}",
+                  "name": "📝 Summary",
+                  "value": "${SUMMARY}",
                   "inline": false
                 }
               ],
@@ -622,4 +623,12 @@ jobs:
             }]
           }
           EOF
-          curl -sS -H "Content-Type: application/json" -d @/tmp/discord_payload.json "$WEBHOOK_URL"
+          # Send as multipart/form-data: payload_json + changelog file
+          if [ -f "$CHANGELOG_FILE" ] && [ -s "$CHANGELOG_FILE" ]; then
+            curl -sS \
+              -F "payload_json=@/tmp/discord_payload.json" \
+              -F "file=@${CHANGELOG_FILE};filename=CHANGELOG-${RELEASE_TAG}.md" \
+              "$WEBHOOK_URL"
+          else
+            curl -sS -H "Content-Type: application/json" -d @/tmp/discord_payload.json "$WEBHOOK_URL"
+          fi

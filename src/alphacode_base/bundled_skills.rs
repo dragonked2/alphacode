@@ -518,12 +518,11 @@ mod tests {
         // The body data must actually be compressed, or the documentation
         // literals that trip antivirus rules would be back in the image.
         let parsed = unpack().expect("packed corpus must decompress");
-        let body_bytes: usize = bundled_skills().iter().map(|skill| skill.body.len()).sum();
         assert!(
-            body_bytes > parsed.data.len(),
-            "body data ({} bytes across all skills) should be compressed below its \
-             decompressed size ({} bytes)",
-            body_bytes,
+            PACKED.len() < parsed.data.len(),
+            "packed corpus ({} bytes) must be smaller than its decompressed data \
+             ({} bytes); the documentation is not being compressed",
+            PACKED.len(),
             parsed.data.len()
         );
     }
