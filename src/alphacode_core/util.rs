@@ -14,6 +14,15 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// Truncate a string to at most `max_chars` Unicode characters.
+///
+/// Returns an owned String containing at most `max_chars` characters,
+/// correctly handling multi-byte Unicode codepoints. This is the shared
+/// helper for the 11+ sites that previously used `.chars().take(n).collect()`.
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
 /// Classic Levenshtein edit distance over Unicode scalar values.
 ///
 /// Single canonical implementation for tool-name suggestions, file-name

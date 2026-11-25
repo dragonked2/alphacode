@@ -25,6 +25,7 @@
 [![No API key required](https://img.shields.io/badge/Free_to_start-no_API_key-2CBB5D?style=flat-square&labelColor=1a1a2e)](#quick-start)
 [![Windows, macOS, Linux](https://img.shields.io/badge/Platforms-Windows_%7C_macOS_%7C_Linux-4A90D9?style=flat-square&labelColor=1a1a2e)](#install-in-30-seconds)
 [![Last commit](https://img.shields.io/github/last-commit/dragonked2/alphacode?style=flat-square&label=Last_commit&labelColor=1a1a2e&color=8E7CC3)](https://github.com/dragonked2/alphacode/commits/main)
+[![SignPath Foundation](https://img.shields.io/badge/Code_signing-SignPath_Foundation-6E4AFF?style=flat-square&labelColor=1a1a2e)](https://signpath.org/)
 
 <br>
 
@@ -162,6 +163,7 @@ From install to a first completed task. Click the image to open it at full size,
 - [Get help](#get-help)
 - [Security reporting](#security-reporting)
 - [Contributing](#contributing)
+- [Sponsors and partners](#sponsors-and-partners)
 - [Support AlphaCode](#support-alphacode)
 
 </details>
@@ -1362,6 +1364,23 @@ Thanks to everyone who has contributed code, tests, or reviews.
 - [@thaer-assfour](https://github.com/thaer-assfour): reported two desktop/TUI defects with clear reproductions — pasted text losing its first character ([#37](https://github.com/dragonked2/alphacode/issues/37)) and the GUI showing only the last assistant message ([#38](https://github.com/dragonked2/alphacode/issues/38)). Both are fixed in 1.1.21.
 - [@mharsikarim](https://github.com/mharsikarim): reported the Kaspersky `Trojan-Spy.Win32.Stealer.fxcr` false positive ([#36](https://github.com/dragonked2/alphacode/issues/36)) with the exact hash, engine version, and VirusTotal link. That report led us to the root cause — security-methodology documentation shipping as plaintext inside the binary — and to the fix and release guard in 1.1.21.
 - [@Ahmed-Makled](https://github.com/Ahmed-Makled): fixed a macOS/iTerm2 input freeze caused by mouse-move event floods ([#39](https://github.com/dragonked2/alphacode/pull/39)).
+
+## Sponsors and partners
+
+AlphaCode is free and open source, and it is kept that way with the help of
+organizations that provide services to open-source projects and to users who
+cannot pay for a frontier model. Thank you.
+
+| Partner | What they provide | How AlphaCode uses it |
+|---|---|---|
+| [**Token Harbor**](https://tokenharbor.ai/) | A unified, OpenAI-compatible API gateway for leading hosted models, with a zero-priced, tool-capable tier. | Listed near the front of the provider list, so a new user can start without a paid key. The provider's default route is a zero-cost, tool-capable model. [See provider setup](#models-and-providers). |
+| [**SignPath Foundation**](https://signpath.org/) | Free code signing for open-source projects. | AlphaCode has been accepted into the program; the release pipeline is wired to Authenticode-sign the Windows builds. [See the code-signing runbook](docs/engineering/code-signing.md). |
+| **Individual supporters** | One-off and recurring support for development time. | [Buy Me a Coffee](https://www.buymeacoffee.com/dragonked2). |
+
+Want to sponsor or partner with the project? Open a
+[discussion](https://github.com/dragonked2/alphacode/discussions) or reach out
+through the [website](https://alphacli.github.io/). Providers and tooling
+companies whose service integrates with AlphaCode are welcome to get in touch.
 
 ## Support AlphaCode
 

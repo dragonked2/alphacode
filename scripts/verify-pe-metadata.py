@@ -33,6 +33,7 @@ signing.
 
 Usage:
     python scripts/verify-pe-metadata.py path/to/binary.exe [more...]
+    python scripts/verify-pe-metadata.py --self-test
 
 Exit codes:
     0  every file passed
@@ -102,6 +103,41 @@ def section_table(data: bytes) -> tuple[int, int]:
     return section_count, end
 
 
+def certificate_table(data: bytes) -> tuple[int, int]:
+    """Return ``(file_offset, size)`` of the PKCS#7 Authenticode certificate table.
+
+    ``(0, 0)`` when the image carries no signature. Unlike the other data
+    directories, ``IMAGE_DIRECTORY_ENTRY_SECURITY`` (index 4) stores a *file
+    offset* rather than an RVA, because the certificate table is appended after
+    the last section instead of being mapped as a section.
+
+    This matters here: a signed binary therefore has bytes past its last
+    section by design, so the overlay check below cannot treat "anything after
+    the sections" as a packer artifact.
+    """
+    lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+    optional = lfanew + 24
+    magic = struct.unpack_from("<H", data, optional)[0]
+    if magic == 0x20B:  # PE32+
+        directory_offset = optional + 112
+        directory_count_offset = optional + 108
+    elif magic == 0x10B:  # PE32
+        directory_offset = optional + 96
+        directory_count_offset = optional + 92
+    else:
+        return 0, 0
+    if directory_count_offset + 4 > len(data):
+        return 0, 0
+    directory_count = struct.unpack_from("<I", data, directory_count_offset)[0]
+    if directory_count <= 4:
+        return 0, 0
+    entry = directory_offset + 4 * 8
+    if entry + 8 > len(data):
+        return 0, 0
+    offset, size = struct.unpack_from("<II", data, entry)
+    return offset, size
+
+
 def version_info_missing(data: bytes, mapped_end: int) -> list[str]:
     """VERSIONINFO fields that Windows cannot read from the mapped image.
 
@@ -126,7 +162,17 @@ def inspect(path: str) -> tuple[list[str], bool]:
     _, end = section_table(data)
     problems: list[str] = []
 
-    overlay = len(data) - end
+    # Bytes after the last section are the packer/dropper shape *unless* they
+    # are the Authenticode certificate table, which is a legitimate reason for a
+    # signed binary to extend past the mapped image. Subtract that directory and
+    # only what remains is genuine overlay. Without this the overlay check would
+    # reject every correctly signed release and force SignPath's output to be
+    # reverted -- the exact opposite of the goal.
+    cert_offset, cert_size = certificate_table(data)
+    attributed_end = end
+    if cert_size and cert_offset >= end and cert_offset + cert_size <= len(data):
+        attributed_end = cert_offset + cert_size
+    overlay = len(data) - attributed_end
     if overlay:
         problems.append(
             f"{overlay} bytes of PE overlay past the last section "
@@ -153,11 +199,92 @@ def inspect(path: str) -> tuple[list[str], bool]:
     return problems, True
 
 
+def _synthetic_pe(*, version: bool, signed: bool, trailing: int) -> bytes:
+    """Build a minimal PE32+ image for the self-test.
+
+    One section spanning file offsets ``0x200..0x400``; VERSIONINFO text (or
+    zeros) at ``0x200``; optionally an 8-byte certificate table at ``0x400``
+    registered in data directory 4; optionally ``trailing`` bytes of genuine
+    junk after everything else.
+    """
+    optional_size = 240
+    lfanew = 0x40
+    header = bytearray(0x200)
+    header[0:2] = DOS_MAGIC
+    struct.pack_into("<I", header, 0x3C, lfanew)
+    header[lfanew : lfanew + 4] = PE_SIGNATURE
+    coff = lfanew + 4
+    struct.pack_into("<H", header, coff + 0, 0x8664)  # Machine
+    struct.pack_into("<H", header, coff + 2, 1)  # NumberOfSections
+    struct.pack_into("<H", header, coff + 16, optional_size)
+    optional = lfanew + 24
+    struct.pack_into("<H", header, optional, 0x20B)  # PE32+
+    struct.pack_into("<I", header, optional + 108, 16)  # NumberOfRvaAndSizes
+    section = optional + optional_size
+    struct.pack_into("<I", header, section + 16, 0x200)  # SizeOfRawData
+    struct.pack_into("<I", header, section + 20, 0x200)  # PointerToRawData
+
+    data = bytearray(header) + bytearray(0x200)  # 0x400 total
+    if version:
+        blob = ("VS_VERSION_INFO\0" + "\0".join(REQUIRED_STRINGS)).encode("utf-16-le")
+        data[0x200 : 0x200 + len(blob)] = blob
+    if signed:
+        cert_offset = len(data)  # 0x400, right after the sections
+        struct.pack_into("<II", data, optional + 112 + 4 * 8, cert_offset, 8)
+        data += b"\x00" * 8
+    if trailing:
+        data += b"\x00" * trailing
+    return bytes(data)
+
+
+def self_test() -> int:
+    """Prove the overlay check treats the certificate table as legitimate.
+
+    A guard that flagged every signed binary would silently make code signing
+    impossible; these cases pin the behaviour in both directions.
+    """
+    import tempfile
+
+    cases = (
+        # (label, version, signed, trailing, expect_overlay_problem, expect_version_problem)
+        ("signed, nothing else", True, True, 0, False, False),
+        ("unsigned, 8-byte overlay", True, False, 8, True, False),
+        ("signed, plus 8-byte overlay", True, True, 8, True, False),
+        ("no VERSIONINFO, unsigned", False, False, 0, False, True),
+    )
+    failures = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for label, version, signed, trailing, want_overlay, want_version in cases:
+            path = os.path.join(tmp, "case.exe")
+            with open(path, "wb") as handle:
+                handle.write(
+                    _synthetic_pe(version=version, signed=signed, trailing=trailing)
+                )
+            problems, _ = inspect(path)
+            got_overlay = any("overlay" in problem for problem in problems)
+            got_version = any("VERSIONINFO" in problem for problem in problems)
+            if got_overlay == want_overlay and got_version == want_version:
+                print(f"ok: self-test '{label}'")
+                continue
+            failures += 1
+            print(
+                f"FAIL: self-test '{label}': overlay={got_overlay} "
+                f"(want {want_overlay}), version={got_version} (want {want_version})",
+                file=sys.stderr,
+            )
+    if failures:
+        return 1
+    print("OK: verify-pe-metadata.py self-test passed")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print(__doc__.strip().splitlines()[0], file=sys.stderr)
         print("usage: verify-pe-metadata.py <binary> [more...]", file=sys.stderr)
         return 2
+    if argv[1] == "--self-test":
+        return self_test()
 
     failed = False
     skipped = False

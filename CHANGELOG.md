@@ -79,11 +79,29 @@ adheres to [Semantic Versioning](https://semver.org/).
   missing `ProductName`/`CompanyName`) and as a positive control against the
   rebuilt host.
 
+### Added
+
+- **Authenticode code signing, via the SignPath Foundation.** AlphaCode was
+  accepted into SignPath's free code-signing program for open-source projects.
+  `release.yml` now signs both `alphacode.exe` and `AlphaCode.Desktop.exe`
+  through SignPath before the Windows archive is published, so the release
+  carries signed bytes with no unsigned window. Every signing step is gated on a
+  `SIGNPATH_API_TOKEN` secret and is inert until it is set, so a build before
+  the account is finished publishes exactly as before. `scripts/signpath/`
+  ships the artifact configuration and a local signing helper, and
+  `docs/engineering/code-signing.md` is the setup runbook.
+- `scripts/verify-pe-metadata.py` now subtracts the Authenticode certificate
+  table before measuring overlay: the certificate table is bytes *after* the
+  last section by design, so the previous overlay check would have failed every
+  correctly signed binary. A new `--self-test` pins the behaviour in both
+  directions, and a real Microsoft-signed PE is the positive control.
+
 ### Note
 
-- The binaries remain unsigned. Code signing is the single strongest remaining
-  input to reputation-based detection and SmartScreen; no source change
-  substitutes for it. `detect-debug-environment` still appears because the .NET
+- The binaries are signed from the next tagged release onward, once
+  `SIGNPATH_API_TOKEN` is configured; until then they remain unsigned. Signing
+  is the single strongest remaining input to reputation-based detection and
+  SmartScreen. `detect-debug-environment` still appears because the .NET
   runtime's own `UnhandledExceptionFilter` path trips that generic tag; it is
   runtime behaviour, not a dropper indicator.
 

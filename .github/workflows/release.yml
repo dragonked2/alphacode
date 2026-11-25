@@ -340,6 +340,144 @@ jobs:
           echo "OK: single-PE alphacode.exe with the GUI host shipped separately"
 
 
+      # --- Code signing (opt-in) ------------------------------------------------
+      #
+      # Authenticode-sign the Windows archive before it is published, so the
+      # release carries signed bytes with no unsigned window.
+      #
+      # Signing runs only when BOTH conditions hold:
+      #   * SIGNPATH_API_TOKEN exists -- the `secrets` context is not available in
+      #     a step-level `if:` (GitHub rejects the workflow at load time), so
+      #     presence is detected in a step and published as an output the later
+      #     steps gate on;
+      #   * SIGNPATH_SIGNING_POLICY_SLUG names a *production* policy (anything
+      #     other than the self-signed test policy).
+      #
+      # Anything else publishes the archive unsigned with a warning, and never
+      # fails the release: a signing misconfiguration must not block shipping a
+      # build that passed every other gate. In particular, a release is never
+      # signed with the self-signed test certificate -- Windows reads that as
+      # "Unknown publisher", the same as unsigned, but it *looks* signed, so it
+      # is worse than shipping nothing. `test-signing` is rejected explicitly.
+      # See docs/engineering/code-signing.md.
+      #
+      # Why the archive is replaced and its checksum recomputed here: install.ps1
+      # verifies the downloaded zip against the published .sha256 and SHA256SUMS
+      # and hard-fails on a mismatch, so signing must leave the archive, its
+      # sidecar and the merged manifest mutually consistent. The recompute below
+      # runs before the asset-upload step and the publish job's SHA256SUMS merge,
+      # so both describe the signed bytes.
+      #
+      # Required repository configuration:
+      #   secret  SIGNPATH_API_TOKEN
+      #   var     SIGNPATH_ORGANIZATION_ID
+      #   var     SIGNPATH_PROJECT_SLUG
+      #   var     SIGNPATH_SIGNING_POLICY_SLUG      (production policy, e.g. release-signing)
+      #   var     SIGNPATH_ARTIFACT_CONFIGURATION_SLUG      (optional)
+      - name: Detect SignPath configuration
+        id: signpath
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: |
+          set -euo pipefail
+          emit() { echo "$1" >> "$GITHUB_OUTPUT"; }
+          if [ -z "${TOKEN:-}" ]; then
+            emit "enabled=false"
+            echo "::notice::SIGNPATH_API_TOKEN is not set; publishing the Windows archive unsigned."
+          elif [ -z "${POLICY:-}" ]; then
+            emit "enabled=false"
+            echo "::warning::SIGNPATH_SIGNING_POLICY_SLUG is not set; publishing the Windows archive unsigned. Set it to the production policy (e.g. release-signing) once SignPath issues the certificate."
+          elif [ "${POLICY}" = "test-signing" ]; then
+            emit "enabled=false"
+            echo "::warning::SIGNPATH_SIGNING_POLICY_SLUG is 'test-signing'. A release must not ship a self-signed test signature (Windows reads it as Unknown publisher while it looks signed). Publishing unsigned instead; switch to the production policy when the certificate is issued."
+          else
+            emit "enabled=true"
+            echo "SignPath is configured with policy '${POLICY}'; the Windows archive will be signed."
+          fi
+
+      # archive:false stores the zip as-is instead of wrapping it in a second
+      # zip, so the artifact SignPath receives has exactly the structure
+      # scripts/signpath/artifact-configuration.xml describes (a zip-file root
+      # with the two pe-files).
+      - name: Upload unsigned archive for signing
+        id: signpath-upload
+        if: runner.os == 'Windows' && steps.signpath.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-${{ matrix.archive }}
+          path: ${{ matrix.archive }}.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Submit SignPath signing request
+        id: signpath-sign
+        if: runner.os == 'Windows' && steps.signpath.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'test-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.signpath-upload.outputs.artifact-id }}
+          wait-for-completion: true
+          skip-decompress: true
+          output-artifact-directory: signed-win
+
+      - name: Verify signed binaries
+        if: runner.os == 'Windows' && steps.signpath.outputs.enabled == 'true'
+        shell: bash
+        env:
+          ARCHIVE_BASE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          signed="signed-win/${ARCHIVE_BASE}.zip"
+          [ -f "$signed" ] || { echo "::error::SignPath produced no ${ARCHIVE_BASE}.zip"; exit 1; }
+          mkdir -p signed-check
+          python scripts/signpath/archive-tool.py "$signed" --extract signed-check >/dev/null
+          # The same structural guards the unsigned archive passed, now applied
+          # to the signed bytes. verify-pe-metadata.py tolerates the Authenticode
+          # certificate table while still failing a genuine packer overlay.
+          for binary in alphacode.exe AlphaCode.Desktop.exe; do
+            path="signed-check/$binary"
+            [ -f "$path" ] || { echo "::error::$signed is missing $binary after signing"; exit 1; }
+            python scripts/verify-pe-metadata.py "$path"
+            python scripts/verify-pe-single-image.py "$path"
+            python scripts/verify-no-av-triggers.py "$path"
+          done
+
+      - name: Assert Authenticode signatures are present
+        if: runner.os == 'Windows' && steps.signpath.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('alphacode.exe', 'AlphaCode.Desktop.exe')) {
+            $sig = Get-AuthenticodeSignature -LiteralPath "signed-check/$name"
+            Write-Host ("{0}: {1} signer={2}" -f $name, $sig.Status, $sig.SignerCertificate.Subject)
+            if (-not $sig.SignerCertificate) {
+              Write-Host "::error::signed-check/$name has no Authenticode signature"
+              exit 1
+            }
+          }
+          Write-Host "Signed archive verified."
+
+      - name: Replace archive with the signed build
+        if: runner.os == 'Windows' && steps.signpath.outputs.enabled == 'true'
+        shell: bash
+        env:
+          ARCHIVE_BASE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          cp "signed-win/${ARCHIVE_BASE}.zip" "${ARCHIVE_BASE}.zip"
+          # Recompute the sidecar from Python: sha256sum under Git for Windows
+          # intermittently corrupts the redirected file (see the packaging step).
+          python scripts/signpath/archive-tool.py "${ARCHIVE_BASE}.zip" --sha256 "${ARCHIVE_BASE}.sha256"
+          echo "Signed Windows archive and checksum are ready to publish."
+
+
       # Non-Windows targets keep using the generic action (a single tar.gz).
       - name: Build + archive + checksum + upload
         if: runner.os != 'Windows'

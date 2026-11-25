@@ -81,9 +81,13 @@ host.
 
 1. **Code signing.** The binaries are unsigned (`Get-AuthenticodeSignature`
    reports `NotSigned`). This is the single strongest remaining input to
-   reputation-based detection and to SmartScreen. An OV/EV certificate deployed
-   via Azure Trusted Signing or a hardware token in CI would remove it. No
-   amount of source change substitutes for this.
+   reputation-based detection and to SmartScreen. No amount of source change
+   substitutes for this. **Update:** AlphaCode was accepted into the SignPath
+   Foundation OSS program (organization `f351ad44-52ab-4630-9179-ad04db6dd730`);
+   the repo ships the artifact configuration, a signing workflow and a local
+   helper. The remaining manual work is the portal setup and the API token, then
+   test-signing with the self-signed certificate. See
+   `docs/engineering/code-signing.md`.
 2. **Reputation reset.** BitDefender caches by file hash, so a rebuild produces a
    different verdict path, but the *family* association persists in their
    database. Submit the 1.0.93 binary to
@@ -259,6 +263,8 @@ artifact VirusTotal flagged. A guard that passes everything would be worthless.
 
 Code signing remains the single strongest remaining input to reputation-based
 detection and SmartScreen (see item 1 above). No source change substitutes for it.
+The repo is now wired for it via SignPath Foundation; see
+`docs/engineering/code-signing.md`.
 
 ## 1.1.22: the GUI host was its own root cause (third)
 
@@ -393,7 +399,9 @@ at the repository layout.
 ### What is still true and not fixed by source
 
 - **Unsigned binaries.** Still the strongest single input to reputation and
-  SmartScreen. This is the remaining human step.
+  SmartScreen. This is the remaining human step: AlphaCode has since been
+  accepted into the SignPath Foundation OSS program and the repository is wired
+  for Authenticode signing -- see `docs/engineering/code-signing.md`.
 - **`detect-debug-environment`.** The .NET/WPF runtime reaches
   `UnhandledExceptionFilter` through its own exception machinery; the tag is
   runtime behaviour, not a dropper indicator, and it is not removable without
