@@ -74,6 +74,30 @@ jobs:
       - name: cargo build --release
         run: cargo build --release --locked --target ${{ matrix.target }} --bin alphacode
 
+      # Structural release guards, run on every PR rather than only at tag time.
+      # `release.yml` catches a bad artifact only after a tag is pushed; these
+      # catch the same regression on the pull request that introduces it.
+      # Windows only, because the GUI host and the VERSIONINFO resource are
+      # Windows-specific and `build.rs` stages the host beside the binary.
+      - name: Reject nested-executable, overlay and unattributed PEs
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/alphacode.exe"
+          HOST="target/${{ matrix.target }}/release/AlphaCode.Desktop.exe"
+          test -f "$HOST" || { echo "::error::$HOST was not produced"; exit 1; }
+          # `alphacode.exe` must not embed a second PE (1.0.92 `Gen:Variant.Barys`).
+          python scripts/verify-pe-single-image.py "$BIN"
+          python scripts/verify-pe-single-image.py "$HOST"
+          # Neither binary may carry a PE overlay, lack VERSIONINFO in the mapped
+          # image, or embed the build machine's profile path (1.1.21 host flags).
+          python scripts/verify-pe-metadata.py "$BIN"
+          python scripts/verify-pe-metadata.py "$HOST"
+          # The host embeds `gui.ps1`, so it needs the AV-trigger scan too.
+          python scripts/verify-no-av-triggers.py "$BIN"
+          python scripts/verify-no-av-triggers.py "$HOST"
+
   test:
     name: test (${{ matrix.os }})
     env:

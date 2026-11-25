@@ -259,3 +259,150 @@ artifact VirusTotal flagged. A guard that passes everything would be worthless.
 
 Code signing remains the single strongest remaining input to reputation-based
 detection and SmartScreen (see item 1 above). No source change substitutes for it.
+
+## 1.1.22: the GUI host was its own root cause (third)
+
+The 1.1.21 fixes above targeted `alphacode.exe`. The file the user actually
+submitted to VirusTotal was the **other** binary — `AlphaCode.Desktop.exe`, the
+313 KB GUI host — and it carried a defect the previous work introduced.
+
+### The report
+
+`AlphaCode.Desktop.exe`, sha256
+`f61b747a1961fc96159a02607b7b851c8c025eaaad8e28bcf4e4eaffe272a054`, 313,004
+bytes. VirusTotal, 11 malicious / 74 engines:
+
+| Engine | Verdict |
+|---|---|
+| Arctic Wolf | `Unsafe`, `TR/Dropper.Gen`, `Static AI - Suspicious PE` |
+| WithSecure | `Trojan.TR/Dropper.Gen` |
+| Bkav Pro | `W32.Malware.DC4032F` |
+| CrowdStrike Falcon | `Win/malicious_confidence_70% (D)` |
+| Elastic | `Malicious (moderate Confidence)` |
+| Malwarebytes | `MachineLearning/Anomalous.100%` |
+| SecureAge | `Malicious` |
+| Trapmine | `Malicious.moderate.ml.score` |
+| TrendMicro-HouseCall | `Trojan.Win32.VSX.PE04CAN` |
+
+File tags: `peexe`, `assembly`, **`overlay`**, **`detect-debug-environment`**,
+`calls-wmi`, `obfuscated`. Dropped file recorded by the sandbox:
+`__psscriptpolicytest_<random>.ps1` — i.e. the sandbox saw the embedded script
+being written out and run by PowerShell.
+
+### Root cause: a self-inflicted PE overlay
+
+`build.rs::append_version_resource` compiled a VERSIONINFO `.res` with `rc.exe`
+and then did this:
+
+```rust
+let mut data = std::fs::read(host)?;
+data.extend_from_slice(&res);      // <- bytes appended after the last section
+std::fs::write(host, data)?;
+```
+
+Two consequences, both measured rather than assumed:
+
+- **Overlay.** Sections ended at byte 312,320 of a 313,004-byte file: 684 bytes
+  of trailing data. That is the shape packers leave, and `overlay` is literally
+  one of the VirusTotal tags on the file.
+- **The resource was never registered.** Appending bytes does not add a
+  resource-directory entry, so Windows ignored them. `Get-Item
+  AlphaCode.Desktop.exe` on 1.1.21 reported:
+
+  ```
+  FileDescription: AlphaCode Desktop
+  ProductName:                     <- empty
+  CompanyName:                     <- empty
+  LegalCopyright:                  <- empty
+  ```
+
+  So the fix intended to make the host "read as a product" produced an
+  unsigned, partially unattributed .NET launcher that embeds and executes a
+  PowerShell script — which is precisely the dropper profile nine engines
+  scored.
+
+### What changed
+
+- The host declares `AssemblyProduct`, `AssemblyCompany`,
+  `AssemblyCopyright` and `AssemblyVersion` in `GuiBuildInfo.cs`, so `csc.exe`
+  synthesises VERSIONINFO and links it into `.rsrc`. `append_version_resource`
+  and its call site were deleted.
+- `alphacode.exe` gained the one VERSIONINFO field it never set,
+  `LegalCopyright`.
+- `scripts/verify-pe-metadata.py` fails the release if either shipped PE has a
+  non-zero overlay, or if VERSIONINFO is not readable from the *mapped image*
+  (only bytes up to the end of the last section are mapped, which is why the
+  appended block was invisible).
+- The AV-trigger guard now also runs against `AlphaCode.Desktop.exe` in both
+  `release.yml` and `scripts/release-build.sh`; previously only the CLI was
+  scanned even though the host embeds `gui.ps1`.
+
+### Measured results
+
+| Check | 1.1.21 host | 1.1.22 host |
+|---|---|---|
+| PE overlay | 684 bytes | **0 bytes** |
+| `ProductName` (Windows) | *(empty)* | `AlphaCode` |
+| `CompanyName` (Windows) | *(empty)* | `AlphaCode` |
+| `LegalCopyright` (Windows) | *(empty)* | `Copyright (c) Ali Essam` |
+| Embedded script identity | `934702dd…` | `934702dd…` (unchanged) |
+| `verify-pe-metadata.py` | FAIL | OK |
+| `verify-no-av-triggers.py` | OK | OK |
+| `verify-pe-single-image.py` | OK (1) | OK (1) |
+| Functional launch | window, responding | window, responding |
+
+The GUI was re-launched after the change: `MainWindowHandle != 0`,
+`MainWindowTitle = AlphaCode`, `Responding = True`, and the embedded script's
+`gui_sha256` matched the source byte-for-byte, so the metadata change did not
+alter behaviour.
+
+### Related gap closed: local release builds leaked the builder's paths
+
+`scripts/release-build.sh` is the documented way to build a release locally, but it
+did not pass `--remap-path-prefix`, while `.github/workflows/release.yml` did. Building
+the 1.1.22 release with the script therefore produced an `alphacode.exe` carrying
+`C:\Users\<account>\` **2,099 times** — the same defect the 1.1.21 notes
+above describe for CI builds, just on a different path.
+
+That matters beyond privacy: an unsigned PE whose string table is full of a
+single home directory is a recognised reputation signal, and it is one of the
+inputs that keeps the *family* association alive in vendor databases even
+after the specific verdict is fixed. The script now applies the same two remaps
+as CI (`workspace -> /alphacode`, `registry -> /cargo/registry`), and
+`verify-pe-metadata.py` fails the release if any `C:\Users\` occurrence
+survives.
+
+
+### Why `--remap-path-prefix` alone was not enough
+
+After wiring the remap flags into `scripts/release-build.sh`, the local release binary
+still carried the builder's path twice. Those two occurrences were not `file!()`
+literals: they came from `env!("CARGO_MANIFEST_DIR")` in
+`alphacode_build_support::paths::get_repo_dir` and
+`alphacode_telemetry_core::state_support::telemetry_alphacode_repo_dir`, which use the
+compile-time checkout path to locate the repo for self-dev mode. `--remap-path-prefix`
+rewrites `file!()` and `#[track_caller]` locations; it does not rewrite an
+`env!()` string the crate chooses to embed.
+
+Both sites now consult `alphacode_build_meta::is_release_build()` and skip the
+compile-time directory in a release build, where the executable-relative and
+working-directory fallbacks already cover the same lookup. Measured on the
+rebuilt 1.1.22 binary: `or0to` 2,097 -> **0**, `OneDrive` -> **0**, while
+`/alphacode` and `/cargo/registry` remain present, so panic messages still point
+at the repository layout.
+### What is still true and not fixed by source
+
+- **Unsigned binaries.** Still the strongest single input to reputation and
+  SmartScreen. This is the remaining human step.
+- **`detect-debug-environment`.** The .NET/WPF runtime reaches
+  `UnhandledExceptionFilter` through its own exception machinery; the tag is
+  runtime behaviour, not a dropper indicator, and it is not removable without
+  abandoning the managed host.
+- **`calls-wmi` and `obfuscated`** are sandbox behavioural tags inferred from
+  the managed runtime and the large embedded script resource. They are not
+  matched by the crowdsourced YARA corpus in `tmp/av/is.yar`.
+- **Verdicts are per-hash.** A rebuild produces a new hash and therefore new
+  verdicts; the effectiveness of this change on the 1.1.22 binary is unmeasured
+  until it is uploaded and re-analysed. Do not claim the detection is "fixed"
+  on VirusTotal before that scan — the *cause* is fixed and structurally
+  guarded.

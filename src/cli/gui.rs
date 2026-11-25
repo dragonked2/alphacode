@@ -1647,6 +1647,71 @@ mod tests {
         );
     }
 
+    /// The GUI host is its own PE, so it needs its own structural checks.
+    ///
+    /// The 1.1.21 host (`AlphaCode.Desktop.exe`, sha256 `f61b747a…`) was
+    /// reported malicious by 11 engines and tagged `overlay`: `build.rs`
+    /// appended a compiled VERSIONINFO `.res` after the last section, which left
+    /// a PE overlay *and* made Windows read ProductName/CompanyName/
+    /// LegalCopyright as empty. The guard that catches that shape —
+    /// `scripts/verify-pe-metadata.py` — plus the AV-trigger scan now have to run
+    /// against the host, not only the CLI. This test fails if either wiring is
+    /// dropped, so the check cannot silently regress to covering one binary.
+    #[cfg(windows)]
+    #[test]
+    fn release_guards_cover_the_gui_host_too() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(
+            root.join("scripts").join("verify-pe-metadata.py").is_file(),
+            "scripts/verify-pe-metadata.py is missing; nothing enforces the \
+             zero-overlay and complete-VERSIONINFO contract"
+        );
+
+        for entry in [
+            root.join(".github").join("workflows").join("release.yml"),
+            root.join("scripts").join("release-build.sh"),
+        ] {
+            let text = std::fs::read_to_string(&entry)
+                .unwrap_or_else(|_| panic!("{} is part of the source tree", entry.display()));
+
+            // `release.yml` names the host file literally; `release-build.sh`
+            // assigns it to a shell variable (HOST=.../AlphaCode.Desktop.exe)
+            // and passes "$HOST". Both are valid as long as the variable really
+            // resolves to the host, so collect the variable names whose
+            // assignment mentions the filename and accept either form.
+            let mut host_tokens = vec![DESKTOP_HOST_FILENAME.to_string()];
+            for line in text.lines() {
+                let Some((name, value)) = line.split_once('=') else {
+                    continue;
+                };
+                let name = name.trim();
+                if value.contains(DESKTOP_HOST_FILENAME)
+                    && !name.is_empty()
+                    && name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+                {
+                    host_tokens.push(format!("${{{name}}}"));
+                    host_tokens.push(format!("${name}"));
+                }
+            }
+
+            for script in ["verify-pe-metadata.py", "verify-no-av-triggers.py"] {
+                // Each guard must be invoked against the host, not just the CLI:
+                // the same line has to name both the script and the host file.
+                let covered = text.lines().any(|line| {
+                    line.contains(script) && host_tokens.iter().any(|token| line.contains(token))
+                });
+                assert!(
+                    covered,
+                    "{} runs {} on alphacode.exe but not on {} (tokens: {:?})",
+                    entry.display(),
+                    script,
+                    DESKTOP_HOST_FILENAME,
+                    host_tokens
+                );
+            }
+        }
+    }
+
     /// Acceptance criterion from the GUI audit: no internal gateway name may
     /// reach the desktop surfaces.
     ///

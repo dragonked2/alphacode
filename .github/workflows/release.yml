@@ -319,6 +319,16 @@ jobs:
           # release if any of those literals come back.
           python scripts/verify-no-av-triggers.py "target/$TARGET/release/alphacode.exe"
           python scripts/verify-pe-single-image.py "target/$TARGET/release/AlphaCode.Desktop.exe"
+          # The GUI host is its own PE and gets its own structural checks. The
+          # 1.1.21 host (sha256 f61b747a...) was flagged by VirusTotal as
+          # `overlay` + dropper: build.rs appended a VERSIONINFO .res past the
+          # last section, which left 684 bytes of overlay and made Windows
+          # report ProductName/CompanyName/LegalCopyright as empty. Both defects
+          # are gone now, and these checks keep them gone. The host must also be
+          # scanned for AV trigger strings, not just the CLI - it embeds gui.ps1.
+          python scripts/verify-pe-metadata.py "target/$TARGET/release/AlphaCode.Desktop.exe"
+          python scripts/verify-pe-metadata.py "target/$TARGET/release/alphacode.exe"
+          python scripts/verify-no-av-triggers.py "target/$TARGET/release/AlphaCode.Desktop.exe"
           # The archive must carry both files at its root as siblings.
           listing="$(unzip -Z1 "${ARCHIVE_BASE}.zip")"
           for required in alphacode.exe AlphaCode.Desktop.exe; do

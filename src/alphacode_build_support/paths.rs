@@ -19,11 +19,19 @@ pub fn get_repo_dir() -> Option<PathBuf> {
         }
     }
 
-    // First try: compile-time directory
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let path = PathBuf::from(manifest_dir);
-    if let Some(repo) = find_repo_in_ancestors(&path) {
-        return Some(repo);
+    // First try: compile-time directory. Dev builds need this so self-dev
+    // sessions find the checkout they were built from. Release builds must not
+    // carry it: `env!("CARGO_MANIFEST_DIR")` bakes the builder's absolute path
+    // into the binary (measured: `C:\Users\<account>\...` present twice after
+    // rpath remapping), which is a privacy leak and an "unsigned PE full of one
+    // account's paths" reputation signal. In a release the executable-relative
+    // and working-directory fallbacks below cover the same case without it.
+    if !crate::alphacode_build_meta::is_release_build() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let path = PathBuf::from(manifest_dir);
+        if let Some(repo) = find_repo_in_ancestors(&path) {
+            return Some(repo);
+        }
     }
 
     // Fallback: check relative to executable

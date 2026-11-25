@@ -23,6 +23,8 @@
 #   scripts/dev-check.sh fmt
 #   scripts/dev-check.sh clippy
 #   scripts/dev-check.sh pe <file>  # single-PE structural check (release guard)
+#   scripts/dev-check.sh av <file>  # AV-trigger string check (release guard)
+#   scripts/dev-check.sh meta <file> # overlay + VERSIONINFO check (release guard)
 #
 # Every run appends to `.alphacode/scratch/dev-check.log` and prints the tail.
 set -uo pipefail
@@ -96,6 +98,12 @@ case "$cmd" in
         ;;
     pe)
         python3 scripts/verify-pe-single-image.py "$@"
+        ;;
+    av)
+        python3 scripts/verify-no-av-triggers.py "$@"
+        ;;
+    meta)
+        python3 scripts/verify-pe-metadata.py "$@"
         ;;
     all)
         status=0

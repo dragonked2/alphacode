@@ -4,6 +4,89 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.22] - 2026-11-25
+
+### Fixed
+
+- **The Windows GUI host no longer reads as a dropper to antivirus engines.**
+  VirusTotal reported `AlphaCode.Desktop.exe` (sha256
+  `f61b747a...e272a054`, the 313 KB launcher — *not* the CLI) as 11 malicious
+  of 74 engines: `TR/Dropper.Gen` (Arctic Wolf, WithSecure),
+  `Static AI - Suspicious PE` (Arctic Wolf), `W32.Malware.DC4032F` (Bkav Pro),
+  `Win/malicious_confidence_70%` (CrowdStrike Falcon), `Malicious (moderate
+  Confidence)` (Elastic), `MachineLearning/Anomalous.100%` (Malwarebytes),
+  `Malicious` (SecureAge), `Malicious.moderate.ml.score` (Trapmine) and
+  `Trojan.Win32.VSX.PE04CAN` (TrendMicro-HouseCall). VirusTotal also tagged the
+  file `overlay`, `detect-debug-environment`, `calls-wmi` and `obfuscated`.
+  Two of those tags came from a real structural defect in how the host was
+  built:
+
+  `build.rs::append_version_resource` compiled a VERSIONINFO `.res` with
+  `rc.exe` and then **appended the raw bytes after the last section**. That is
+  a PE *overlay* — the exact trailing-data shape packers leave, and the reason
+  VirusTotal tagged the file `overlay`. Worse, an appended block is not
+  referenced by the resource directory, so Windows never read it: `Get-Item`
+  on the 1.1.21 host reported empty `ProductName`, `CompanyName` and
+  `LegalCopyright` even though the strings were in the file. An unsigned .NET
+  launcher that embeds a PowerShell script *and* carries no product attribution
+  is a textbook "dropped payload" profile — two engines label it "dropper"
+  (Arctic Wolf, WithSecure) and six score it with a static ML model.
+
+  The host now declares those fields as C# assembly attributes
+  (`AssemblyProduct`, `AssemblyCompany`, `AssemblyCopyright`,
+  `AssemblyVersion`) and `csc.exe` links VERSIONINFO into `.rsrc` where it
+  belongs. Measured on the rebuilt host: overlay 684 bytes -> **0**, and all
+  seven VERSIONINFO fields now read back correctly from Windows. The embedded
+  GUI script is byte-identical (`gui_sha256 934702dd…`), so behaviour is
+  unchanged.
+
+- **The main `alphacode.exe` now carries `LegalCopyright`.** It was the one
+  VERSIONINFO field the release binary never set, which is itself an
+  "unattributed binary" signal and left Explorer's Properties dialog
+  incomplete for anyone verifying a download.
+
+- **Release guards now cover the GUI host, not just the CLI.** The 1.1.21
+  checks ran `verify-no-av-triggers.py` only against `alphacode.exe`. The host
+  embeds `gui.ps1` as a managed resource, so it is its own attack surface for
+  the same string heuristics. `release.yml` and `scripts/release-build.sh` now
+  run the AV-trigger guard against `AlphaCode.Desktop.exe` as well.
+
+- **The local release build no longer leaks the builder's home directory.**
+  `scripts/release-build.sh` — the documented way to build a release on a
+  developer machine — did not pass `--remap-path-prefix`, which
+  `.github/workflows/release.yml` does. `strip = true` removes the symbol
+  table but not the `file!()` string literals every dependency emits, so a
+  locally built `alphacode.exe` carried `C:\Users\<account>\` **2,099 times**
+  (measured). That is a privacy leak and a reputation signal: an unsigned PE
+  full of one person's home directory reads as a dropped payload. The script
+  now applies the same remaps as CI, and `verify-pe-metadata.py` fails the
+  release on any occurrence.
+
+- **Release binaries no longer embed the compile-time checkout path.**
+  `--remap-path-prefix` rewrites `file!()` locations but not an `env!()`
+  string a crate chooses to embed, so `get_repo_dir()` and the telemetry
+  repo lookup still baked `env!("CARGO_MANIFEST_DIR")` into the image. Both
+  now skip the compile-time directory when `is_release_build()` is true; the
+  executable-relative and working-directory fallbacks cover self-dev lookup.
+  Measured on the rebuilt 1.1.22 binary: the builder's account name went from
+  2,097 occurrences to **0**, while `/alphacode` and `/cargo/registry` remain
+  so panic messages still name the repository layout.
+
+- **New `scripts/verify-pe-metadata.py` guard.** It fails the release if either
+  shipped PE has a non-zero overlay, or if VERSIONINFO is not readable from the
+  *mapped image* — the exact two defects above. Verified as a negative control
+  against the shipped 1.1.21 host (reports 684 bytes of overlay plus the
+  missing `ProductName`/`CompanyName`) and as a positive control against the
+  rebuilt host.
+
+### Note
+
+- The binaries remain unsigned. Code signing is the single strongest remaining
+  input to reputation-based detection and SmartScreen; no source change
+  substitutes for it. `detect-debug-environment` still appears because the .NET
+  runtime's own `UnhandledExceptionFilter` path trips that generic tag; it is
+  runtime behaviour, not a dropper indicator.
+
 ## [1.1.21] - 2026-11-24
 
 ### Fixed
