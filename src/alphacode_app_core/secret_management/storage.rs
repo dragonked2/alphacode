@@ -22,6 +22,15 @@ pub struct StorageConfig {
     pub encrypt_at_rest: bool,
     /// Encryption key derivation iterations
     pub kdf_iterations: u32,
+    /// Persist sessions to `root_dir`.
+    ///
+    /// Off by default, and deliberately so: `SecretStore::store` used to always
+    /// write the session to disk, which meant any caller using the default
+    /// config silently wrote secrets into `~/.alphacode/secrets`. Two tests that
+    /// shared a session id then raced on the same `.tmp` file and one failed
+    /// under `--test-threads=4`. Persistence is now an explicit decision and the
+    /// only code path that needs it turns it on.
+    pub persist_to_disk: bool,
 }
 
 impl Default for StorageConfig {
@@ -37,6 +46,7 @@ impl Default for StorageConfig {
             // provide. Flip this when a real AEAD is implemented.
             encrypt_at_rest: false,
             kdf_iterations: 100_000,
+            persist_to_disk: false,
         }
     }
 }
@@ -215,8 +225,10 @@ impl SecretStore {
             session.secrets.insert(handle.id().to_string(), entry);
         }
 
-        // Persist to disk (encrypted)
-        self.persist_session(&session_id)?;
+        // Persist only when the caller asked for it (see persist_to_disk).
+        if self.config.persist_to_disk {
+            self.persist_session(&session_id)?;
+        }
 
         Ok(handle)
     }
@@ -501,6 +513,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let config = StorageConfig {
             root_dir: temp_dir.path().to_path_buf(),
+            persist_to_disk: true,
             ..Default::default()
         };
         let store = SecretStore::with_config(config);
