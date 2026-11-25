@@ -1,88 +1,115 @@
+//! Bounded, metadata-validated graph snapshots.
 use crate::memory_graph::MemoryGraph;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
-// === Graph Cache ===
-
-/// Maximum number of cached graphs. Each entry holds an owned graph; an
-/// unbounded map kept every memory-file path ever queried resident for the
-/// life of the process (audit M22). The working set in practice is two paths
-/// (project + global); 24 leaves ample room for distinct session roots.
 const GRAPH_CACHE_CAPACITY: usize = 24;
+// Metadata can be preserved or have coarse resolution. Periodically re-read.
+const MAX_SNAPSHOT_AGE: Duration = Duration::from_secs(30);
+
+#[derive(Clone, PartialEq, Eq)]
+struct FileStamp {
+    modified: SystemTime,
+    len: u64,
+    created: Option<SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    ctime: (i64, i64),
+}
+
+fn stamp(path: &Path) -> Option<FileStamp> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() { return None; }
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    Some(FileStamp {
+        modified: meta.modified().ok()?,
+        len: meta.len(),
+        created: meta.created().ok(),
+        #[cfg(unix)]
+        device: meta.dev(),
+        #[cfg(unix)]
+        inode: meta.ino(),
+        #[cfg(unix)]
+        ctime: (meta.ctime(), meta.ctime_nsec()),
+    })
+}
 
 struct GraphCacheEntry {
     graph: Arc<MemoryGraph>,
-    modified: Option<SystemTime>,
+    stamp: FileStamp,
+    inserted: Instant,
+    used: Instant,
 }
 
-struct GraphCache {
-    /// Ordered so insertion-time eviction can drop the oldest entries; there
-    /// is no cheap staleness signal beyond the mtime we already compare.
-    entries: BTreeMap<PathBuf, GraphCacheEntry>,
+static GRAPH_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, GraphCacheEntry>>> = OnceLock::new();
+
+fn graph_cache() -> &'static Mutex<BTreeMap<PathBuf, GraphCacheEntry>> {
+    GRAPH_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-impl GraphCache {
-    fn new() -> Self {
-        Self {
-            entries: BTreeMap::new(),
-        }
+pub(super) fn cached_graph_arc(path: &Path) -> Option<Arc<MemoryGraph>> {
+    let current = stamp(path);
+    let mut cache = graph_cache().lock().ok()?;
+    let valid = cache.get(path).is_some_and(|entry| {
+        current.as_ref() == Some(&entry.stamp) && entry.inserted.elapsed() < MAX_SNAPSHOT_AGE
+    });
+    if !valid {
+        cache.remove(path);
+        return None;
     }
-
-    fn evict_if_over_capacity(&mut self) {
-        while self.entries.len() >= GRAPH_CACHE_CAPACITY {
-            // The map is keyed by path, not by recency, and loads are rare
-            // relative to the hit rate, so dropping the first (deterministic)
-            // entry is fine: it is re-parsed on next access.
-            self.entries.pop_first();
-        }
-    }
-}
-
-static GRAPH_CACHE: OnceLock<Mutex<GraphCache>> = OnceLock::new();
-
-fn graph_cache() -> &'static Mutex<GraphCache> {
-    GRAPH_CACHE.get_or_init(|| Mutex::new(GraphCache::new()))
-}
-
-fn graph_mtime(path: &PathBuf) -> Option<SystemTime> {
-    std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
-}
-
-/// Zero-copy hit: share the cached graph without cloning it.
-///
-/// Callers that only *read* the graph (health counters, ambient stats) used
-/// to pay a full deep clone of the entire graph on every hit — the same order
-/// of work as parsing it from disk (audit M22). An `Arc::clone` is O(1), and
-/// a read hit stays in cache as long as the file mtime is unchanged.
-pub(super) fn cached_graph_arc(path: &PathBuf) -> Option<Arc<MemoryGraph>> {
-    let modified = graph_mtime(path);
-    let cache = graph_cache().lock().ok()?;
-    let entry = cache.entries.get(path)?;
-    if entry.modified == modified {
-        Some(Arc::clone(&entry.graph))
-    } else {
-        None
-    }
+    let entry = cache.get_mut(path)?;
+    entry.used = Instant::now();
+    Some(Arc::clone(&entry.graph))
 }
 
 #[allow(dead_code)]
-pub(super) fn cached_graph(path: &PathBuf) -> Option<MemoryGraph> {
+pub(super) fn cached_graph(path: &Path) -> Option<MemoryGraph> {
     cached_graph_arc(path).map(|shared| (*shared).clone())
 }
 
 #[allow(dead_code)]
 pub(super) fn cache_graph(path: PathBuf, graph: &MemoryGraph) {
-    let modified = graph_mtime(&path);
+    let Some(current) = stamp(&path) else {
+        if let Ok(mut cache) = graph_cache().lock() { cache.remove(&path); }
+        return;
+    };
+    // Clone outside the global lock.
+    let graph = Arc::new(graph.clone());
+    if stamp(&path).as_ref() != Some(&current) { return; }
     if let Ok(mut cache) = graph_cache().lock() {
-        cache.evict_if_over_capacity();
-        cache.entries.insert(
-            path,
-            GraphCacheEntry {
-                graph: Arc::new(graph.clone()),
-                modified,
-            },
-        );
+        if !cache.contains_key(&path) && cache.len() >= GRAPH_CACHE_CAPACITY
+            && let Some(oldest) = cache.iter().min_by_key(|(_, entry)| entry.used)
+                .map(|(path, _)| path.clone()) {
+                cache.remove(&oldest);
+            }
+        let now = Instant::now();
+        cache.insert(path, GraphCacheEntry { graph, stamp: current, inserted: now, used: now });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn absent_or_changed_file_cannot_hit_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.json");
+        let graph = MemoryGraph::new();
+        cache_graph(path.clone(), &graph);
+        assert!(cached_graph_arc(&path).is_none());
+        std::fs::write(&path, b"one").unwrap();
+        cache_graph(path.clone(), &graph);
+        assert!(cached_graph_arc(&path).is_some());
+        std::fs::write(&path, b"changed length").unwrap();
+        assert!(cached_graph_arc(&path).is_none());
+        cache_graph(path.clone(), &graph);
+        std::fs::remove_file(&path).unwrap();
+        assert!(cached_graph_arc(&path).is_none());
     }
 }

@@ -65,6 +65,7 @@ pub mod ssh_remote;
 pub mod startup_profile;
 pub mod system_diagnostics;
 pub mod tool;
+pub mod secret_management;
 pub mod turn_cancel_registry;
 pub mod update;
 

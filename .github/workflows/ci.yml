@@ -71,8 +71,42 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
+      # A release build must not embed the builder's absolute paths. `strip`
+      # drops the symbol table but not the `file!()` string literals every
+      # dependency emits, so a plain `cargo build --release` carries the build
+      # account's home directory thousands of times. That is a privacy leak and
+      # a reputation signal (see docs/engineering/windows-av-false-positive.md),
+      # and the Windows PE guard below rejects it: an unsigned PE full of one
+      # account's paths reads as a dropped payload.
+      #
+      # release.yml and scripts/release-build.sh already pass these remaps. This
+      # job builds the same artifact to run the same guards, so it must match
+      # them or the guard fails on an otherwise-correct binary -- which is what
+      # happened the first time the guard ran here (`runneradmin`, ~2,000 hits).
+      # Windows only: the guard and the GUI host it inspects exist only there.
+      - name: Record the build path the Windows PE guard must not find
+        if: runner.os == 'Windows'
+        id: remap
+        shell: bash
+        run: echo "marker=$(cygpath -m "$USERPROFILE")" >> "$GITHUB_OUTPUT"
+
       - name: cargo build --release
-        run: cargo build --release --locked --target ${{ matrix.target }} --bin alphacode
+        shell: bash
+        env:
+          REMAP_MARKER: ${{ steps.remap.outputs.marker }}
+        run: |
+          set -euo pipefail
+          # `${REMAP_MARKER:-}` is empty on non-Windows runners, so the branch is
+          # skipped before `cygpath` (which does not exist there) is reached.
+          if [ -n "${REMAP_MARKER:-}" ]; then
+            workspace="$(cygpath -m "$PWD")"
+            registry="$(cygpath -m "$HOME/.cargo/registry")"
+            export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${workspace}=/alphacode --remap-path-prefix=${registry}=/cargo/registry"
+            # Tell the guard which profile path to search for; it cannot infer
+            # the CI account name otherwise and would silently skip the check.
+            export ALPHACODE_BUILD_PATH_MARKER="$REMAP_MARKER"
+          fi
+          cargo build --release --locked --target ${{ matrix.target }} --bin alphacode
 
       # Structural release guards, run on every PR rather than only at tag time.
       # `release.yml` catches a bad artifact only after a tag is pushed; these

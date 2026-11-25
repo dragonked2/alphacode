@@ -10,7 +10,8 @@ static MEMORY_ACTIVITY: Mutex<Option<MemoryActivity>> = Mutex::new(None);
 const MAX_RECENT_EVENTS: usize = 10;
 
 /// Staleness timeout: auto-reset to Idle if state has been non-Idle for this long
-const STALENESS_TIMEOUT_SECS: u64 = 10;
+const STALENESS_TIMEOUT_SECS: u64 = 180;
+const FOUND_RELEVANT_TIMEOUT_SECS: u64 = 15;
 
 /// Get current memory activity state
 pub fn get_activity() -> Option<MemoryActivity> {
@@ -18,22 +19,20 @@ pub fn get_activity() -> Option<MemoryActivity> {
 }
 
 pub fn activity_snapshot() -> Option<crate::protocol::MemoryActivitySnapshot> {
-    get_activity().as_ref().map(memory_activity_snapshot)
+    MEMORY_ACTIVITY.lock().ok().and_then(|guard| guard.as_ref().map(memory_activity_snapshot))
 }
 
 pub fn apply_remote_activity_snapshot(snapshot: &crate::protocol::MemoryActivitySnapshot) {
     if let Ok(mut guard) = MEMORY_ACTIVITY.lock() {
-        let recent_events = guard
-            .as_ref()
-            .map(|activity| activity.recent_events.clone())
-            .unwrap_or_default();
+        // Snapshots contain no event history; do not mix previous local/remote histories.
+        let recent_events = Vec::new();
         let now = Instant::now();
         let state_since = now
             .checked_sub(Duration::from_millis(snapshot.state_age_ms))
             .unwrap_or(now);
 
         *guard = Some(MemoryActivity {
-            state: from_snapshot_state(&snapshot.state),
+            state: private_state(from_snapshot_state(&snapshot.state)),
             state_since,
             pipeline: snapshot.pipeline.as_ref().map(from_snapshot_pipeline),
             recent_events,
@@ -42,7 +41,17 @@ pub fn apply_remote_activity_snapshot(snapshot: &crate::protocol::MemoryActivity
 }
 
 /// Update the memory activity state
+fn private_state(state: MemoryState) -> MemoryState {
+    match state {
+        MemoryState::Extracting { .. } => MemoryState::Extracting { reason: "Memory extraction".into() },
+        MemoryState::Maintaining { .. } => MemoryState::Maintaining { phase: "Graph maintenance".into() },
+        MemoryState::ToolAction { .. } => MemoryState::ToolAction { action: "Memory tool".into(), detail: Default::default() },
+        other => other,
+    }
+}
+
 pub fn set_state(state: MemoryState) {
+    let state = private_state(state);
     if let Ok(mut guard) = MEMORY_ACTIVITY.lock() {
         if let Some(activity) = guard.as_mut() {
             activity.state = state;
@@ -59,8 +68,22 @@ pub fn set_state(state: MemoryState) {
 }
 
 /// Add an event to the activity log
-pub fn add_event(kind: MemoryEventKind) {
+pub fn add_event(mut kind: MemoryEventKind) {
     crate::memory_log::log_event(&kind);
+    // The global activity view may be shared across sessions. Store no raw text.
+    match &mut kind {
+        MemoryEventKind::SidecarRelevant { memory_preview } | MemoryEventKind::MemorySurfaced { memory_preview } => *memory_preview = "Memory matched".into(),
+        MemoryEventKind::MemoryInjected { preview, items, .. } => { *preview = "Memory injected".into(); items.clear(); }
+        MemoryEventKind::Error { message } => *message = "Memory operation failed".into(),
+        MemoryEventKind::ToolRemembered { content, .. } => *content = "[private]".into(),
+        MemoryEventKind::ToolRecalled { query, .. } => *query = "[private]".into(),
+        MemoryEventKind::MaintenanceTagInferred { tag, .. } => *tag = "[private]".into(),
+        MemoryEventKind::ExtractionStarted { reason } => *reason = "Memory extraction".into(),
+        MemoryEventKind::ToolForgot { id } => id.clear(),
+        MemoryEventKind::ToolTagged { id, tags } => { id.clear(); tags.clear(); }
+        MemoryEventKind::ToolLinked { from, to } => { from.clear(); to.clear(); }
+        _ => {}
+    }
 
     if let Ok(mut guard) = MEMORY_ACTIVITY.lock() {
         let event = MemoryEvent {
@@ -109,35 +132,47 @@ pub fn pipeline_update(f: impl FnOnce(&mut PipelineState)) {
         if let Some(activity) = guard.as_mut() {
             if let Some(pipeline) = activity.pipeline.as_mut() {
                 f(pipeline);
+                if let Some((done, total)) = pipeline.verify_progress {
+                    pipeline.verify_progress = Some((done.min(total), total));
+                }
+                activity.state_since = Instant::now();
             }
         }
     }
 }
 
-/// Check for staleness and auto-reset if needed.
-/// Returns true if state was reset due to staleness.
-#[expect(
-    clippy::collapsible_if,
-    reason = "Memory activity timeout checks keep nested optional state explicit"
-)]
+/// A UI watchdog, not evidence that a worker completed or was canceled.
+fn expired_state(activity: &MemoryActivity) -> bool {
+    let limit = match &activity.state {
+        MemoryState::Idle => return false,
+        MemoryState::FoundRelevant { .. } => FOUND_RELEVANT_TIMEOUT_SECS,
+        _ => STALENESS_TIMEOUT_SECS,
+    };
+    activity.state_since.elapsed().as_secs() >= limit
+}
+
+fn expire_step(status: &mut StepStatus) {
+    if matches!(&*status, StepStatus::Running) { *status = StepStatus::Error; }
+    else if matches!(&*status, StepStatus::Pending) { *status = StepStatus::Skipped; }
+}
+
 pub fn check_staleness() -> bool {
-    if let Ok(mut guard) = MEMORY_ACTIVITY.lock() {
-        if let Some(activity) = guard.as_mut() {
-            if !matches!(activity.state, MemoryState::Idle)
-                && activity.state_since.elapsed().as_secs() >= STALENESS_TIMEOUT_SECS
-            {
-                crate::logging::info(&format!(
-                    "Memory state stale ({:?} for {}s), auto-resetting to Idle",
-                    activity.state,
-                    activity.state_since.elapsed().as_secs()
-                ));
-                activity.state = MemoryState::Idle;
-                activity.state_since = Instant::now();
-                return true;
-            }
+    let expired = {
+        let Ok(mut guard) = MEMORY_ACTIVITY.lock() else { return false; };
+        let Some(activity) = guard.as_mut() else { return false; };
+        if !expired_state(activity) { return false; }
+        if let Some(pipeline) = activity.pipeline.as_mut() {
+            expire_step(&mut pipeline.search);
+            expire_step(&mut pipeline.verify);
+            expire_step(&mut pipeline.inject);
+            expire_step(&mut pipeline.maintain);
         }
-    }
-    false
+        activity.state = MemoryState::Idle;
+        activity.state_since = Instant::now();
+        true
+    };
+    if expired { crate::logging::info("Memory activity display expired; worker completion is unverified"); }
+    expired
 }
 
 /// Clear activity (reset to idle with no events)
@@ -147,122 +182,17 @@ pub fn clear_activity() {
     }
 }
 
-/// Record that a memory payload was injected into model context.
-/// This feeds the memory info widget with injected content + metadata.
+/// Record injection metadata without copying private memory into diagnostic UI
+/// events. The actual conversation/prompt remains the source of content.
 pub fn record_injected_prompt(prompt: &str, count: usize, age_ms: u64) {
     crate::telemetry::record_memory_injected(count, age_ms);
-    let items = parse_injected_items(prompt, 8);
-    let preview = prompt_preview(prompt, 72);
+    let preview = format!("{count} memory item(s) injected");
+    let items: Vec<InjectedMemoryItem> = Vec::new();
     add_event(MemoryEventKind::MemoryInjected {
-        count,
-        prompt_chars: prompt.chars().count(),
-        age_ms,
-        preview: preview.clone(),
-        items,
+        count, prompt_chars: prompt.chars().count(), age_ms,
+        preview: preview.clone(), items,
     });
-    add_event(MemoryEventKind::MemorySurfaced {
-        memory_preview: preview,
-    });
-}
-
-fn parse_injected_items(prompt: &str, max_items: usize) -> Vec<InjectedMemoryItem> {
-    let mut items: Vec<InjectedMemoryItem> = Vec::new();
-    let mut section = String::from("Memory");
-
-    for raw_line in prompt.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line == "# Memory" {
-            continue;
-        }
-        if let Some(header) = line.strip_prefix("## ") {
-            let header = header.trim();
-            if !header.is_empty() {
-                section = header.to_string();
-            }
-            continue;
-        }
-
-        let content = if let Some(rest) = line.strip_prefix("- ") {
-            Some(rest.trim())
-        } else if let Some((prefix, rest)) = line.split_once(". ") {
-            if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
-                Some(rest.trim())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        if let Some(content) = content {
-            if content.is_empty() {
-                continue;
-            }
-            items.push(InjectedMemoryItem {
-                section: section.clone(),
-                content: content.to_string(),
-            });
-            if items.len() >= max_items {
-                return items;
-            }
-        }
-    }
-
-    if items.is_empty() {
-        let fallback = prompt
-            .lines()
-            .map(str::trim)
-            .filter(|line| {
-                !line.is_empty()
-                    && !line.starts_with('#')
-                    && !line.starts_with("## ")
-                    && !line.starts_with("- ")
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !fallback.is_empty() {
-            items.push(InjectedMemoryItem {
-                section,
-                content: fallback,
-            });
-        }
-    }
-
-    items
-}
-
-fn prompt_preview(prompt: &str, max_chars: usize) -> String {
-    let bullet = prompt
-        .lines()
-        .map(str::trim)
-        .find_map(|line| {
-            if line.starts_with("- ") {
-                Some(line.trim_start_matches("- ").trim())
-            } else if let Some((prefix, rest)) = line.split_once(". ") {
-                if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit()) {
-                    Some(rest.trim())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| prompt.trim());
-
-    if bullet.chars().count() <= max_chars {
-        bullet.to_string()
-    } else {
-        let mut out = String::new();
-        for (i, ch) in bullet.chars().enumerate() {
-            if i >= max_chars.saturating_sub(3) {
-                break;
-            }
-            out.push(ch);
-        }
-        out.push_str("...");
-        out
-    }
+    add_event(MemoryEventKind::MemorySurfaced { memory_preview: preview });
 }
 
 fn memory_activity_snapshot(activity: &MemoryActivity) -> crate::protocol::MemoryActivitySnapshot {
@@ -366,7 +296,7 @@ fn from_snapshot_pipeline(snapshot: &crate::protocol::MemoryPipelineSnapshot) ->
             .verify_result
             .as_ref()
             .map(from_snapshot_step_result),
-        verify_progress: snapshot.verify_progress,
+        verify_progress: snapshot.verify_progress.map(|(done, total)| (done.min(total), total)),
         inject: from_snapshot_step_status(&snapshot.inject),
         inject_result: snapshot
             .inject_result
@@ -395,5 +325,19 @@ fn from_snapshot_step_result(snapshot: &crate::protocol::MemoryStepResultSnapsho
     StepResult {
         summary: snapshot.summary.clone(),
         latency_ms: snapshot.latency_ms,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn stale_steps_are_never_marked_successful() {
+        let mut running = StepStatus::Running;
+        expire_step(&mut running);
+        assert!(matches!(running, StepStatus::Error));
+        let mut pending = StepStatus::Pending;
+        expire_step(&mut pending);
+        assert!(matches!(pending, StepStatus::Skipped));
     }
 }

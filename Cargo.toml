@@ -77,6 +77,7 @@ hex = "0.4"
 open = "5"
 uuid = { version = "1", features = ["v4", "v5"] }
 rand = "0.9.3"
+zeroize = { version = "1", features = ["derive"] }
 regex = "1"
 glob = "0.3"
 url = "2"

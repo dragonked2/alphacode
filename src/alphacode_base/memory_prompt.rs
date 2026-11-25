@@ -1,253 +1,217 @@
+//! Bounded, role-aware context for memory retrieval and extraction.
 const MEMORY_CONTEXT_MAX_CHARS: usize = 8_000;
 const MEMORY_CONTEXT_MAX_MESSAGES: usize = 12;
 const MEMORY_CONTEXT_MAX_BLOCK_CHARS: usize = 1_200;
 const EXTRACTION_CONTEXT_MAX_MESSAGES: usize = 40;
 const EXTRACTION_CONTEXT_MAX_CHARS: usize = 24_000;
+const FOCUSED_QUERY_MAX_CHARS: usize = 3_000;
 
-fn truncate_chars(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    value.chars().take(max_chars).collect()
+fn truncate_chars(value: &str, max_chars: usize) -> &str {
+    value.char_indices().nth(max_chars).map_or(value, |(index, _)| &value[..index])
 }
 
-fn format_content_block_for_relevance(block: &crate::message::ContentBlock) -> Option<String> {
-    match block {
-        crate::message::ContentBlock::Text { text, .. } => {
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(truncate_chars(trimmed, MEMORY_CONTEXT_MAX_BLOCK_CHARS))
+/// Omit runtime reminder blocks, including inline and unterminated reminders.
+/// A literal closing marker without an opener is ordinary text.
+fn strip_reminders(value: &str, depth: &mut usize) -> String {
+    const OPEN: &str = "<system-reminder>";
+    const CLOSE: &str = "</system-reminder>";
+    let mut result = String::new();
+    let mut rest = value;
+    while !rest.is_empty() {
+        let open = rest.find(OPEN);
+        let close = rest.find(CLOSE);
+        match (open, close) {
+            (Some(i), other) if other.is_none_or(|j| i < j) => {
+                if *depth == 0 { result.push_str(&rest[..i]); }
+                *depth = depth.saturating_add(1);
+                rest = &rest[i + OPEN.len()..];
             }
-        }
-        crate::message::ContentBlock::ToolUse { name, .. } => Some(format!("[Tool: {}]", name)),
-        crate::message::ContentBlock::ToolResult {
-            content, is_error, ..
-        } => {
-            if is_error.unwrap_or(false) {
-                Some(format!(
-                    "[Tool error: {}]",
-                    truncate_chars(content.trim(), MEMORY_CONTEXT_MAX_BLOCK_CHARS / 4)
-                ))
-            } else {
-                None
+            (_, Some(i)) => {
+                if *depth == 0 { result.push_str(&rest[..i + CLOSE.len()]); }
+                else { *depth -= 1; }
+                rest = &rest[i + CLOSE.len()..];
             }
-        }
-        crate::message::ContentBlock::Reasoning { .. }
-        | crate::message::ContentBlock::ReasoningTrace { .. }
-        | crate::message::ContentBlock::AnthropicThinking { .. }
-        | crate::message::ContentBlock::OpenAIReasoning { .. } => None,
-        crate::message::ContentBlock::Image { .. } => Some("[Image]".to_string()),
-        crate::message::ContentBlock::OpenAICompaction { .. } => {
-            Some("[OpenAI native compaction]".to_string())
+            _ => {
+                if *depth == 0 { result.push_str(rest); }
+                break;
+            }
         }
     }
+    result
 }
 
-fn format_content_block_for_extraction(block: &crate::message::ContentBlock) -> Option<String> {
-    match block {
-        crate::message::ContentBlock::Text { text, .. } => {
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(truncate_chars(trimmed, MEMORY_CONTEXT_MAX_BLOCK_CHARS))
-            }
+/// Conservative defense in depth, not a complete credential detector.
+/// Avoid sending obvious credential lines to embedding or judge providers.
+fn safe_prose(value: &str) -> String {
+    let mut result = String::new();
+    let mut private_key = false;
+    for line in value.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("-----begin ") && lower.contains("private key-----") {
+            private_key = true;
         }
-        crate::message::ContentBlock::ToolUse { name, input, .. } => {
-            let input_str =
-                serde_json::to_string(input).unwrap_or_else(|_| "<invalid json>".into());
-            let input_str = truncate_chars(&input_str, MEMORY_CONTEXT_MAX_BLOCK_CHARS / 2);
-            Some(format!("[Tool: {} input: {}]", name, input_str))
-        }
-        crate::message::ContentBlock::ToolResult {
-            content, is_error, ..
-        } => {
-            let label = if is_error.unwrap_or(false) {
-                "Tool error"
-            } else {
-                "Tool result"
-            };
-            let content = truncate_chars(content, MEMORY_CONTEXT_MAX_BLOCK_CHARS / 2);
-            Some(format!("[{}: {}]", label, content))
-        }
-        crate::message::ContentBlock::Reasoning { .. }
-        | crate::message::ContentBlock::ReasoningTrace { .. }
-        | crate::message::ContentBlock::AnthropicThinking { .. }
-        | crate::message::ContentBlock::OpenAIReasoning { .. } => None,
-        crate::message::ContentBlock::Image { .. } => Some("[Image]".to_string()),
-        crate::message::ContentBlock::OpenAICompaction { .. } => {
-            Some("[OpenAI native compaction]".to_string())
+        let sensitive = private_key || [
+            "authorization:", "bearer ", "api_key", "api-key", "apikey",
+            "access_token", "refresh_token", "password", "secret_key",
+            "private_key", "session_token", "cookie:", "set-cookie:",
+            "sk-proj-", "ghp_", "github_pat_", "xoxb-", "signpath_api_token",
+        ].iter().any(|marker| lower.contains(marker));
+        if sensitive { result.push_str("[sensitive line omitted]"); }
+        else { result.push_str(line); }
+        result.push('\n');
+        if lower.contains("-----end ") && lower.contains("private key-----") {
+            private_key = false;
         }
     }
+    result.trim().to_owned()
 }
 
-fn format_message_context_with(
-    message: &crate::message::Message,
-    format_block: fn(&crate::message::ContentBlock) -> Option<String>,
-) -> String {
-    let role = match message.role {
+fn message_prose(message: &crate::message::Message, extraction: bool) -> String {
+    use crate::message::ContentBlock;
+    let mut out = String::new();
+    let mut depth = 0usize;
+    // Keep only prose; tool inputs/results may contain credentials, external
+    // instructions, or huge logs. A successful tool call is not evidence here.
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text, .. } => {
+                let stripped = strip_reminders(text, &mut depth);
+                let safe = safe_prose(&stripped);
+                if !safe.is_empty() {
+                    if !out.is_empty() { out.push('\n'); }
+                    out.push_str(truncate_chars(&safe, MEMORY_CONTEXT_MAX_BLOCK_CHARS));
+                }
+            }
+            ContentBlock::ToolResult { is_error, .. } if extraction && is_error.unwrap_or(false) => {
+                if depth == 0 { out.push_str("\n[Tool reported an error; details omitted]"); }
+            }
+            _ => {}
+        }
+        if out.chars().count() >= MEMORY_CONTEXT_MAX_CHARS { break; }
+    }
+    out.trim().to_owned()
+}
+
+fn role_name(message: &crate::message::Message) -> &'static str {
+    match message.role {
         crate::message::Role::User => "User",
         crate::message::Role::Assistant => "Assistant",
-    };
-
-    let mut chunk = String::new();
-    chunk.push_str(role);
-    chunk.push_str(":\n");
-
-    let mut has_content = false;
-    for block in &message.content {
-        if let Some(text) = format_block(block)
-            && !text.is_empty()
-        {
-            has_content = true;
-            chunk.push_str(&text);
-            chunk.push('\n');
-        }
     }
-
-    if has_content { chunk } else { String::new() }
 }
 
-/// Format messages into a context string for relevance checking
+fn render_window(messages: &[crate::message::Message], max_messages: usize,
+    budget: usize, extraction: bool) -> String {
+    let mut chunks = Vec::new();
+    let mut remaining = budget;
+    for message in messages.iter().rev().take(max_messages) {
+        let prose = message_prose(message, extraction);
+        if prose.is_empty() { continue; }
+        let role = role_name(message);
+        let overhead = role.len() + 2 + usize::from(!chunks.is_empty());
+        if remaining <= overhead { break; }
+        let text = truncate_chars(&prose, remaining - overhead);
+        let chunk = format!("{role}:\n{text}");
+        remaining -= chunk.chars().count() + usize::from(!chunks.is_empty());
+        chunks.push(chunk);
+        if remaining == 0 { break; }
+    }
+    chunks.reverse();
+    chunks.join("\n")
+}
+
 pub fn format_context_for_relevance(messages: &[crate::message::Message]) -> String {
-    let mut chunks: Vec<String> = Vec::new();
-    let mut total_chars = 0usize;
-
-    for message in messages.iter().rev().take(MEMORY_CONTEXT_MAX_MESSAGES) {
-        let chunk = format_message_context_with(message, format_content_block_for_relevance);
-        if chunk.is_empty() {
-            continue;
-        }
-        let chunk_len = chunk.chars().count();
-        if total_chars + chunk_len > MEMORY_CONTEXT_MAX_CHARS {
-            if total_chars == 0 {
-                chunks.push(truncate_chars(&chunk, MEMORY_CONTEXT_MAX_CHARS));
-            }
-            break;
-        }
-        total_chars += chunk_len;
-        chunks.push(chunk);
-    }
-
-    chunks.reverse();
-    chunks.join("\n").trim().to_string()
+    render_window(messages, MEMORY_CONTEXT_MAX_MESSAGES, MEMORY_CONTEXT_MAX_CHARS, false)
 }
 
-/// Build a focused retrieval query from recent messages.
-///
-/// Unlike [`format_context_for_relevance`], which concatenates up to a dozen
-/// role-prefixed messages (including tool output) into one blob, this produces a
-/// tighter query centered on the user's *current intent*. Memory retrieval and
-/// (especially) cross-encoder reranking degrade badly on long, noisy inputs:
-/// embeddings get diluted and rerankers trained on short search queries fail to
-/// score relevance. This builder:
-///   - drops `<system-reminder>...</system-reminder>` blocks (session boilerplate),
-///   - drops tool-call / tool-result lines,
-///   - keeps human/assistant prose,
-///   - over-weights the most recent user message (the strongest intent signal)
-///     by placing it first.
-///
-/// Falls back to the raw relevance context if stripping leaves nothing.
 pub fn format_focused_query_for_relevance(messages: &[crate::message::Message]) -> String {
-    let raw = format_context_for_relevance(messages);
-    focus_query_text(&raw)
+    // Use actual role metadata rather than interpreting role-like text in prose.
+    let mut entries: Vec<_> = messages.iter().rev().take(MEMORY_CONTEXT_MAX_MESSAGES)
+        .map(|message| (role_name(message), message_prose(message, false)))
+        .filter(|(_, text)| !text.is_empty()).collect();
+    let latest_user = entries.iter().position(|(role, _)| *role == "User");
+    if let Some(index) = latest_user {
+        let user = entries.remove(index);
+        entries.insert(0, user);
+    }
+    bounded_query(entries.into_iter().map(|(_, text)| text))
 }
 
-/// Pure text transform powering [`format_focused_query_for_relevance`]. Split out
-/// so it can be unit-tested without constructing `Message` values.
-pub fn focus_query_text(raw: &str) -> String {
-    let mut kept: Vec<String> = Vec::new();
-    let mut last_user: Option<String> = None;
-    let mut in_reminder = false;
-    let mut current_role_is_user = false;
-
-    for line in raw.lines() {
-        let trimmed = line.trim();
-
-        // Skip system-reminder blocks (session bootstrap / memory injections).
-        if trimmed.starts_with("<system-reminder>") {
-            in_reminder = true;
-            // A single-line reminder both opens and closes.
-            if trimmed.ends_with("</system-reminder>") {
-                in_reminder = false;
-            }
-            continue;
-        }
-        if in_reminder {
-            if trimmed.ends_with("</system-reminder>") {
-                in_reminder = false;
-            }
-            continue;
-        }
-
-        // Role markers emitted by format_message_context_with ("User:" / "Assistant:").
-        if trimmed == "User:" {
-            current_role_is_user = true;
-            continue;
-        }
-        if trimmed == "Assistant:" {
-            current_role_is_user = false;
-            continue;
-        }
-
-        // Drop tool noise; keep human/assistant prose.
-        if trimmed.is_empty()
-            || trimmed.starts_with("[Tool:")
-            || trimmed.starts_with("[Tool error:")
-            || trimmed.starts_with("[Result:")
-            || trimmed.starts_with("[Image]")
-            || trimmed.starts_with("[OpenAI native compaction]")
-        {
-            continue;
-        }
-
-        kept.push(trimmed.to_string());
-        if current_role_is_user {
-            last_user = Some(trimmed.to_string());
-        }
-    }
-
+fn bounded_query(texts: impl IntoIterator<Item = String>) -> String {
     let mut out = String::new();
-    // Lead with the most recent user intent so the query is anchored on it.
-    if let Some(user) = last_user {
-        out.push_str(&user);
-        out.push('\n');
+    let mut remaining = FOCUSED_QUERY_MAX_CHARS;
+    let mut seen = std::collections::HashSet::new();
+    for text in texts {
+        if text.trim().is_empty() || !seen.insert(text.clone()) { continue; }
+        if !out.is_empty() {
+            if remaining <= 1 { break; }
+            out.push('\n');
+            remaining -= 1;
+        }
+        let piece = truncate_chars(&text, remaining);
+        out.push_str(piece);
+        remaining -= piece.chars().count();
+        if remaining == 0 { break; }
     }
-    out.push_str(&kept.join("\n"));
-
-    let out = out.trim();
-    if out.is_empty() {
-        raw.to_string()
-    } else {
-        out.to_string()
-    }
+    out
 }
 
-/// Format messages into a wider context string for extraction.
-/// Uses a larger window than relevance checking since extraction needs to
-/// capture learnings from a broader portion of the conversation.
-pub(crate) fn format_context_for_extraction(messages: &[crate::message::Message]) -> String {
-    let mut chunks: Vec<String> = Vec::new();
-    let mut total_chars = 0usize;
-
-    for message in messages.iter().rev().take(EXTRACTION_CONTEXT_MAX_MESSAGES) {
-        let chunk = format_message_context_with(message, format_content_block_for_extraction);
-        if chunk.is_empty() {
+/// Compatibility transform for already-formatted role-prefixed context.
+/// Structured callers should use format_focused_query_for_relevance instead.
+pub fn focus_query_text(raw: &str) -> String {
+    let mut depth = 0;
+    let stripped = strip_reminders(raw, &mut depth);
+    let safe = safe_prose(&stripped);
+    let mut entries: Vec<(bool, String)> = Vec::new();
+    let mut is_user = false;
+    let mut current = String::new();
+    for line in safe.lines() {
+        let text = line.trim();
+        if matches!(text, "User:" | "Assistant:") {
+            if !current.is_empty() { entries.push((is_user, std::mem::take(&mut current))); }
+            is_user = text == "User:";
             continue;
         }
-        let chunk_len = chunk.chars().count();
-        if total_chars + chunk_len > EXTRACTION_CONTEXT_MAX_CHARS {
-            if total_chars == 0 {
-                chunks.push(truncate_chars(&chunk, EXTRACTION_CONTEXT_MAX_CHARS));
-            }
-            break;
+        if text.is_empty() || ["[Tool:", "[Tool error:", "[Tool result:", "[Result:",
+            "[Image]", "[OpenAI native compaction]"].iter().any(|p| text.starts_with(p)) {
+            continue;
         }
-        total_chars += chunk_len;
-        chunks.push(chunk);
+        if !current.is_empty() { current.push('\n'); }
+        current.push_str(text);
     }
+    if !current.is_empty() { entries.push((is_user, current)); }
+    entries.reverse();
+    if let Some(index) = entries.iter().position(|(user, _)| *user) {
+        let user = entries.remove(index);
+        entries.insert(0, user);
+    }
+    bounded_query(entries.into_iter().map(|(_, text)| text))
+}
 
-    chunks.reverse();
-    chunks.join("\n").trim().to_string()
+pub(crate) fn format_context_for_extraction(messages: &[crate::message::Message]) -> String {
+    render_window(messages, EXTRACTION_CONTEXT_MAX_MESSAGES, EXTRACTION_CONTEXT_MAX_CHARS, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn focused_query_keeps_whole_latest_user_message_once() {
+        let query = focus_query_text("User:\nold\nAssistant:\nanswer\nUser:\nnew question\nsecond line");
+        assert!(query.starts_with("new question\nsecond line"));
+        assert_eq!(query.matches("new question").count(), 1);
+    }
+    #[test]
+    fn reminders_and_credentials_are_not_restored_by_fallback() {
+        assert_eq!(focus_query_text("User:\n<system-reminder>private</system-reminder>"), "");
+        let query = focus_query_text("User:\nkeep <system-reminder>hidden</system-reminder> this\nAPI_KEY=abc");
+        assert!(!query.contains("hidden"));
+        assert!(!query.contains("abc"));
+        assert!(query.contains("keep"));
+    }
+    #[test]
+    fn unicode_budget_is_exact() {
+        let input = "界".repeat(5_000);
+        let query = focus_query_text(&input);
+        assert_eq!(query.chars().count(), FOCUSED_QUERY_MAX_CHARS);
+    }
 }

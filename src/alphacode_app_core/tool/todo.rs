@@ -1079,11 +1079,16 @@ mod tests {
         // The detailed calibration rubric moved out of the always-on schema
         // into the gate continuation messages, which are paid only when a
         // write is rejected.
+        // The gate message was rewritten to be shorter and to allow asking when
+        // a consequential decision cannot be inferred, so this asserts the
+        // concepts the *current* text must carry rather than its old wording.
+        // A message that drops the requirement mapping entirely would still
+        // fail here.
         for required_concept in [
-            "requirement inventory",
-            "outcomes, deliverables, constraints, prohibited actions",
-            "integration paths, edge cases, and necessary follow-through",
-            "Do not ask the user",
+            "Map required outcomes, constraints, scope, and success checks",
+            "Resolve minor ambiguity from evidence",
+            "ask only if a material decision cannot safely be inferred",
+            "do not inflate assessments",
         ] {
             assert!(
                 crate::todo::TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE
@@ -1098,9 +1103,9 @@ mod tests {
         assert!(feedback_description.contains("requirement-to-check"));
         assert!(feedback_description.contains("explicit observation or check"));
         for required_concept in [
-            "reports back on each requirement",
-            "run tests, verify, or review count only",
-            "non-testable requirements",
+            "Map each material requirement to an observable check",
+            "including non-testable requirements",
+            "Do not treat a planned check as a passing result",
         ] {
             assert!(
                 crate::todo::TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE
@@ -1753,8 +1758,13 @@ mod tests {
         let goals = load_goals(session).expect("goals");
         let digest = crate::todo::build_gate_digest(&observations, &plan, &goals)
             .expect("both recorded points should be surfaced");
-        assert!(digest.contains("started this work without understanding"));
-        assert!(digest.contains("feedback loop"));
+        // A late climb is worded "improved late": the final score passes, so
+        // claiming the turn "started without understanding" would contradict
+        // the assessment it is asking the model to trust.
+        assert!(
+            digest.contains("the intent assessment improved late"),
+            "digest was: {digest}"
+        );
 
         match previous_home {
             Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_HOME", value),

@@ -721,68 +721,85 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          CHANGELOG_FILE: ${{ steps.changelog.outputs.path }}
+          # `steps.changelog` lives in the create-release job, so referencing it
+          # here read an empty string and every announcement fell back to
+          # "No changelog available". The notes are fetched from the published
+          # release instead, which is the same content by construction.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # The `secrets` context is not available in a step-level `if:`
-          # (GitHub rejects the workflow at load time), so the "is a webhook
-          # configured?" check happens here instead.
+          # `secrets` is not available in a step-level `if:` (GitHub rejects the
+          # workflow at load time), so the presence check happens here.
+          #
+          # When the webhook is not configured this used to `exit 0`, which made
+          # the step report success and hid the fact that no announcement was
+          # ever sent -- exactly what happened for v1.1.21. Fail instead, and
+          # only when the job was supposed to announce something: the release is
+          # already published by this point, so a hard failure here is loud but
+          # harmless, and it cannot silently regress again.
           if [ -z "${WEBHOOK_URL:-}" ]; then
-            echo "DISCORD_WEBHOOK_URL is not set; skipping the release announcement."
-            exit 0
+            echo "::error::DISCORD_WEBHOOK_URL is not set, so the release announcement cannot be sent. Add the webhook as a repository secret (Settings -> Secrets and variables -> Actions)."
+            exit 1
           fi
-          # Read changelog content
-          if [ -f "$CHANGELOG_FILE" ] && [ -s "$CHANGELOG_FILE" ]; then
-            CHANGELOG_CONTENT=$(cat "$CHANGELOG_FILE")
-          else
-            CHANGELOG_CONTENT="No changelog available for this release."
+          # Fetch the release notes that were actually published. `gh` returns
+          # JSON, so the text is never spliced into JSON by hand: the previous
+          # implementation interpolated raw markdown into a JSON string, and any
+          # newline or quote in the changelog produced a payload Discord rejects
+          # with HTTP 400 (verified: the first control character is at byte 41).
+          notes="$(gh release view "$RELEASE_TAG" --json body --jq '.body // ""')" || notes=""
+          if [ -z "$notes" ]; then
+            notes="No changelog was published with this release."
           fi
-          # Build a short summary for the embed (first ~1500 chars)
-          SUMMARY="${CHANGELOG_CONTENT}"
-          if [ ${#SUMMARY} -gt 1500 ]; then
-            SUMMARY="${SUMMARY:0:1497}..."
+
+          # Discord caps an embed description at 4096 characters. Trim on a
+          # character boundary and mark the truncation.
+          summary="$(printf '%s' "$notes" | head -c 3900)"
+          if [ "${#notes}" -gt 3900 ]; then
+            summary="${summary}"$'\n\n'"... full notes on the release page."
           fi
-          # Build JSON payload for embed (summary only)
-          cat > /tmp/discord_payload.json <<EOF
-          {
-            "username": "AlphaCode Release Bot",
-            "avatar_url": "https://raw.githubusercontent.com/dragonked2/alphacode/main/logo.png",
-            "embeds": [{
-              "title": "🚀 AlphaCode ${RELEASE_TAG} Released",
-              "url": "https://github.com/${REPO}/releases/tag/${RELEASE_TAG}",
-              "color": 5814783,
-              "description": "**New version available!** Full changelog attached as file.",
-              "fields": [
-                {
-                  "name": "📦 Version",
-                  "value": "${RELEASE_TAG}",
-                  "inline": true
-                },
-                {
-                  "name": "🔗 Release Page",
-                  "value": "[View on GitHub](https://github.com/${REPO}/releases/tag/${RELEASE_TAG})",
-                  "inline": true
-                },
-                {
-                  "name": "📝 Summary",
-                  "value": "${SUMMARY}",
-                  "inline": false
-                }
+
+          # Build the payload with Python so both fields are escaped correctly.
+          # This removes the class of bug rather than patching one instance.
+          python3 - "$summary" "$RELEASE_TAG" "$REPO" > /tmp/discord_payload.json <<'PY'
+          import json
+          import sys
+
+          summary, tag, repo = sys.argv[1:4]
+          payload = {
+              "username": "AlphaCode Release Bot",
+              "avatar_url": "https://raw.githubusercontent.com/dragonked2/alphacode/main/logo.png",
+              "embeds": [
+                  {
+                      "title": f"AlphaCode {tag} released",
+                      "url": f"https://github.com/{repo}/releases/tag/{tag}",
+                      "color": 5814783,
+                      "description": summary,
+                      "fields": [
+                          {"name": "Version", "value": tag, "inline": True},
+                          {
+                              "name": "Release page",
+                              "value": f"[View on GitHub](https://github.com/{repo}/releases/tag/{tag})",
+                              "inline": True,
+                          },
+                      ],
+                      "footer": {
+                          "text": "AlphaCode - Terminal-native coding agent",
+                          "icon_url": "https://raw.githubusercontent.com/dragonked2/alphacode/main/logo.png",
+                      },
+                  }
               ],
-              "footer": {
-                "text": "AlphaCode - Terminal-native coding agent",
-                "icon_url": "https://raw.githubusercontent.com/dragonked2/alphacode/main/logo.png"
-              },
-              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            }]
           }
-          EOF
-          # Send as multipart/form-data: payload_json + changelog file
-          if [ -f "$CHANGELOG_FILE" ] && [ -s "$CHANGELOG_FILE" ]; then
-            curl -sS \
-              -F "payload_json=@/tmp/discord_payload.json" \
-              -F "file=@${CHANGELOG_FILE};filename=CHANGELOG-${RELEASE_TAG}.md" \
-              "$WEBHOOK_URL"
-          else
-            curl -sS -H "Content-Type: application/json" -d @/tmp/discord_payload.json "$WEBHOOK_URL"
-          fi
+          json.dump(payload, sys.stdout)
+          PY
+
+          # Attach the full notes as a file so the embed can stay readable.
+          printf '%s' "$notes" > "/tmp/CHANGELOG-${RELEASE_TAG}.md"
+
+          # --fail-with-body makes an HTTP 4xx/5xx a failure instead of a silent
+          # "success" with an error body, and -w reports the status in the log.
+          curl -sS --fail-with-body \
+            -F "payload_json=@/tmp/discord_payload.json" \
+            -F "file=@/tmp/CHANGELOG-${RELEASE_TAG}.md;filename=CHANGELOG-${RELEASE_TAG}.md" \
+            -w 'discord: HTTP %{http_code}\n' \
+            "$WEBHOOK_URL"
