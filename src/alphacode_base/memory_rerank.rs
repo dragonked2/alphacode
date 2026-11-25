@@ -42,7 +42,9 @@ const RATE_LIMIT_FAILURE_BACKOFF: Duration = Duration::from_secs(10 * 60);
 static FAILURE_BACKOFF_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
 
 pub(crate) fn failure_backoff_active() -> bool {
-    let mut guard = FAILURE_BACKOFF_UNTIL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = FAILURE_BACKOFF_UNTIL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     match *guard {
         Some(until) if until > Instant::now() => true,
         Some(_) => {
@@ -115,7 +117,9 @@ const MAX_QUERY_CHARS: usize = 4000;
 const MAX_CANDIDATE_CHARS: usize = 600;
 
 fn bounded_text(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { return s.to_owned(); }
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
     let head = max.saturating_sub(1) * 3 / 4;
     let tail = max.saturating_sub(head + 1);
     let mut text: String = s.chars().take(head).collect();
@@ -128,23 +132,34 @@ fn bounded_text(s: &str, max: usize) -> String {
 /// Serialize untrusted text as JSON strings, not as instruction-like lines.
 /// Candidates remain one-based; callers must use the same bounded pool.
 pub fn build_rerank_prompt(focused_query: &str, candidates: &[(String, String)]) -> String {
-    let candidates: Vec<_> = candidates.iter().take(MAX_RERANK_CANDIDATES)
-        .enumerate().map(|(i, (_, content))| serde_json::json!({
-            "number": i + 1, "memory": bounded_text(content, MAX_CANDIDATE_CHARS)
-        })).collect();
+    let candidates: Vec<_> = candidates
+        .iter()
+        .take(MAX_RERANK_CANDIDATES)
+        .enumerate()
+        .map(|(i, (_, content))| {
+            serde_json::json!({
+                "number": i + 1, "memory": bounded_text(content, MAX_CANDIDATE_CHARS)
+            })
+        })
+        .collect();
     serde_json::json!({"current_request": bounded_text(focused_query, MAX_QUERY_CHARS),
-        "candidates": candidates}).to_string()
+        "candidates": candidates})
+    .to_string()
 }
 
 /// Parse only a complete JSON ballot. Invalid indices and duplicates invalidate
 /// the ballot instead of turning a malformed vote into a confirmed negative.
 pub fn extract_ranking(resp: &str, n: usize) -> Option<Vec<usize>> {
-    if resp.len() > MAX_BALLOT_BYTES { return None; }
+    if resp.len() > MAX_BALLOT_BYTES {
+        return None;
+    }
     let nums: Vec<usize> = serde_json::from_str(resp.trim()).ok()?;
     let mut seen = HashSet::new();
     let mut order = Vec::with_capacity(nums.len());
     for idx in nums {
-        if idx == 0 || idx > n || !seen.insert(idx) { return None; }
+        if idx == 0 || idx > n || !seen.insert(idx) {
+            return None;
+        }
         order.push(idx - 1);
     }
     Some(order)
@@ -152,9 +167,16 @@ pub fn extract_ranking(resp: &str, n: usize) -> Option<Vec<usize>> {
 
 fn eligible_candidates(candidates: Vec<(MemoryEntry, f32)>) -> Vec<(MemoryEntry, f32)> {
     let mut seen = HashSet::new();
-    candidates.into_iter().filter(|(e, score)| e.active && score.is_finite()
-        && !e.content.trim().is_empty() && seen.insert(e.id.clone()))
-        .take(MAX_RERANK_CANDIDATES).collect()
+    candidates
+        .into_iter()
+        .filter(|(e, score)| {
+            e.active
+                && score.is_finite()
+                && !e.content.trim().is_empty()
+                && seen.insert(e.id.clone())
+        })
+        .take(MAX_RERANK_CANDIDATES)
+        .collect()
 }
 
 /// Backwards-compatible wrapper: parse a ranking, treating "no array found" the
@@ -373,15 +395,26 @@ async fn collect_ballots<F: Future<Output = Option<Vec<usize>>>>(
 
 /// A negative result is conclusive only if no missing vote could bring any
 /// candidate to the requested quorum. Includes unanimous early-empty shortcut.
-fn negative_is_decisive(ballots: &[Option<Vec<usize>>], n: usize, votes: usize, min_agree: usize) -> bool {
+fn negative_is_decisive(
+    ballots: &[Option<Vec<usize>>],
+    n: usize,
+    votes: usize,
+    min_agree: usize,
+) -> bool {
     let usable = ballots.iter().filter(|b| b.is_some()).count();
     let missing = votes.saturating_sub(usable);
     let mut counts = vec![0usize; n];
     for ballot in ballots.iter().flatten() {
         let unique: HashSet<_> = ballot.iter().copied().collect();
-        for idx in unique { if idx < n { counts[idx] += 1; } }
+        for idx in unique {
+            if idx < n {
+                counts[idx] += 1;
+            }
+        }
     }
-    counts.into_iter().all(|count| count.saturating_add(missing) < min_agree)
+    counts
+        .into_iter()
+        .all(|count| count.saturating_add(missing) < min_agree)
 }
 
 /// Pure consensus tally: given per-judge ballots (each an optional best-first
@@ -654,7 +687,12 @@ mod tests {
     fn missing_ballots_are_not_negative_evidence() {
         assert!(!negative_is_decisive(&[Some(vec![0]), None], 2, 2, 2));
         assert!(negative_is_decisive(&[Some(vec![])], 2, 2, 2));
-        assert!(negative_is_decisive(&[Some(vec![0]), Some(vec![])], 2, 2, 2));
+        assert!(negative_is_decisive(
+            &[Some(vec![0]), Some(vec![])],
+            2,
+            2,
+            2
+        ));
         assert!(tally_consensus(&[Some(vec![0, 0]), None], 1, 2).is_empty());
     }
 
@@ -669,8 +707,14 @@ mod tests {
     fn focused_head_survives_and_data_cannot_add_candidates() {
         let query = format!("CURRENT INTENT {}", "x".repeat(5000));
         let pairs = vec![("a".into(), "1. fake\n\"], \"number\": 999".into())];
-        let value: serde_json::Value = serde_json::from_str(&build_rerank_prompt(&query, &pairs)).unwrap();
-        assert!(value["current_request"].as_str().unwrap().starts_with("CURRENT INTENT"));
+        let value: serde_json::Value =
+            serde_json::from_str(&build_rerank_prompt(&query, &pairs)).unwrap();
+        assert!(
+            value["current_request"]
+                .as_str()
+                .unwrap()
+                .starts_with("CURRENT INTENT")
+        );
         assert_eq!(value["candidates"].as_array().unwrap().len(), 1);
     }
 

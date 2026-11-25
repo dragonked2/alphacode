@@ -21,7 +21,8 @@ use std::sync::Mutex;
 
 static MEMORY_LOGGER: Mutex<Option<MemoryLogger>> = Mutex::new(None);
 const MAX_DAILY_LOG_BYTES: u64 = 16 * 1024 * 1024;
-static LOG_FAILURE_REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LOG_FAILURE_REPORTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn report_log_failure() {
     if !LOG_FAILURE_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -37,17 +38,29 @@ fn regular_or_absent(path: &std::path::Path) -> bool {
 }
 
 fn safe_label(value: &serde_json::Value, allowed: &[&str]) -> String {
-    let Some(text) = value.as_str() else { return "other".into(); };
+    let Some(text) = value.as_str() else {
+        return "other".into();
+    };
     let normalized = text.to_ascii_lowercase();
-    if allowed.contains(&normalized.as_str()) { normalized } else { "other".into() }
+    if allowed.contains(&normalized.as_str()) {
+        normalized
+    } else {
+        "other".into()
+    }
 }
 
 fn safe_session(value: &str) -> Option<String> {
-    if !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')) {
+    if !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
         Some(value.to_owned())
-    } else { None }
+    } else {
+        None
+    }
 }
-
 
 struct MemoryLogger {
     file: File,
@@ -60,9 +73,13 @@ impl MemoryLogger {
     fn open(date: &str) -> Option<Self> {
         let dir = log_dir()?;
         fs::create_dir_all(&dir).ok()?;
-        if !fs::symlink_metadata(&dir).ok()?.file_type().is_dir() { return None; }
+        if !fs::symlink_metadata(&dir).ok()?.file_type().is_dir() {
+            return None;
+        }
         let path = dir.join(format!("memory-events-{}.jsonl", date));
-        if !regular_or_absent(&path) { return None; }
+        if !regular_or_absent(&path) {
+            return None;
+        }
         let mut options = OpenOptions::new();
         options.create(true).append(true);
         #[cfg(unix)]
@@ -72,30 +89,48 @@ impl MemoryLogger {
         }
         let file = options.open(&path).ok()?;
         let metadata = file.metadata().ok()?;
-        if !metadata.is_file() { return None; }
+        if !metadata.is_file() {
+            return None;
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(0o600)).ok()?;
+            file.set_permissions(fs::Permissions::from_mode(0o600))
+                .ok()?;
         }
-        Some(Self { file, current_date: date.to_owned(), path, written: metadata.len() })
+        Some(Self {
+            file,
+            current_date: date.to_owned(),
+            path,
+            written: metadata.len(),
+        })
     }
 
     fn write_entry(&mut self, entry: &LogEntry) -> bool {
-        let Ok(mut json) = serde_json::to_vec(entry) else { return false; };
+        let Ok(mut json) = serde_json::to_vec(entry) else {
+            return false;
+        };
         json.push(b'\n');
         // Refresh size to account for other appenders (not a cross-process lock).
-        let Ok(meta) = self.file.metadata() else { return false; };
+        let Ok(meta) = self.file.metadata() else {
+            return false;
+        };
         self.written = meta.len();
-        if self.written.saturating_add(json.len() as u64) > MAX_DAILY_LOG_BYTES { return false; }
-        if self.file.write_all(&json).is_err() { return false; }
+        if self.written.saturating_add(json.len() as u64) > MAX_DAILY_LOG_BYTES {
+            return false;
+        }
+        if self.file.write_all(&json).is_err() {
+            return false;
+        }
         self.written = self.written.saturating_add(json.len() as u64);
         true
     }
 }
 
 fn log_dir() -> Option<PathBuf> {
-    crate::storage::alphacode_dir().ok().map(|root| root.join("logs"))
+    crate::storage::alphacode_dir()
+        .ok()
+        .map(|root| root.join("logs"))
 }
 
 #[derive(Serialize)]
@@ -115,8 +150,11 @@ fn write_log(event: &str, detail: Option<serde_json::Value>) {
     let now = Local::now();
     let date = now.format("%Y-%m-%d").to_string();
 
-    let session_id = detail.as_ref().and_then(|d| d.get("target_session"))
-        .and_then(serde_json::Value::as_str).and_then(safe_session)
+    let session_id = detail
+        .as_ref()
+        .and_then(|d| d.get("target_session"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(safe_session)
         .or_else(|| current_session_id().as_deref().and_then(safe_session));
     let entry = LogEntry {
         timestamp: now.format("%Y-%m-%dT%H:%M:%S%.3f%z").to_string(),
@@ -125,11 +163,19 @@ fn write_log(event: &str, detail: Option<serde_json::Value>) {
         detail,
     };
     // Date check and write must share one lock to avoid midnight races.
-    let Ok(mut guard) = MEMORY_LOGGER.lock() else { report_log_failure(); return; };
-    if guard.as_ref().is_none_or(|logger| logger.current_date != date || !regular_or_absent(&logger.path) || !logger.path.is_file()) {
+    let Ok(mut guard) = MEMORY_LOGGER.lock() else {
+        report_log_failure();
+        return;
+    };
+    if guard.as_ref().is_none_or(|logger| {
+        logger.current_date != date || !regular_or_absent(&logger.path) || !logger.path.is_file()
+    }) {
         *guard = MemoryLogger::open(&date);
     }
-    if !guard.as_mut().is_some_and(|logger| logger.write_entry(&entry)) {
+    if !guard
+        .as_mut()
+        .is_some_and(|logger| logger.write_entry(&entry))
+    {
         report_log_failure();
     }
 }
@@ -251,9 +297,10 @@ fn event_metadata(kind: &MemoryEventKind) -> (&'static str, Option<serde_json::V
             Some(serde_json::json!({ "count": count })),
         ),
 
-        MemoryEventKind::Error { message } => {
-            ("error", Some(serde_json::json!({ "message_chars": message.chars().count() })))
-        }
+        MemoryEventKind::Error { message } => (
+            "error",
+            Some(serde_json::json!({ "message_chars": message.chars().count() })),
+        ),
 
         MemoryEventKind::ToolRemembered {
             content,
@@ -276,9 +323,10 @@ fn event_metadata(kind: &MemoryEventKind) -> (&'static str, Option<serde_json::V
             })),
         ),
 
-        MemoryEventKind::ToolForgot { id } => {
-            ("tool_forgot", Some(serde_json::json!({ "id_chars": id.chars().count() })))
-        }
+        MemoryEventKind::ToolForgot { id } => (
+            "tool_forgot",
+            Some(serde_json::json!({ "id_chars": id.chars().count() })),
+        ),
 
         MemoryEventKind::ToolTagged { id, tags } => (
             "tool_tagged",
@@ -310,7 +358,7 @@ pub fn log_pending_prepared(session_id: &str, prompt: &str, count: usize, memory
             "target_session": safe_session(session_id),
             "count": count,
             "prompt_chars": prompt.chars().count(),
-            
+
             "memory_id_count": memory_ids.len(),
         })),
     );
@@ -414,10 +462,10 @@ pub fn log_candidate_filter(
 fn safe_decision(decision: &str) -> &str {
     // Keep the known metrics labels (both snake_case and enum Debug spelling).
     match decision {
-        "judged" | "Judged" | "all_judges_failed" | "AllJudgesFailed" |
-        "unparseable" | "Unparseable" | "transport_error" | "TransportError" |
-        "cadence_carry" | "CadenceCarry" | "opted_out" | "OptedOut" |
-        "no_backend" | "NoBackend" | "no_candidates" | "NoCandidates" => decision,
+        "judged" | "Judged" | "all_judges_failed" | "AllJudgesFailed" | "unparseable"
+        | "Unparseable" | "transport_error" | "TransportError" | "cadence_carry"
+        | "CadenceCarry" | "opted_out" | "OptedOut" | "no_backend" | "NoBackend"
+        | "no_candidates" | "NoCandidates" => decision,
         _ => "other",
     }
 }
@@ -486,7 +534,9 @@ mod tests {
 
     #[test]
     fn error_event_does_not_persist_raw_body() {
-        let kind = MemoryEventKind::Error { message: "test-secret-value".into() };
+        let kind = MemoryEventKind::Error {
+            message: "test-secret-value".into(),
+        };
         let (name, detail) = event_metadata(&kind);
         assert_eq!(name, "error");
         let detail = detail.unwrap();

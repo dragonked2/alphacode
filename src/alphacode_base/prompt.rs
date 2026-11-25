@@ -168,7 +168,9 @@ pub fn append_swarm_effort_directive(split: &mut SplitSystemPrompt, effort: Opti
             split.dynamic_part.clear();
             break;
         }
-        if let Some(prefix) = split.dynamic_part.strip_suffix(prior)
+        if let Some(prefix) = split
+            .dynamic_part
+            .strip_suffix(prior)
             .and_then(|prefix| prefix.strip_suffix("\n\n"))
         {
             let len = prefix.len();
@@ -233,7 +235,10 @@ impl SplitSystemPrompt {
 
     /// Combine without creating an extra separator when either part is empty.
     pub fn into_combined(self) -> String {
-        let Self { mut static_part, dynamic_part } = self;
+        let Self {
+            mut static_part,
+            dynamic_part,
+        } = self;
         if static_part.is_empty() {
             return dynamic_part;
         }
@@ -472,11 +477,20 @@ pub fn looks_like_trivial_chat(text: &str) -> bool {
     if text.len() > 80 {
         return false;
     }
-    let normalized = text.trim().trim_end_matches(['!', '.']).trim().to_ascii_lowercase();
+    let normalized = text
+        .trim()
+        .trim_end_matches(['!', '.'])
+        .trim()
+        .to_ascii_lowercase();
     matches!(
         normalized.as_str(),
-        "hi" | "hello" | "hey" | "hey there" | "hello there"
-            | "good morning" | "good afternoon" | "good evening"
+        "hi" | "hello"
+            | "hey"
+            | "hey there"
+            | "hello there"
+            | "good morning"
+            | "good afternoon"
+            | "good evening"
     )
 }
 
@@ -575,12 +589,16 @@ pub fn build_system_prompt_split_with_tier(
                 "# Skills (load on demand)\nUse `skill_manage` (load/info) when relevant.\n"
                     .to_string();
             for skill in available_skills {
-                let hint: String = skill.description.split_whitespace()
+                let hint: String = skill
+                    .description
+                    .split_whitespace()
                     .flat_map(|word| word.chars().chain(std::iter::once(' ')))
                     .take(40)
                     .collect();
                 // Catalog rows are metadata, not an independent instruction channel.
-                let name: String = skill.name.chars()
+                let name: String = skill
+                    .name
+                    .chars()
                     .map(|c| if c.is_control() || c == '`' { ' ' } else { c })
                     .take(128)
                     .collect();
@@ -687,7 +705,9 @@ fn build_selfdev_prompt_static_for_working_dir(working_dir: Option<&Path>) -> St
 }
 
 fn build_selfdev_prompt_static_for_context(context: SelfDevProductContext) -> String {
-    build_selfdev_prompt_for_context(context).replace("__DEBUG_SOCKET_BLOCK__\n\n", "").replace("__DEBUG_SOCKET_BLOCK__", "")
+    build_selfdev_prompt_for_context(context)
+        .replace("__DEBUG_SOCKET_BLOCK__\n\n", "")
+        .replace("__DEBUG_SOCKET_BLOCK__", "")
 }
 
 fn build_selfdev_prompt_for_context(context: SelfDevProductContext) -> String {
@@ -699,7 +719,10 @@ pub fn build_session_context(working_dir: Option<&Path>) -> String {
     let mut lines = vec!["# Session Context".to_string()];
 
     let now_utc = chrono::Utc::now();
-    lines.push(format!("Session started (UTC): {}", now_utc.format("%Y-%m-%d")));
+    lines.push(format!(
+        "Session started (UTC): {}",
+        now_utc.format("%Y-%m-%d")
+    ));
     lines.push(format!("Start time: {} UTC", now_utc.format("%H:%M:%S")));
     lines.push("Snapshot only; verify current time and workspace state when needed.".to_string());
     lines.push(format!("OS: {}", std::env::consts::OS));
@@ -902,13 +925,19 @@ fn gpu_summary() -> Option<String> {
 /// Limit automatic instruction-file ingestion, not explicit file-reading tools.
 const MAX_AUTO_PROMPT_FILE_BYTES: usize = 128 * 1024;
 
-fn load_prompt_file(path: &Path, label: &str, project_root: Option<&Path>) -> Option<(String, usize)> {
+fn load_prompt_file(
+    path: &Path,
+    label: &str,
+    project_root: Option<&Path>,
+) -> Option<(String, usize)> {
     use std::io::Read;
 
     // Do not import project symlinks that resolve outside the workspace.
     let resolved = path.canonicalize().ok()?;
     let omitted = |reason: &str| {
-        let text = format!("# {label}\n\n[Automatic context omitted: {reason}. Inspect explicitly if needed.]");
+        let text = format!(
+            "# {label}\n\n[Automatic context omitted: {reason}. Inspect explicitly if needed.]"
+        );
         let len = text.len();
         (text, len)
     };
@@ -929,7 +958,11 @@ fn load_prompt_file(path: &Path, label: &str, project_root: Option<&Path>) -> Op
     }
     let file = std::fs::File::open(&resolved).ok()?;
     let mut bytes = Vec::new();
-    if file.take(MAX_AUTO_PROMPT_FILE_BYTES as u64 + 1).read_to_end(&mut bytes).is_err() {
+    if file
+        .take(MAX_AUTO_PROMPT_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
         return Some(omitted("read failed"));
     }
     if bytes.len() > MAX_AUTO_PROMPT_FILE_BYTES {
@@ -1077,24 +1110,62 @@ fn load_preferred_tools_files_from_dir(working_dir: Option<&Path>) -> (Option<St
 mod tests {
     use super::*;
 
-    fn split(tier: PromptTier, dir: &Path, memory: Option<&str>, skill: Option<&str>) -> (SplitSystemPrompt, ContextInfo) {
+    fn split(
+        tier: PromptTier,
+        dir: &Path,
+        memory: Option<&str>,
+        skill: Option<&str>,
+    ) -> (SplitSystemPrompt, ContextInfo) {
         build_system_prompt_split_with_tier(
-            tier, skill, &[], false, memory, Some(dir), PromptCapabilities { mermaid: false },
+            tier,
+            skill,
+            &[],
+            false,
+            memory,
+            Some(dir),
+            PromptCapabilities { mermaid: false },
         )
     }
 
     #[test]
     fn trivial_chat_classifier_accepts_only_greetings() {
-        for greeting in ["hi", "Hello!", "hey there", "good morning", " good evening. "] {
+        for greeting in [
+            "hi",
+            "Hello!",
+            "hey there",
+            "good morning",
+            " good evening. ",
+        ] {
             assert!(looks_like_trivial_chat(greeting), "{greeting}");
             assert!(can_short_circuit_chat(greeting, true));
             assert!(!can_short_circuit_chat(greeting, false));
         }
-        for task in ["", "ok", "thanks", "yes", "no", "continue", "stop", "retry",
-                     "try again", "do it", "go ahead", "what can you do?", "why?",
-                     "fix the auth bug", "please read foo.rs", "run the tests",
-                     "let me think", "TODO", "FIXME", "where is the cache?",
-                     "implement a REST API", "hello, fix this", "audit the code", "solve it"] {
+        for task in [
+            "",
+            "ok",
+            "thanks",
+            "yes",
+            "no",
+            "continue",
+            "stop",
+            "retry",
+            "try again",
+            "do it",
+            "go ahead",
+            "what can you do?",
+            "why?",
+            "fix the auth bug",
+            "please read foo.rs",
+            "run the tests",
+            "let me think",
+            "TODO",
+            "FIXME",
+            "where is the cache?",
+            "implement a REST API",
+            "hello, fix this",
+            "audit the code",
+            "solve it",
+        ] {
             assert!(!looks_like_trivial_chat(task), "{task:?}");
         }
     }
@@ -1109,15 +1180,27 @@ mod tests {
     #[test]
     fn built_in_prompt_budget_and_identity() {
         // Independent of user and project instruction files.
-        assert!(prompt_parts_len(&base_system_prompt_parts(
-            DEFAULT_SYSTEM_PROMPT, PromptCapabilities::default())) < 34_000);
-        assert!(DEFAULT_SYSTEM_PROMPT.to_ascii_lowercase().contains("alphacode"));
+        assert!(
+            prompt_parts_len(&base_system_prompt_parts(
+                DEFAULT_SYSTEM_PROMPT,
+                PromptCapabilities::default()
+            )) < 34_000
+        );
+        assert!(
+            DEFAULT_SYSTEM_PROMPT
+                .to_ascii_lowercase()
+                .contains("alphacode")
+        );
         assert!(COMPACT_AGENT_PROMPT.len() < DEFAULT_SYSTEM_PROMPT.len());
         assert!(COMPACT_AGENT_PROMPT.contains("skill_manage"));
         assert!(COMPACT_AGENT_PROMPT.contains("continue independent permitted work"));
         assert!(COMPACT_AGENT_PROMPT.contains("A blocked or partial task is not complete"));
         assert!(!DEFAULT_SYSTEM_PROMPT.contains("Chain-of-Thought Reasoning"));
-        assert!(!DEFAULT_SYSTEM_PROMPT.to_ascii_lowercase().contains("escalate caution"));
+        assert!(
+            !DEFAULT_SYSTEM_PROMPT
+                .to_ascii_lowercase()
+                .contains("escalate caution")
+        );
         assert!(!MISSION_CONTINUATION_TEMPLATE.trim().is_empty());
     }
 
@@ -1126,8 +1209,17 @@ mod tests {
         // Content smoke checks, not behavioral proof. Support both the previous
         // template and the revised template; runtime tests must enforce the rules.
         let prompt = DEFAULT_SYSTEM_PROMPT.to_ascii_lowercase();
-        for topic in ["authorization", "evidence", "scope", "tool_help", "untrusted",
-                      "bug bounty", "registration", "blocked", "verification"] {
+        for topic in [
+            "authorization",
+            "evidence",
+            "scope",
+            "tool_help",
+            "untrusted",
+            "bug bounty",
+            "registration",
+            "blocked",
+            "verification",
+        ] {
             assert!(prompt.contains(topic), "missing contract topic: {topic}");
         }
         assert!(prompt.contains("underlying model") || prompt.contains("model identities"));
@@ -1139,13 +1231,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "Use UTF-8: café").unwrap();
         let cap = PromptCapabilities { mermaid: true };
-        let skills = [SkillInfo { name: "test".into(), description: "Run relevant tests".into() }];
+        let skills = [SkillInfo {
+            name: "test".into(),
+            description: "Run relevant tests".into(),
+        }];
         let (parts, info) = build_system_prompt_split_with_tier(
-            PromptTier::Standard, Some("Skill body"), &skills, false,
-            Some("Memory body"), Some(dir.path()), cap,
+            PromptTier::Standard,
+            Some("Skill body"),
+            &skills,
+            false,
+            Some("Memory body"),
+            Some(dir.path()),
+            cap,
         );
         let (full, full_info) = build_system_prompt_full_with_capabilities(
-            Some("Skill body"), &skills, false, Some("Memory body"), Some(dir.path()), cap,
+            Some("Skill body"),
+            &skills,
+            false,
+            Some("Memory body"),
+            Some(dir.path()),
+            cap,
         );
         assert_eq!(parts.chars(), full.len());
         assert_eq!(parts.clone().into_combined(), full);
@@ -1181,8 +1286,16 @@ mod tests {
 
     #[test]
     fn combined_prompt_has_no_extra_separator_for_empty_part() {
-        for (a, b, expected) in [("", "", ""), ("a", "", "a"), ("", "b", "b"), ("a", "b", "a\n\nb")] {
-            let parts = SplitSystemPrompt { static_part: a.into(), dynamic_part: b.into() };
+        for (a, b, expected) in [
+            ("", "", ""),
+            ("a", "", "a"),
+            ("", "b", "b"),
+            ("a", "b", "a\n\nb"),
+        ] {
+            let parts = SplitSystemPrompt {
+                static_part: a.into(),
+                dynamic_part: b.into(),
+            };
             assert_eq!(parts.chars(), expected.len());
             assert_eq!(parts.into_combined(), expected);
         }
@@ -1216,10 +1329,19 @@ mod tests {
             description: format!("Review database migrations {}", "details ".repeat(100)),
         }];
         let (prompt, _) = build_system_prompt_split_with_tier(
-            PromptTier::Standard, None, &skills, false, None, Some(dir.path()),
+            PromptTier::Standard,
+            None,
+            &skills,
+            false,
+            None,
+            Some(dir.path()),
             PromptCapabilities::default(),
         );
-        assert!(prompt.static_part.contains("`example`: Review database migrations"));
+        assert!(
+            prompt
+                .static_part
+                .contains("`example`: Review database migrations")
+        );
         assert!(!prompt.static_part.contains(&"details ".repeat(100)));
     }
 
@@ -1254,12 +1376,25 @@ mod tests {
 
     #[test]
     fn selfdev_context_uses_exact_path_components() {
-        for path in ["crates/alphacode-desktop", "crates/alphacode-desktop2/src",
-                     "C:\\repo\\crates\\alphacode-desktop2\\src"] {
-            assert_eq!(SelfDevProductContext::from_working_dir(Some(Path::new(path))), SelfDevProductContext::Desktop2);
+        for path in [
+            "crates/alphacode-desktop",
+            "crates/alphacode-desktop2/src",
+            "C:\\repo\\crates\\alphacode-desktop2\\src",
+        ] {
+            assert_eq!(
+                SelfDevProductContext::from_working_dir(Some(Path::new(path))),
+                SelfDevProductContext::Desktop2
+            );
         }
-        assert_eq!(SelfDevProductContext::from_working_dir(Some(Path::new(
-            "crates/alphacode-desktop-backup"))), SelfDevProductContext::Tui);
-        assert_eq!(SelfDevProductContext::from_working_dir(None), SelfDevProductContext::Tui);
+        assert_eq!(
+            SelfDevProductContext::from_working_dir(Some(Path::new(
+                "crates/alphacode-desktop-backup"
+            ))),
+            SelfDevProductContext::Tui
+        );
+        assert_eq!(
+            SelfDevProductContext::from_working_dir(None),
+            SelfDevProductContext::Tui
+        );
     }
 }

@@ -193,17 +193,35 @@ impl OpenAiEmbeddingBackend {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
-        anyhow::ensure!(self.dim > 0 && self.dim <= 65_536, "Invalid embedding dimension");
-        anyhow::ensure!(inputs.iter().all(|text| !text.trim().is_empty()), "Empty embedding input");
+        anyhow::ensure!(
+            self.dim > 0 && self.dim <= 65_536,
+            "Invalid embedding dimension"
+        );
+        anyhow::ensure!(
+            inputs.iter().all(|text| !text.trim().is_empty()),
+            "Empty embedding input"
+        );
         // Limit per-request work; larger batches are split by embed_passages.
         anyhow::ensure!(inputs.len() <= 64, "Embedding batch exceeds limit");
-        anyhow::ensure!(inputs.iter().all(|text| text.len() <= 128 * 1024), "Embedding input exceeds byte limit");
-        let base = reqwest::Url::parse(&self.base_url).map_err(|_| anyhow::anyhow!("Invalid embedding endpoint"))?;
-        anyhow::ensure!(base.scheme() == "https" || (base.scheme() == "http"
-            && matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))),
-            "Embedding endpoint must use HTTPS or local loopback HTTP");
-        anyhow::ensure!(base.username().is_empty() && base.password().is_none()
-            && base.query().is_none() && base.fragment().is_none(), "Invalid embedding endpoint components");
+        anyhow::ensure!(
+            inputs.iter().all(|text| text.len() <= 128 * 1024),
+            "Embedding input exceeds byte limit"
+        );
+        let base = reqwest::Url::parse(&self.base_url)
+            .map_err(|_| anyhow::anyhow!("Invalid embedding endpoint"))?;
+        anyhow::ensure!(
+            base.scheme() == "https"
+                || (base.scheme() == "http"
+                    && matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))),
+            "Embedding endpoint must use HTTPS or local loopback HTTP"
+        );
+        anyhow::ensure!(
+            base.username().is_empty()
+                && base.password().is_none()
+                && base.query().is_none()
+                && base.fragment().is_none(),
+            "Invalid embedding endpoint components"
+        );
         let url = format!("{}/embeddings", self.base_url);
         let api_key = self.api_key.clone();
         let model = self.model.clone();
@@ -223,7 +241,9 @@ impl OpenAiEmbeddingBackend {
                         "model": &model,
                         "input": inputs,
                     });
-                    if model.starts_with("text-embedding-3-") && expected_dim != default_openai_dim(&model) {
+                    if model.starts_with("text-embedding-3-")
+                        && expected_dim != default_openai_dim(&model)
+                    {
                         body["dimensions"] = serde_json::json!(expected_dim);
                     }
                     let resp = client
@@ -233,14 +253,20 @@ impl OpenAiEmbeddingBackend {
                         .json(&body)
                         .send()?;
                     let status = resp.status();
-                    anyhow::ensure!(status.is_success(), "OpenAI embeddings request failed ({status})");
+                    anyhow::ensure!(
+                        status.is_success(),
+                        "OpenAI embeddings request failed ({status})"
+                    );
                     use std::io::Read;
                     const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
                     let mut bytes = Vec::new();
                     resp.take(MAX_RESPONSE_BYTES + 1).read_to_end(&mut bytes)?;
-                    anyhow::ensure!(bytes.len() as u64 <= MAX_RESPONSE_BYTES, "Embedding response exceeds byte limit");
-                    let parsed: EmbeddingsResponse = serde_json::from_slice(&bytes)
-                        .context("Invalid embeddings response")?;
+                    anyhow::ensure!(
+                        bytes.len() as u64 <= MAX_RESPONSE_BYTES,
+                        "Embedding response exceeds byte limit"
+                    );
+                    let parsed: EmbeddingsResponse =
+                        serde_json::from_slice(&bytes).context("Invalid embeddings response")?;
                     validate_response(parsed, want, expected_dim)
                 })
                 .join()
@@ -262,16 +288,30 @@ struct EmbeddingsDatum {
     embedding: Vec<f32>,
 }
 
-fn validate_response(mut response: EmbeddingsResponse, want: usize, dim: usize) -> Result<Vec<Vec<f32>>> {
-    anyhow::ensure!(response.data.len() == want, "Unexpected embedding response count");
+fn validate_response(
+    mut response: EmbeddingsResponse,
+    want: usize,
+    dim: usize,
+) -> Result<Vec<Vec<f32>>> {
+    anyhow::ensure!(
+        response.data.len() == want,
+        "Unexpected embedding response count"
+    );
     response.data.sort_unstable_by_key(|item| item.index);
     for (index, item) in response.data.iter().enumerate() {
         anyhow::ensure!(item.index == index, "Missing or duplicate embedding index");
         anyhow::ensure!(item.embedding.len() == dim, "Embedding dimension mismatch");
-        anyhow::ensure!(item.embedding.iter().all(|v| v.is_finite())
-            && item.embedding.iter().any(|v| *v != 0.0), "Invalid embedding vector");
+        anyhow::ensure!(
+            item.embedding.iter().all(|v| v.is_finite())
+                && item.embedding.iter().any(|v| *v != 0.0),
+            "Invalid embedding vector"
+        );
     }
-    Ok(response.data.into_iter().map(|item| item.embedding).collect())
+    Ok(response
+        .data
+        .into_iter()
+        .map(|item| item.embedding)
+        .collect())
 }
 
 impl EmbeddingBackend for OpenAiEmbeddingBackend {
@@ -407,22 +447,49 @@ mod tests {
     #[test]
     fn embedding_response_rejects_duplicate_indices_and_bad_vectors() {
         let data = |index, embedding| EmbeddingsDatum { index, embedding };
-        assert!(validate_response(EmbeddingsResponse { data: vec![
-            data(0, vec![1.0, 0.0]), data(0, vec![1.0, 0.0])
-        ] }, 2, 2).is_err());
-        assert!(validate_response(EmbeddingsResponse { data: vec![
-            data(0, vec![0.0, 0.0])
-        ] }, 1, 2).is_err());
-        assert!(validate_response(EmbeddingsResponse { data: vec![
-            data(0, vec![f32::NAN, 1.0])
-        ] }, 1, 2).is_err());
+        assert!(
+            validate_response(
+                EmbeddingsResponse {
+                    data: vec![data(0, vec![1.0, 0.0]), data(0, vec![1.0, 0.0])]
+                },
+                2,
+                2
+            )
+            .is_err()
+        );
+        assert!(
+            validate_response(
+                EmbeddingsResponse {
+                    data: vec![data(0, vec![0.0, 0.0])]
+                },
+                1,
+                2
+            )
+            .is_err()
+        );
+        assert!(
+            validate_response(
+                EmbeddingsResponse {
+                    data: vec![data(0, vec![f32::NAN, 1.0])]
+                },
+                1,
+                2
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn debug_does_not_disclose_key_and_spaces_are_distinct() {
-        let a = OpenAiEmbeddingBackend::new("text-embedding-3-small", "secret-key-test", None, None);
+        let a =
+            OpenAiEmbeddingBackend::new("text-embedding-3-small", "secret-key-test", None, None);
         let b = OpenAiEmbeddingBackend::new("text-embedding-3-small", "key", None, Some(256));
-        let c = OpenAiEmbeddingBackend::new("text-embedding-3-small", "key", Some("https://example.invalid/v1".into()), None);
+        let c = OpenAiEmbeddingBackend::new(
+            "text-embedding-3-small",
+            "key",
+            Some("https://example.invalid/v1".into()),
+            None,
+        );
         assert!(!format!("{a:?}").contains("secret-key-test"));
         assert_ne!(a.model_id(), b.model_id());
         assert_ne!(a.model_id(), c.model_id());

@@ -53,6 +53,7 @@ pub mod perf;
 pub mod plugin;
 pub mod replay;
 pub mod restart_snapshot;
+pub mod secret_management;
 pub mod server;
 pub mod server_spawn;
 pub mod session_effort;
@@ -65,7 +66,6 @@ pub mod ssh_remote;
 pub mod startup_profile;
 pub mod system_diagnostics;
 pub mod tool;
-pub mod secret_management;
 pub mod turn_cancel_registry;
 pub mod update;
 

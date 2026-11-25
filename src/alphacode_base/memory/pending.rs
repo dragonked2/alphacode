@@ -50,20 +50,33 @@ fn prune(state: &mut State) {
         if session.pending.as_ref().is_some_and(|p| !p.is_fresh()) {
             session.pending = None;
         }
-        if session.last.as_ref().is_some_and(|(_, _, at)| at.elapsed() >= REPEAT_TTL) {
+        if session
+            .last
+            .as_ref()
+            .is_some_and(|(_, _, at)| at.elapsed() >= REPEAT_TTL)
+        {
             session.last = None;
         }
-        session.running.is_some() || session.pending.is_some()
-            || !session.known.is_empty() || session.last.is_some()
+        session.running.is_some()
+            || session.pending.is_some()
+            || !session.known.is_empty()
+            || session.last.is_some()
     });
     // Only evict idle tracking, never an active check or a queued result.
-    let mut idle: Vec<_> = state.sessions.iter()
+    let mut idle: Vec<_> = state
+        .sessions
+        .iter()
         .filter(|(_, s)| s.running.is_none() && s.pending.is_none())
         .map(|(id, s)| {
-            let newest = s.known.values().copied()
-                .chain(s.last.as_ref().map(|(_, _, at)| *at)).max();
+            let newest = s
+                .known
+                .values()
+                .copied()
+                .chain(s.last.as_ref().map(|(_, _, at)| *at))
+                .max();
             (newest, id.clone())
-        }).collect();
+        })
+        .collect();
     if idle.len() > MAX_IDLE_SESSIONS {
         idle.sort_unstable();
         let excess = idle.len() - MAX_IDLE_SESSIONS;
@@ -90,8 +103,11 @@ fn record_known(session: &mut SessionState, ids: &[String]) {
         }
     }
     if session.known.len() > MAX_TRACKED_IDS {
-        let mut oldest: Vec<_> = session.known.iter()
-            .map(|(id, at)| (*at, id.clone())).collect();
+        let mut oldest: Vec<_> = session
+            .known
+            .iter()
+            .map(|(id, at)| (*at, id.clone()))
+            .collect();
         oldest.sort_unstable();
         let excess = oldest.len() - MAX_TRACKED_IDS;
         for (_, id) in oldest.into_iter().take(excess) {
@@ -100,20 +116,34 @@ fn record_known(session: &mut SessionState, ids: &[String]) {
     }
 }
 
-fn queue(session: &mut SessionState, prompt: String, count: usize,
-    memory_ids: Vec<String>, display_prompt: Option<String>) {
+fn queue(
+    session: &mut SessionState,
+    prompt: String,
+    count: usize,
+    memory_ids: Vec<String>,
+    display_prompt: Option<String>,
+) {
     if prompt.trim().is_empty() {
         return;
     }
     let memory_ids = normalize_ids(memory_ids);
-    if session.pending.as_ref().is_some_and(|old| old.is_fresh()
-        && old.prompt == prompt && old.memory_ids == memory_ids
-        && old.display_prompt == display_prompt) {
+    if session.pending.as_ref().is_some_and(|old| {
+        old.is_fresh()
+            && old.prompt == prompt
+            && old.memory_ids == memory_ids
+            && old.display_prompt == display_prompt
+    }) {
         return;
     }
     session.pending = Some(PendingMemory {
-        prompt, display_prompt, computed_at: Instant::now(),
-        count: if memory_ids.is_empty() { count } else { memory_ids.len() },
+        prompt,
+        display_prompt,
+        computed_at: Instant::now(),
+        count: if memory_ids.is_empty() {
+            count
+        } else {
+            memory_ids.len()
+        },
         memory_ids,
     });
 }
@@ -133,7 +163,11 @@ pub fn take_pending_memory(session_id: &str) -> Option<PendingMemory> {
     }) {
         return None;
     }
-    session.last = Some((pending.prompt.clone(), pending.memory_ids.clone(), Instant::now()));
+    session.last = Some((
+        pending.prompt.clone(),
+        pending.memory_ids.clone(),
+        Instant::now(),
+    ));
     record_known(session, &pending.memory_ids);
     Some(pending)
 }
@@ -142,22 +176,43 @@ pub fn set_pending_memory(session_id: &str, prompt: String, count: usize) {
     set_pending_memory_with_ids(session_id, prompt, count, Vec::new());
 }
 
-pub fn set_pending_memory_with_ids(session_id: &str, prompt: String, count: usize, memory_ids: Vec<String>) {
+pub fn set_pending_memory_with_ids(
+    session_id: &str,
+    prompt: String,
+    count: usize,
+    memory_ids: Vec<String>,
+) {
     set_pending_memory_with_ids_and_display(session_id, prompt, count, memory_ids, None);
 }
 
-pub fn set_pending_memory_with_ids_and_display(session_id: &str, prompt: String, count: usize,
-    memory_ids: Vec<String>, display_prompt: Option<String>) {
+pub fn set_pending_memory_with_ids_and_display(
+    session_id: &str,
+    prompt: String,
+    count: usize,
+    memory_ids: Vec<String>,
+    display_prompt: Option<String>,
+) {
     let mut guard = lock();
     let state = guard.get_or_insert_with(State::default);
     prune(state);
-    queue(state.sessions.entry(session_id.to_owned()).or_default(),
-        prompt, count, memory_ids, display_prompt);
+    queue(
+        state.sessions.entry(session_id.to_owned()).or_default(),
+        prompt,
+        count,
+        memory_ids,
+        display_prompt,
+    );
 }
 
 /// Queue only if the originating check still owns this session generation.
-pub(crate) fn publish_memory_check(session_id: &str, generation: u64, prompt: String,
-    count: usize, memory_ids: Vec<String>, display_prompt: Option<String>) -> bool {
+pub(crate) fn publish_memory_check(
+    session_id: &str,
+    generation: u64,
+    prompt: String,
+    count: usize,
+    memory_ids: Vec<String>,
+    display_prompt: Option<String>,
+) -> bool {
     let mut guard = lock();
     let Some(session) = guard.as_mut().and_then(|s| s.sessions.get_mut(session_id)) else {
         return false;
@@ -170,11 +225,16 @@ pub(crate) fn publish_memory_check(session_id: &str, generation: u64, prompt: St
 }
 
 pub fn mark_memories_injected(session_id: &str, ids: &[String]) {
-    if ids.is_empty() { return; }
+    if ids.is_empty() {
+        return;
+    }
     let mut guard = lock();
     let state = guard.get_or_insert_with(State::default);
     prune(state);
-    record_known(state.sessions.entry(session_id.to_owned()).or_default(), ids);
+    record_known(
+        state.sessions.entry(session_id.to_owned()).or_default(),
+        ids,
+    );
 }
 
 pub fn mark_memories_known(session_id: &str, ids: &[String], _reason: &str) {
@@ -192,14 +252,23 @@ pub fn sync_injected_memories(session_id: &str, ids: &[String]) {
 }
 
 pub fn is_memory_injected(session_id: &str, id: &str) -> bool {
-    lock().as_ref().and_then(|s| s.sessions.get(session_id))
-        .and_then(|s| s.known.get(id)).is_some_and(|at| at.elapsed() < KNOWN_TTL)
+    lock()
+        .as_ref()
+        .and_then(|s| s.sessions.get(session_id))
+        .and_then(|s| s.known.get(id))
+        .is_some_and(|at| at.elapsed() < KNOWN_TTL)
 }
 
 /// Legacy global query: do not use to filter a session-specific retrieval.
 pub fn is_memory_injected_any(id: &str) -> bool {
-    lock().as_ref().is_some_and(|s| s.sessions.values().any(|session|
-        session.known.get(id).is_some_and(|at| at.elapsed() < KNOWN_TTL)))
+    lock().as_ref().is_some_and(|s| {
+        s.sessions.values().any(|session| {
+            session
+                .known
+                .get(id)
+                .is_some_and(|at| at.elapsed() < KNOWN_TTL)
+        })
+    })
 }
 
 pub fn clear_injected_memories(session_id: &str) {
@@ -234,49 +303,77 @@ pub fn clear_all_pending_memory() {
 }
 
 pub fn has_pending_memory(session_id: &str) -> bool {
-    lock().as_ref().and_then(|s| s.sessions.get(session_id))
-        .and_then(|s| s.pending.as_ref()).is_some_and(PendingMemory::is_fresh)
+    lock()
+        .as_ref()
+        .and_then(|s| s.sessions.get(session_id))
+        .and_then(|s| s.pending.as_ref())
+        .is_some_and(PendingMemory::is_fresh)
 }
 
 pub fn has_any_pending_memory() -> bool {
-    lock().as_ref().is_some_and(|s| s.sessions.values()
-        .any(|session| session.pending.as_ref().is_some_and(PendingMemory::is_fresh)))
+    lock().as_ref().is_some_and(|s| {
+        s.sessions.values().any(|session| {
+            session
+                .pending
+                .as_ref()
+                .is_some_and(PendingMemory::is_fresh)
+        })
+    })
 }
 
 pub(crate) fn begin_memory_check_generation(session_id: &str) -> Option<u64> {
     let mut guard = lock();
     let state = guard.get_or_insert_with(State::default);
     prune(state);
-    if state.sessions.get(session_id).is_some_and(|s| s.running.is_some()) {
+    if state
+        .sessions
+        .get(session_id)
+        .is_some_and(|s| s.running.is_some())
+    {
         return None;
     }
     state.next_generation = state.next_generation.checked_add(1)?;
     let generation = state.next_generation;
-    state.sessions.entry(session_id.to_owned()).or_default().running = Some(generation);
+    state
+        .sessions
+        .entry(session_id.to_owned())
+        .or_default()
+        .running = Some(generation);
     Some(generation)
 }
 
 pub(crate) fn finish_memory_check_generation(session_id: &str, generation: u64) {
     if let Some(session) = lock().as_mut().and_then(|s| s.sessions.get_mut(session_id))
-        && session.running == Some(generation) {
-            session.running = None;
-        }
+        && session.running == Some(generation)
+    {
+        session.running = None;
+    }
 }
 
 /// Check ownership without reviving a revoked generation.
 pub(crate) fn memory_check_generation_active(session_id: &str, generation: u64) -> bool {
-    lock().as_ref().and_then(|state| state.sessions.get(session_id))
+    lock()
+        .as_ref()
+        .and_then(|state| state.sessions.get(session_id))
         .is_some_and(|session| session.running == Some(generation))
 }
 
 /// Mark extraction IDs as known only while the originating generation is live.
-pub(crate) fn mark_memories_known_for_generation(session_id: &str, generation: u64,
-    ids: &[String]) -> bool {
+pub(crate) fn mark_memories_known_for_generation(
+    session_id: &str,
+    generation: u64,
+    ids: &[String],
+) -> bool {
     let mut guard = lock();
-    let Some(session) = guard.as_mut().and_then(|state| state.sessions.get_mut(session_id)) else {
+    let Some(session) = guard
+        .as_mut()
+        .and_then(|state| state.sessions.get_mut(session_id))
+    else {
         return false;
     };
-    if session.running != Some(generation) { return false; }
+    if session.running != Some(generation) {
+        return false;
+    }
     record_known(session, ids);
     true
 }
@@ -304,10 +401,24 @@ mod tests {
         clear_pending_memory(sid);
         let new = begin_memory_check_generation(sid).unwrap();
         assert_ne!(old, new);
-        assert!(!publish_memory_check(sid, old, "old".into(), 1, vec![], None));
+        assert!(!publish_memory_check(
+            sid,
+            old,
+            "old".into(),
+            1,
+            vec![],
+            None
+        ));
         finish_memory_check_generation(sid, old);
         assert!(begin_memory_check_generation(sid).is_none());
-        assert!(publish_memory_check(sid, new, "new".into(), 1, vec![], None));
+        assert!(publish_memory_check(
+            sid,
+            new,
+            "new".into(),
+            1,
+            vec![],
+            None
+        ));
         assert_eq!(take_pending_memory(sid).unwrap().prompt, "new");
         finish_memory_check_generation(sid, new);
         clear_pending_memory(sid);
@@ -348,7 +459,15 @@ mod tests {
         set_pending_memory(sid, "old".into(), 1);
         {
             let mut guard = lock();
-            let pending = guard.as_mut().unwrap().sessions.get_mut(sid).unwrap().pending.as_mut().unwrap();
+            let pending = guard
+                .as_mut()
+                .unwrap()
+                .sessions
+                .get_mut(sid)
+                .unwrap()
+                .pending
+                .as_mut()
+                .unwrap();
             pending.computed_at = Instant::now() - PENDING_TTL;
         }
         assert!(!has_pending_memory(sid));

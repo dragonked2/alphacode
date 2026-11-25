@@ -207,9 +207,12 @@ impl Sidecar {
             anyhow::bail!("sidecar skipped: side-model circuit breaker is open");
         }
         let _permit = tokio::time::timeout(
-            std::time::Duration::from_secs(20), MEMORY_INFLIGHT.acquire()
-        ).await.context("Sidecar admission timed out")?
-            .context("Sidecar admission closed")?;
+            std::time::Duration::from_secs(20),
+            MEMORY_INFLIGHT.acquire(),
+        )
+        .await
+        .context("Sidecar admission timed out")?
+        .context("Sidecar admission closed")?;
         if matches!(self.backend, SidecarBackend::Provider) {
             Self::reserve_background_request().await?;
         }
@@ -223,7 +226,9 @@ impl Sidecar {
                 SidecarBackend::Claude => self.complete_claude(system, user_message).await,
                 SidecarBackend::Provider => self.complete_via_provider(system, user_message).await,
             }
-        }).await.context("Sidecar completion timed out")?;
+        })
+        .await
+        .context("Sidecar completion timed out")?;
         if let Err(e) = &result {
             crate::memory_rerank::record_failure_backoff(e);
         }
@@ -538,12 +543,18 @@ impl Sidecar {
             let error_text = response.text().await.unwrap_or_default();
             let detail = if status == StatusCode::FORBIDDEN
                 && (error_text.contains("OAuth authentication is currently not allowed")
-                    || error_text.contains("permission_error")) {
+                    || error_text.contains("permission_error"))
+            {
                 ": permission_error"
-            } else { "" };
-            return Err(crate::alphacode_provider_core::retry_after::error_with_retry_after(
-                format!("Claude API error ({status}){detail}"), retry_after
-            ));
+            } else {
+                ""
+            };
+            return Err(
+                crate::alphacode_provider_core::retry_after::error_with_retry_after(
+                    format!("Claude API error ({status}){detail}"),
+                    retry_after,
+                ),
+            );
         }
 
         let result: ClaudeMessagesResponse = response
@@ -552,8 +563,10 @@ impl Sidecar {
             .context("Failed to parse Claude API response")?;
 
         if let Some(reason) = result.stop_reason.as_deref() {
-            anyhow::ensure!(matches!(reason, "end_turn" | "stop_sequence"),
-                "Claude sidecar response did not complete normally");
+            anyhow::ensure!(
+                matches!(reason, "end_turn" | "stop_sequence"),
+                "Claude sidecar response did not complete normally"
+            );
         }
         let text = result
             .content
@@ -681,8 +694,11 @@ Where:
 Output ONLY the formatted lines, no other text. If no NEW memories worth extracting, output nothing."#,
         );
 
-        let existing: Vec<_> = existing.iter().take(80)
-            .map(|mem| crate::util::truncate_str(mem, 150)).collect();
+        let existing: Vec<_> = existing
+            .iter()
+            .take(80)
+            .map(|mem| crate::util::truncate_str(mem, 150))
+            .collect();
         let prompt = serde_json::json!({"transcript": transcript, "already_known": existing});
         let response = self.complete(&system, &prompt.to_string()).await?;
         let memories = parse_extracted_memories(&response)?;
@@ -693,48 +709,91 @@ Output ONLY the formatted lines, no other text. If no NEW memories worth extract
 fn parse_relevance(response: &str) -> Result<(bool, String)> {
     let mut verdict = None;
     let mut reason = None;
-    for line in response.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let (label, value) = line.split_once(':').context("Malformed relevance response")?;
+    for line in response
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let (label, value) = line
+            .split_once(':')
+            .context("Malformed relevance response")?;
         let value = value.trim();
         if label.eq_ignore_ascii_case("relevant") {
             anyhow::ensure!(verdict.is_none(), "Duplicate relevance verdict");
             verdict = Some(match value.to_ascii_lowercase().as_str() {
-                "yes" => true, "no" => false,
+                "yes" => true,
+                "no" => false,
                 _ => anyhow::bail!("Invalid relevance verdict"),
             });
         } else if label.eq_ignore_ascii_case("reason") {
-            anyhow::ensure!(reason.is_none() && !value.is_empty(), "Invalid relevance reason");
+            anyhow::ensure!(
+                reason.is_none() && !value.is_empty(),
+                "Invalid relevance reason"
+            );
             reason = Some(value.chars().take(300).collect());
         } else {
             anyhow::bail!("Unexpected relevance response field");
         }
     }
-    Ok((verdict.context("Missing relevance verdict")?, reason.context("Missing relevance reason")?))
+    Ok((
+        verdict.context("Missing relevance verdict")?,
+        reason.context("Missing relevance reason")?,
+    ))
 }
 
 fn parse_extracted_memories(response: &str) -> Result<Vec<ExtractedMemory>> {
     let mut memories = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for line in response.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in response
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         let fields: Vec<_> = line.split('|').map(str::trim).collect();
         anyhow::ensure!(fields.len() == 3, "Malformed memory extraction response");
         let category = fields[0].to_ascii_lowercase();
         let content = fields[1];
         let trust = fields[2].to_ascii_lowercase();
-        anyhow::ensure!(matches!(category.as_str(), "fact" | "preference" | "correction" | "entity")
-            && matches!(trust.as_str(), "high" | "medium" | "low")
-            && !content.is_empty() && content.chars().count() <= 500,
-            "Invalid extracted memory");
+        anyhow::ensure!(
+            matches!(
+                category.as_str(),
+                "fact" | "preference" | "correction" | "entity"
+            ) && matches!(trust.as_str(), "high" | "medium" | "low")
+                && !content.is_empty()
+                && content.chars().count() <= 500,
+            "Invalid extracted memory"
+        );
         let lower = content.to_ascii_lowercase();
-        if ["bearer ", "api_key", "api key", "access_token", "refresh_token",
-            "password", "private key", "private_key", "sk-proj-", "ghp_", "github_pat_",
-            "xoxb-", "signpath_api_token"].iter().any(|marker| lower.contains(marker)) {
+        if [
+            "bearer ",
+            "api_key",
+            "api key",
+            "access_token",
+            "refresh_token",
+            "password",
+            "private key",
+            "private_key",
+            "sk-proj-",
+            "ghp_",
+            "github_pat_",
+            "xoxb-",
+            "signpath_api_token",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+        {
             continue;
         }
         if seen.insert((category.clone(), content.to_owned())) {
-            memories.push(ExtractedMemory { category, content: content.to_owned(), trust });
+            memories.push(ExtractedMemory {
+                category,
+                content: content.to_owned(),
+                trust,
+            });
         }
-        if memories.len() >= 20 { break; }
+        if memories.len() >= 20 {
+            break;
+        }
     }
     Ok(memories)
 }
@@ -881,13 +940,17 @@ async fn collect_openai_sse_text(response: reqwest::Response) -> Result<String> 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("Error reading SSE stream")?;
         received = received.saturating_add(bytes.len());
-        anyhow::ensure!(received <= MAX_SSE_BYTES, "Sidecar SSE response exceeds limit");
+        anyhow::ensure!(
+            received <= MAX_SSE_BYTES,
+            "Sidecar SSE response exceeds limit"
+        );
         buf.extend_from_slice(&bytes);
         let mut consumed = 0;
         while let Some(relative) = buf[consumed..].iter().position(|byte| *byte == b'\n') {
             let end = consumed + relative;
             let line = std::str::from_utf8(&buf[consumed..end])
-                .context("Invalid SSE UTF-8")?.trim_end_matches('\r');
+                .context("Invalid SSE UTF-8")?
+                .trim_end_matches('\r');
             consumed = end + 1;
             if let Some(data) = crate::util::sse_data_line(line) {
                 if data == "[DONE]" {
@@ -896,17 +959,23 @@ async fn collect_openai_sse_text(response: reqwest::Response) -> Result<String> 
                 let event: SseEvent = serde_json::from_str(data).context("Invalid SSE event")?;
                 match event.kind.as_str() {
                     "response.output_text.delta" => {
-                        if let Some(delta) = event.delta { text.push_str(&delta); }
+                        if let Some(delta) = event.delta {
+                            text.push_str(&delta);
+                        }
                     }
                     "response.completed" => return Ok(text),
                     "response.incomplete" => anyhow::bail!("Sidecar response incomplete"),
                     "response.failed" | "error" => anyhow::bail!("Sidecar SSE failed"),
-                    "response.refusal.delta" | "response.refusal.done" => anyhow::bail!("Sidecar response refused"),
+                    "response.refusal.delta" | "response.refusal.done" => {
+                        anyhow::bail!("Sidecar response refused")
+                    }
                     _ => {}
                 }
             }
         }
-        if consumed > 0 { buf.drain(..consumed); }
+        if consumed > 0 {
+            buf.drain(..consumed);
+        }
     }
     anyhow::bail!("Sidecar stream ended before terminal completion")
 }
@@ -914,7 +983,10 @@ async fn collect_openai_sse_text(response: reqwest::Response) -> Result<String> 
 /// Extract text from a non-streaming OpenAI Responses API JSON response.
 fn extract_openai_response_text(result: &serde_json::Value) -> Result<String> {
     if let Some(status) = result.get("status").and_then(|v| v.as_str()) {
-        anyhow::ensure!(status == "completed", "OpenAI sidecar response did not complete");
+        anyhow::ensure!(
+            status == "completed",
+            "OpenAI sidecar response did not complete"
+        );
     }
     let mut text = String::new();
     if let Some(output) = result.get("output").and_then(|v| v.as_array()) {
@@ -1435,7 +1507,10 @@ mod tests {
     }
     #[test]
     fn strict_relevance_parser_rejects_malformed_and_unicode_prefix() {
-        assert_eq!(parse_relevance("RELEVANT: yes\nREASON: useful").unwrap(), (true, "useful".into()));
+        assert_eq!(
+            parse_relevance("RELEVANT: yes\nREASON: useful").unwrap(),
+            (true, "useful".into())
+        );
         assert!(parse_relevance("RELEVANT: yesterday\nREASON: useful").is_err());
         assert!(parse_relevance("REVELANT: yes").is_err());
         assert!(parse_relevance("RELEVANT: no\nRELEVANT: yes\nREASON: ambiguous").is_err());
@@ -1446,8 +1521,13 @@ mod tests {
     fn extraction_parser_rejects_invalid_fields_and_filters_obvious_secrets() {
         assert!(parse_extracted_memories("invalid|claim|high").is_err());
         assert!(parse_extracted_memories("fact|claim|unknown").is_err());
-        assert!(parse_extracted_memories("fact|API_KEY=secret|high").unwrap().is_empty());
-        let result = parse_extracted_memories("fact|Rust project|medium\nfact|Rust project|medium").unwrap();
+        assert!(
+            parse_extracted_memories("fact|API_KEY=secret|high")
+                .unwrap()
+                .is_empty()
+        );
+        let result =
+            parse_extracted_memories("fact|Rust project|medium\nfact|Rust project|medium").unwrap();
         assert_eq!(result.len(), 1);
     }
 

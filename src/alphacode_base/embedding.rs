@@ -92,7 +92,9 @@ impl Embedder {
     pub fn load() -> Result<Self> {
         let model_dir = models_dir()?;
         if !backend::is_model_available(&model_dir) {
-            crate::logging::info("Local embedding model unavailable; attempting backend initialization");
+            crate::logging::info(
+                "Local embedding model unavailable; attempting backend initialization",
+            );
         }
         let inner = backend::Embedder::load_from_dir(&model_dir)?;
         Ok(Self { inner })
@@ -124,29 +126,52 @@ impl Embedder {
 pub fn get_embedder() -> Result<Arc<Embedder>> {
     // Fast path does not wait on the model load gate or disk initialization.
     {
-        let mut cache = embedder_cache().lock().map_err(|_| anyhow::anyhow!("Embedder cache lock poisoned"))?;
+        let mut cache = embedder_cache()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Embedder cache lock poisoned"))?;
         cache.last_used_at = Some(Instant::now());
-        if let Some(embedder) = cache.embedder.as_ref() { return Ok(Arc::clone(embedder)); }
-        if cache.load_error.is_some_and(|at| at.elapsed() < LOAD_RETRY_DELAY) {
+        if let Some(embedder) = cache.embedder.as_ref() {
+            return Ok(Arc::clone(embedder));
+        }
+        if cache
+            .load_error
+            .is_some_and(|at| at.elapsed() < LOAD_RETRY_DELAY)
+        {
             anyhow::bail!("Local embedding backend temporarily unavailable");
         }
     }
-    let _load = MODEL_LOAD_GATE.lock().map_err(|_| anyhow::anyhow!("Embedder load lock poisoned"))?;
+    let _load = MODEL_LOAD_GATE
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Embedder load lock poisoned"))?;
     let generation = {
-        let mut cache = embedder_cache().lock().map_err(|_| anyhow::anyhow!("Embedder cache lock poisoned"))?;
+        let mut cache = embedder_cache()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Embedder cache lock poisoned"))?;
         cache.last_used_at = Some(Instant::now());
-        if let Some(embedder) = cache.embedder.as_ref() { return Ok(Arc::clone(embedder)); }
-        if cache.load_error.is_some_and(|at| at.elapsed() < LOAD_RETRY_DELAY) {
+        if let Some(embedder) = cache.embedder.as_ref() {
+            return Ok(Arc::clone(embedder));
+        }
+        if cache
+            .load_error
+            .is_some_and(|at| at.elapsed() < LOAD_RETRY_DELAY)
+        {
             anyhow::bail!("Local embedding backend temporarily unavailable");
         }
         cache.generation
     };
     let loaded = Embedder::load();
-    let mut cache = embedder_cache().lock().map_err(|_| anyhow::anyhow!("Embedder cache lock poisoned"))?;
-    if cache.generation != generation { anyhow::bail!("Embedding model initialization invalidated"); }
+    let mut cache = embedder_cache()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Embedder cache lock poisoned"))?;
+    if cache.generation != generation {
+        anyhow::bail!("Embedding model initialization invalidated");
+    }
     let loaded = match loaded {
         Ok(embedder) => Arc::new(embedder),
-        Err(err) => { cache.load_error = Some(Instant::now()); return Err(err); }
+        Err(err) => {
+            cache.load_error = Some(Instant::now());
+            return Err(err);
+        }
     };
     cache.embedder = Some(Arc::clone(&loaded));
     cache.load_error = None;
@@ -158,7 +183,11 @@ pub fn get_embedder() -> Result<Arc<Embedder>> {
     drop(_load);
     crate::logging::info("Embedding model loaded into memory");
     crate::runtime_memory_log::emit_event(
-        crate::runtime_memory_log::RuntimeMemoryLogEvent::new("embedding_loaded", "embedding_model_loaded").force_attribution(),
+        crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+            "embedding_loaded",
+            "embedding_model_loaded",
+        )
+        .force_attribution(),
     );
     Ok(loaded)
 }
@@ -194,13 +223,18 @@ pub fn embed(text: &str) -> Result<EmbeddingVec> {
             if let Ok(mut cache) = embedder_cache().lock() {
                 cache.embed_calls = cache.embed_calls.saturating_add(1);
                 cache.embed_failures = cache.embed_failures.saturating_add(1);
-                cache.total_embed_ms = cache.total_embed_ms.saturating_add(saturating_u64_from_u128(started.elapsed().as_millis()));
+                cache.total_embed_ms = cache
+                    .total_embed_ms
+                    .saturating_add(saturating_u64_from_u128(started.elapsed().as_millis()));
             }
             return Err(err);
         }
     };
     let result = embedder.embed(text).and_then(|v| {
-        anyhow::ensure!(v.len() == embedding_dim() && valid_vector(&v), "Invalid local embedding vector");
+        anyhow::ensure!(
+            v.len() == embedding_dim() && valid_vector(&v),
+            "Invalid local embedding vector"
+        );
         Ok(v)
     });
     let elapsed_ms = saturating_u64_from_u128(started.elapsed().as_millis());
@@ -211,10 +245,17 @@ pub fn embed(text: &str) -> Result<EmbeddingVec> {
         cache.last_used_at = Some(Instant::now());
         if let Ok(ref emb) = result {
             // An unloaded/replaced model must not repopulate the cleared cache.
-            if !cacheable || !cache.embedder.as_ref().is_some_and(|current| Arc::ptr_eq(current, &embedder)) {
+            if !cacheable
+                || !cache
+                    .embedder
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &embedder))
+            {
                 return result;
             }
-            if cache.embedding_lru.len() >= EMBEDDING_CACHE_CAPACITY && !cache.embedding_lru.contains_key(text) {
+            if cache.embedding_lru.len() >= EMBEDDING_CACHE_CAPACITY
+                && !cache.embedding_lru.contains_key(text)
+            {
                 let oldest_key = cache
                     .embedding_lru
                     .iter()
@@ -254,7 +295,12 @@ pub fn maybe_unload_if_idle(idle_for: Duration) -> bool {
         };
 
         let idle = last_used.elapsed();
-        if idle >= idle_for && cache.embedder.as_ref().is_some_and(|model| Arc::strong_count(model) == 1) {
+        if idle >= idle_for
+            && cache
+                .embedder
+                .as_ref()
+                .is_some_and(|model| Arc::strong_count(model) == 1)
+        {
             cache.embedder = None;
             cache.generation = cache.generation.wrapping_add(1);
             cache.loaded_at = None;
@@ -294,7 +340,9 @@ pub fn unload_now() -> bool {
         cache.embedding_lru.clear();
         unloaded = cache.embedder.take().is_some();
         cache.loaded_at = None;
-        if unloaded { cache.unload_count = cache.unload_count.saturating_add(1); }
+        if unloaded {
+            cache.unload_count = cache.unload_count.saturating_add(1);
+        }
     }
 
     if unloaded {
@@ -335,7 +383,10 @@ pub fn stats() -> EmbedderStats {
             let cache_bytes_estimate = cache
                 .embedding_lru
                 .iter()
-                .map(|(text, (embedding, _))| text.capacity().saturating_add(embedding.len().saturating_mul(std::mem::size_of::<f32>())))
+                .map(|(text, (embedding, _))| {
+                    text.capacity()
+                        .saturating_add(embedding.len().saturating_mul(std::mem::size_of::<f32>()))
+                })
                 .sum::<usize>() as u64;
 
             EmbedderStats {
@@ -398,17 +449,23 @@ fn valid_vector(vector: &[f32]) -> bool {
 }
 
 fn checked_cosine(a: &[f32], b: &[f32]) -> Option<f32> {
-    if a.is_empty() || a.len() != b.len() { return None; }
+    if a.is_empty() || a.len() != b.len() {
+        return None;
+    }
     let (mut dot, mut norm_a, mut norm_b) = (0.0f64, 0.0f64, 0.0f64);
     for (&x, &y) in a.iter().zip(b) {
-        if !x.is_finite() || !y.is_finite() { return None; }
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
         let (x, y) = (f64::from(x), f64::from(y));
-        dot += x*y;
-        norm_a += x*x;
-        norm_b += y*y;
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
     }
-    if norm_a == 0.0 || norm_b == 0.0 { return None; }
-    Some((dot / (norm_a.sqrt()*norm_b.sqrt())).clamp(-1.0, 1.0) as f32)
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return None;
+    }
+    Some((dot / (norm_a.sqrt() * norm_b.sqrt())).clamp(-1.0, 1.0) as f32)
 }
 
 /// Invalid vectors map to zero for compatibility with the scalar API. Retrieval
@@ -418,15 +475,31 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 
 pub fn batch_cosine_similarity(query: &[f32], candidates: &[&[f32]]) -> Vec<f32> {
-    candidates.iter().map(|candidate| cosine_similarity(query, candidate)).collect()
+    candidates
+        .iter()
+        .map(|candidate| cosine_similarity(query, candidate))
+        .collect()
 }
 
 /// Filter invalid vectors before ranking; preserve deterministic index ties.
-pub fn find_similar(query: &[f32], candidates: &[EmbeddingVec], threshold: f32, top_k: usize) -> Vec<(usize, f32)> {
-    if top_k == 0 || !threshold.is_finite() || !valid_vector(query) { return Vec::new(); }
-    let mut results: Vec<_> = candidates.iter().enumerate().filter_map(|(idx, v)| {
-        checked_cosine(query, v).filter(|score| *score >= threshold).map(|score| (idx, score))
-    }).collect();
+pub fn find_similar(
+    query: &[f32],
+    candidates: &[EmbeddingVec],
+    threshold: f32,
+    top_k: usize,
+) -> Vec<(usize, f32)> {
+    if top_k == 0 || !threshold.is_finite() || !valid_vector(query) {
+        return Vec::new();
+    }
+    let mut results: Vec<_> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, v)| {
+            checked_cosine(query, v)
+                .filter(|score| *score >= threshold)
+                .map(|score| (idx, score))
+        })
+        .collect();
     let order = |a: &(usize, f32), b: &(usize, f32)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
     if results.len() > top_k {
         results.select_nth_unstable_by(top_k, order);
@@ -463,16 +536,30 @@ mod tests {
 
     #[test]
     fn invalid_vectors_do_not_rank_even_at_negative_threshold() {
-        let candidates = vec![vec![f32::NAN, 1.0], vec![0.0, 0.0], vec![1.0], vec![1.0, 0.0]];
-        assert_eq!(find_similar(&[1.0, 0.0], &candidates, -1.0, 10), vec![(3, 1.0)]);
+        let candidates = vec![
+            vec![f32::NAN, 1.0],
+            vec![0.0, 0.0],
+            vec![1.0],
+            vec![1.0, 0.0],
+        ];
+        assert_eq!(
+            find_similar(&[1.0, 0.0], &candidates, -1.0, 10),
+            vec![(3, 1.0)]
+        );
         assert_eq!(cosine_similarity(&[f32::MAX], &[f32::MAX]), 1.0);
-        assert_eq!(cosine_similarity(&[f32::MIN_POSITIVE], &[f32::MIN_POSITIVE]), 1.0);
+        assert_eq!(
+            cosine_similarity(&[f32::MIN_POSITIVE], &[f32::MIN_POSITIVE]),
+            1.0
+        );
     }
 
     #[test]
     fn ranking_ties_are_deterministic() {
         let candidates = vec![vec![1.0], vec![1.0], vec![1.0]];
-        assert_eq!(find_similar(&[1.0], &candidates, 0.0, 2), vec![(0, 1.0), (1, 1.0)]);
+        assert_eq!(
+            find_similar(&[1.0], &candidates, 0.0, 2),
+            vec![(0, 1.0), (1, 1.0)]
+        );
     }
 
     #[test]

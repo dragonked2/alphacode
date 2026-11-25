@@ -19,7 +19,10 @@ pub fn get_activity() -> Option<MemoryActivity> {
 }
 
 pub fn activity_snapshot() -> Option<crate::protocol::MemoryActivitySnapshot> {
-    MEMORY_ACTIVITY.lock().ok().and_then(|guard| guard.as_ref().map(memory_activity_snapshot))
+    MEMORY_ACTIVITY
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(memory_activity_snapshot))
 }
 
 pub fn apply_remote_activity_snapshot(snapshot: &crate::protocol::MemoryActivitySnapshot) {
@@ -43,9 +46,16 @@ pub fn apply_remote_activity_snapshot(snapshot: &crate::protocol::MemoryActivity
 /// Update the memory activity state
 fn private_state(state: MemoryState) -> MemoryState {
     match state {
-        MemoryState::Extracting { .. } => MemoryState::Extracting { reason: "Memory extraction".into() },
-        MemoryState::Maintaining { .. } => MemoryState::Maintaining { phase: "Graph maintenance".into() },
-        MemoryState::ToolAction { .. } => MemoryState::ToolAction { action: "Memory tool".into(), detail: Default::default() },
+        MemoryState::Extracting { .. } => MemoryState::Extracting {
+            reason: "Memory extraction".into(),
+        },
+        MemoryState::Maintaining { .. } => MemoryState::Maintaining {
+            phase: "Graph maintenance".into(),
+        },
+        MemoryState::ToolAction { .. } => MemoryState::ToolAction {
+            action: "Memory tool".into(),
+            detail: Default::default(),
+        },
         other => other,
     }
 }
@@ -72,16 +82,28 @@ pub fn add_event(mut kind: MemoryEventKind) {
     crate::memory_log::log_event(&kind);
     // The global activity view may be shared across sessions. Store no raw text.
     match &mut kind {
-        MemoryEventKind::SidecarRelevant { memory_preview } | MemoryEventKind::MemorySurfaced { memory_preview } => *memory_preview = "Memory matched".into(),
-        MemoryEventKind::MemoryInjected { preview, items, .. } => { *preview = "Memory injected".into(); items.clear(); }
+        MemoryEventKind::SidecarRelevant { memory_preview }
+        | MemoryEventKind::MemorySurfaced { memory_preview } => {
+            *memory_preview = "Memory matched".into()
+        }
+        MemoryEventKind::MemoryInjected { preview, items, .. } => {
+            *preview = "Memory injected".into();
+            items.clear();
+        }
         MemoryEventKind::Error { message } => *message = "Memory operation failed".into(),
         MemoryEventKind::ToolRemembered { content, .. } => *content = "[private]".into(),
         MemoryEventKind::ToolRecalled { query, .. } => *query = "[private]".into(),
         MemoryEventKind::MaintenanceTagInferred { tag, .. } => *tag = "[private]".into(),
         MemoryEventKind::ExtractionStarted { reason } => *reason = "Memory extraction".into(),
         MemoryEventKind::ToolForgot { id } => id.clear(),
-        MemoryEventKind::ToolTagged { id, tags } => { id.clear(); tags.clear(); }
-        MemoryEventKind::ToolLinked { from, to } => { from.clear(); to.clear(); }
+        MemoryEventKind::ToolTagged { id, tags } => {
+            id.clear();
+            tags.clear();
+        }
+        MemoryEventKind::ToolLinked { from, to } => {
+            from.clear();
+            to.clear();
+        }
         _ => {}
     }
 
@@ -152,15 +174,24 @@ fn expired_state(activity: &MemoryActivity) -> bool {
 }
 
 fn expire_step(status: &mut StepStatus) {
-    if matches!(&*status, StepStatus::Running) { *status = StepStatus::Error; }
-    else if matches!(&*status, StepStatus::Pending) { *status = StepStatus::Skipped; }
+    if matches!(&*status, StepStatus::Running) {
+        *status = StepStatus::Error;
+    } else if matches!(&*status, StepStatus::Pending) {
+        *status = StepStatus::Skipped;
+    }
 }
 
 pub fn check_staleness() -> bool {
     let expired = {
-        let Ok(mut guard) = MEMORY_ACTIVITY.lock() else { return false; };
-        let Some(activity) = guard.as_mut() else { return false; };
-        if !expired_state(activity) { return false; }
+        let Ok(mut guard) = MEMORY_ACTIVITY.lock() else {
+            return false;
+        };
+        let Some(activity) = guard.as_mut() else {
+            return false;
+        };
+        if !expired_state(activity) {
+            return false;
+        }
         if let Some(pipeline) = activity.pipeline.as_mut() {
             expire_step(&mut pipeline.search);
             expire_step(&mut pipeline.verify);
@@ -171,7 +202,9 @@ pub fn check_staleness() -> bool {
         activity.state_since = Instant::now();
         true
     };
-    if expired { crate::logging::info("Memory activity display expired; worker completion is unverified"); }
+    if expired {
+        crate::logging::info("Memory activity display expired; worker completion is unverified");
+    }
     expired
 }
 
@@ -189,10 +222,15 @@ pub fn record_injected_prompt(prompt: &str, count: usize, age_ms: u64) {
     let preview = format!("{count} memory item(s) injected");
     let items: Vec<InjectedMemoryItem> = Vec::new();
     add_event(MemoryEventKind::MemoryInjected {
-        count, prompt_chars: prompt.chars().count(), age_ms,
-        preview: preview.clone(), items,
+        count,
+        prompt_chars: prompt.chars().count(),
+        age_ms,
+        preview: preview.clone(),
+        items,
     });
-    add_event(MemoryEventKind::MemorySurfaced { memory_preview: preview });
+    add_event(MemoryEventKind::MemorySurfaced {
+        memory_preview: preview,
+    });
 }
 
 fn memory_activity_snapshot(activity: &MemoryActivity) -> crate::protocol::MemoryActivitySnapshot {
@@ -296,7 +334,9 @@ fn from_snapshot_pipeline(snapshot: &crate::protocol::MemoryPipelineSnapshot) ->
             .verify_result
             .as_ref()
             .map(from_snapshot_step_result),
-        verify_progress: snapshot.verify_progress.map(|(done, total)| (done.min(total), total)),
+        verify_progress: snapshot
+            .verify_progress
+            .map(|(done, total)| (done.min(total), total)),
         inject: from_snapshot_step_status(&snapshot.inject),
         inject_result: snapshot
             .inject_result

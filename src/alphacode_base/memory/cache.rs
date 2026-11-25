@@ -24,7 +24,9 @@ struct FileStamp {
 
 fn stamp(path: &Path) -> Option<FileStamp> {
     let meta = std::fs::symlink_metadata(path).ok()?;
-    if !meta.file_type().is_file() { return None; }
+    if !meta.file_type().is_file() {
+        return None;
+    }
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     Some(FileStamp {
@@ -76,20 +78,36 @@ pub(super) fn cached_graph(path: &Path) -> Option<MemoryGraph> {
 #[allow(dead_code)]
 pub(super) fn cache_graph(path: PathBuf, graph: &MemoryGraph) {
     let Some(current) = stamp(&path) else {
-        if let Ok(mut cache) = graph_cache().lock() { cache.remove(&path); }
+        if let Ok(mut cache) = graph_cache().lock() {
+            cache.remove(&path);
+        }
         return;
     };
     // Clone outside the global lock.
     let graph = Arc::new(graph.clone());
-    if stamp(&path).as_ref() != Some(&current) { return; }
+    if stamp(&path).as_ref() != Some(&current) {
+        return;
+    }
     if let Ok(mut cache) = graph_cache().lock() {
-        if !cache.contains_key(&path) && cache.len() >= GRAPH_CACHE_CAPACITY
-            && let Some(oldest) = cache.iter().min_by_key(|(_, entry)| entry.used)
-                .map(|(path, _)| path.clone()) {
-                cache.remove(&oldest);
-            }
+        if !cache.contains_key(&path)
+            && cache.len() >= GRAPH_CACHE_CAPACITY
+            && let Some(oldest) = cache
+                .iter()
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(path, _)| path.clone())
+        {
+            cache.remove(&oldest);
+        }
         let now = Instant::now();
-        cache.insert(path, GraphCacheEntry { graph, stamp: current, inserted: now, used: now });
+        cache.insert(
+            path,
+            GraphCacheEntry {
+                graph,
+                stamp: current,
+                inserted: now,
+                used: now,
+            },
+        );
     }
 }
 

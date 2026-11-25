@@ -2,11 +2,11 @@
 //!
 //! Provides comprehensive secret pattern matching and classification.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use super::SecretDetection;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use super::SecretDetection;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Types of secrets we can detect and classify
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -90,7 +90,7 @@ impl SecretClassifier {
             keyword_patterns: Self::keyword_patterns(),
         }
     }
-    
+
     fn direct_patterns() -> Vec<SecretPattern> {
         vec![
             SecretPattern {
@@ -149,7 +149,8 @@ impl SecretClassifier {
             },
             SecretPattern {
                 secret_type: SecretType::JwtToken,
-                pattern: Regex::new(r"eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*").unwrap(),
+                pattern: Regex::new(r"eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*")
+                    .unwrap(),
                 confidence: 0.9,
                 description: "JWT token".to_string(),
             },
@@ -167,10 +168,10 @@ impl SecretClassifier {
             },
         ]
     }
-    
+
     fn keyword_patterns() -> HashMap<SecretType, Vec<Regex>> {
         let mut map: HashMap<SecretType, Vec<Regex>> = HashMap::new();
-        
+
         // Assignment patterns for environment variables and config
         let assignment_keys = vec![
             ("OPENROUTER_API_KEY", SecretType::GenericApiKey),
@@ -213,15 +214,16 @@ impl SecretClassifier {
             ("SESSION_SECRET", SecretType::SessionCookie),
             ("COOKIE_SECRET", SecretType::SessionCookie),
         ];
-        
+
         for (key, secret_type) in assignment_keys {
-            let pattern = Regex::new(&format!(r"(?m)^\s*{}\s*=\s*[^\r\n]+", regex::escape(key))).unwrap();
+            let pattern =
+                Regex::new(&format!(r"(?m)^\s*{}\s*=\s*[^\r\n]+", regex::escape(key))).unwrap();
             map.entry(secret_type).or_default().push(pattern);
         }
-        
+
         map
     }
-    
+
     /// Classify a single secret value
     pub fn classify(&self, value: &str) -> SecretType {
         for pattern in &self.patterns {
@@ -231,11 +233,11 @@ impl SecretClassifier {
         }
         SecretType::Unknown
     }
-    
+
     /// Scan text for all secret occurrences
     pub fn scan(&self, text: &str) -> Vec<SecretDetection> {
         let mut detections = Vec::new();
-        
+
         // Direct pattern matches
         for pattern in &self.patterns {
             for mat in pattern.pattern.find_iter(text) {
@@ -248,7 +250,7 @@ impl SecretClassifier {
                 });
             }
         }
-        
+
         // Keyword-based matches (lower confidence, more context needed)
         for (secret_type, patterns) in &self.keyword_patterns {
             for pattern in patterns {
@@ -263,7 +265,7 @@ impl SecretClassifier {
                 }
             }
         }
-        
+
         // Sort by location
         detections.sort_by_key(|d| d.location);
         detections
@@ -287,7 +289,7 @@ pub fn classify_secret(value: &str) -> SecretType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_classify_anthropic_key() {
         let classifier = SecretClassifier::new();
@@ -296,7 +298,7 @@ mod tests {
             SecretType::AnthropicApiKey
         );
     }
-    
+
     #[test]
     fn test_classify_openai_key() {
         let classifier = SecretClassifier::new();
@@ -305,7 +307,7 @@ mod tests {
             SecretType::OpenAIApiKey
         );
     }
-    
+
     #[test]
     fn test_classify_github_token() {
         let classifier = SecretClassifier::new();
@@ -314,7 +316,7 @@ mod tests {
             SecretType::GitHubToken
         );
     }
-    
+
     #[test]
     fn test_scan_finds_multiple_secrets() {
         let classifier = SecretClassifier::new();
@@ -324,14 +326,15 @@ mod tests {
         assert_eq!(detections[0].secret_type, SecretType::AnthropicApiKey);
         assert_eq!(detections[1].secret_type, SecretType::GitHubToken);
     }
-    
+
     #[test]
     fn test_private_key_detection() {
         let classifier = SecretClassifier::new();
-        let key = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----";
+        let key =
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----";
         assert_eq!(classifier.classify(key), SecretType::PrivateKey);
     }
-    
+
     #[test]
     fn test_jwt_detection() {
         let classifier = SecretClassifier::new();

@@ -26,24 +26,27 @@
 //! - **Structured Redaction**: Provenance tracking over pattern matching
 //! - **No Accidental Serialization**: Secrets never enter logs, telemetry, crash reports
 
+use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock as StdRwLock};
 use std::time::Duration;
-use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
 
 mod detection;
-mod storage;
-mod redaction;
 mod handles;
+mod redaction;
+mod storage;
 
-pub use detection::{SecretClassifier, SecretPattern, SecretType, classify_secret, SECRET_PATTERNS};
-pub use storage::{SecretStore, SecretEntry, StorageConfig, ZeroizingString};
-pub use redaction::{RedactionEngine, RedactionContext, RedactionResult, RedactionScope};
-pub use handles::{SecretHandle, SecretHandleRegistry, HandleMetadata, HandlePermissions};
+pub use detection::{
+    SECRET_PATTERNS, SecretClassifier, SecretPattern, SecretType, classify_secret,
+};
+pub use handles::{HandleMetadata, HandlePermissions, SecretHandle, SecretHandleRegistry};
+pub use redaction::{RedactionContext, RedactionEngine, RedactionResult, RedactionScope};
+pub use storage::{SecretEntry, SecretStore, StorageConfig, ZeroizingString};
 
 /// Global secret management instance
-static SECRET_MANAGER: LazyLock<StdRwLock<Option<Arc<SecretManager>>>> = LazyLock::new(|| StdRwLock::new(None));
+static SECRET_MANAGER: LazyLock<StdRwLock<Option<Arc<SecretManager>>>> =
+    LazyLock::new(|| StdRwLock::new(None));
 
 /// Initialize the global secret manager
 pub fn initialize_secret_manager(config: SecretManagerConfig) -> Arc<SecretManager> {
@@ -103,7 +106,7 @@ impl SecretManager {
         let store = SecretStore::new(config.max_handles_per_session);
         let handle_registry = SecretHandleRegistry::new(config.max_handles_per_session);
         let redaction_engine = RedactionEngine::new(config.redaction_scope);
-        
+
         Self {
             config,
             classifier,
@@ -122,7 +125,7 @@ impl SecretManager {
 
         // Classify the secret
         let secret_type = self.classifier.classify(&secret.value);
-        
+
         // Store in secure storage
         let entry = SecretEntry::new(
             session_id.to_string(),
@@ -130,23 +133,26 @@ impl SecretManager {
             secret_type,
             secret.metadata,
         );
-        
+
         let handle = self.store.store(entry)?;
-        
+
         // Register handle with permissions
         let metadata = HandleMetadata {
             session_id: session_id.to_string(),
             secret_type,
             created_at_ms: chrono::Utc::now().timestamp_millis(),
-            expires_at_ms: self.config.handle_ttl.map(|ttl| chrono::Utc::now().timestamp_millis() + ttl.as_millis() as i64),
+            expires_at_ms: self
+                .config
+                .handle_ttl
+                .map(|ttl| chrono::Utc::now().timestamp_millis() + ttl.as_millis() as i64),
             permissions: secret.permissions.unwrap_or_default(),
             access_count: 0,
             last_accessed_ms: None,
             tags: vec![],
         };
-        
+
         self.handle_registry.register(handle.clone(), metadata)?;
-        
+
         // Audit log
         if self.config.audit_enabled {
             self.audit_log.write().unwrap().push(AuditEntry {
@@ -158,12 +164,16 @@ impl SecretManager {
                 success: true,
             });
         }
-        
+
         Ok(handle)
     }
 
     /// Retrieve a secret by handle (for authorized tool use only)
-    pub fn retrieve_secret(&self, session_id: &str, handle: &SecretHandle) -> Result<ProtectedSecret> {
+    pub fn retrieve_secret(
+        &self,
+        session_id: &str,
+        handle: &SecretHandle,
+    ) -> Result<ProtectedSecret> {
         if !self.config.enabled {
             return Err(anyhow!("Secret management is disabled"));
         }
@@ -173,12 +183,13 @@ impl SecretManager {
         if metadata.session_id != session_id {
             return Err(anyhow!("Handle does not belong to this session"));
         }
-        
+
         let now_ms = chrono::Utc::now().timestamp_millis();
         if let Some(expires_at_ms) = metadata.expires_at_ms
-            && now_ms > expires_at_ms {
-                return Err(anyhow!("Secret handle has expired"));
-            }
+            && now_ms > expires_at_ms
+        {
+            return Err(anyhow!("Secret handle has expired"));
+        }
 
         if !metadata.permissions.can_read {
             return Err(anyhow!("Handle does not have read permission"));
@@ -188,7 +199,7 @@ impl SecretManager {
         // taken out by `mem::replace` below, because SecretEntry drops through
         // its zeroizing value and cannot have that field moved out of it.
         let mut entry = self.store.retrieve(handle)?;
-        
+
         // Update access count
         self.handle_registry.increment_access(handle)?;
 
@@ -218,13 +229,18 @@ impl SecretManager {
     }
 
     /// Use a secret in a tool call without exposing it to the model
-    pub fn use_secret_in_tool<F, R>(&self, session_id: &str, handle: &SecretHandle, f: F) -> Result<R>
+    pub fn use_secret_in_tool<F, R>(
+        &self,
+        session_id: &str,
+        handle: &SecretHandle,
+        f: F,
+    ) -> Result<R>
     where
         F: FnOnce(&ProtectedSecret) -> Result<R>,
     {
         let secret = self.retrieve_secret(session_id, handle)?;
         let result = f(&secret);
-        
+
         // Audit log
         if self.config.audit_enabled {
             self.audit_log.write().unwrap().push(AuditEntry {
@@ -236,7 +252,7 @@ impl SecretManager {
                 success: result.is_ok(),
             });
         }
-        
+
         result
     }
 
@@ -276,7 +292,9 @@ impl SecretManager {
 
     /// Get audit log for a session
     pub fn get_audit_log(&self, session_id: &str) -> Vec<AuditEntry> {
-        self.audit_log.read().unwrap()
+        self.audit_log
+            .read()
+            .unwrap()
             .iter()
             .filter(|e| e.session_id == session_id)
             .cloned()
@@ -322,11 +340,11 @@ impl ProtectedSecret {
     pub fn value(&self) -> &str {
         self.value.as_str()
     }
-    
+
     pub fn secret_type(&self) -> SecretType {
         self.secret_type
     }
-    
+
     pub fn handle(&self) -> &SecretHandle {
         &self.handle
     }
@@ -345,7 +363,7 @@ pub struct SecretDetection {
 /// Audit log entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
-    pub timestamp_ms: i64,  // Milliseconds since epoch
+    pub timestamp_ms: i64, // Milliseconds since epoch
     pub operation: AuditOperation,
     pub session_id: String,
     pub handle_id: String,
@@ -365,58 +383,62 @@ pub enum AuditOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_zeroizing_string_zeroizes_on_drop() {
         let s = ZeroizingString::new("test_secret".to_string());
         assert_eq!(s.as_str(), "test_secret");
         // Zeroize happens on drop
     }
-    
+
     #[test]
     fn test_secret_manager_store_and_retrieve() {
         let config = SecretManagerConfig::default();
         let manager = SecretManager::new(config);
-        
-        let handle = manager.store_secret(
-            "test_session",
-            SecretInput {
-                value: "sk-test-12345".into(),
-                secret_type: None,
-                metadata: HashMap::new(),
-                permissions: None,
-            }
-        ).unwrap();
-        
+
+        let handle = manager
+            .store_secret(
+                "test_session",
+                SecretInput {
+                    value: "sk-test-12345".into(),
+                    secret_type: None,
+                    metadata: HashMap::new(),
+                    permissions: None,
+                },
+            )
+            .unwrap();
+
         let secret = manager.retrieve_secret("test_session", &handle).unwrap();
         assert_eq!(secret.value(), "sk-test-12345");
     }
-    
+
     #[test]
     fn test_secret_handle_isolation() {
         let config = SecretManagerConfig::default();
         let manager = SecretManager::new(config);
-        
-        let handle = manager.store_secret(
-            "session_a",
-            SecretInput {
-                value: "secret_a".into(),
-                secret_type: None,
-                metadata: HashMap::new(),
-                permissions: None,
-            }
-        ).unwrap();
-        
+
+        let handle = manager
+            .store_secret(
+                "session_a",
+                SecretInput {
+                    value: "secret_a".into(),
+                    secret_type: None,
+                    metadata: HashMap::new(),
+                    permissions: None,
+                },
+            )
+            .unwrap();
+
         // Different session cannot access
         let result = manager.retrieve_secret("session_b", &handle);
         assert!(result.is_err());
     }
-    
+
     #[test]
     fn test_secret_redaction() {
         let config = SecretManagerConfig::default();
         let manager = SecretManager::new(config);
-        
+
         let text = "My API key is sk-ant-oat01-abcdefghijklmnopqrstuvwxyz and token is ghp_abcdefghijklmnopqrstuvwxyz";
         let result = manager.redact_output(text, RedactionContext::default());
         // Markers are type-specific on purpose: "[REDACTED]" alone cannot say

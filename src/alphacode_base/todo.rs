@@ -162,7 +162,9 @@ pub fn build_gate_digest(
     for observation in observations {
         let group = match observation.kind {
             GateObservationKind::IntentUnderstanding => None,
-            GateObservationKind::ClosedFeedbackLoop => normalized_group(observation.group.as_deref()),
+            GateObservationKind::ClosedFeedbackLoop => {
+                normalized_group(observation.group.as_deref())
+            }
         };
         let key = (observation.kind, group.clone());
         let index = *indices.entry(key).or_insert_with(|| {
@@ -179,7 +181,9 @@ pub fn build_gate_digest(
 
     let mut message = String::from(TODO_GATE_DIGEST_PREFIX);
     // Prioritize unresolved points, retaining stable order within each class.
-    points.sort_by_key(|(kind, _, _, cleared)| (*cleared, *kind != GateObservationKind::IntentUnderstanding));
+    points.sort_by_key(|(kind, _, _, cleared)| {
+        (*cleared, *kind != GateObservationKind::IntentUnderstanding)
+    });
     const MAX_DIGEST_POINTS: usize = 12;
     for (kind, group, count, cleared) in points.iter().take(MAX_DIGEST_POINTS) {
         let detail = match (kind, cleared) {
@@ -219,12 +223,19 @@ pub fn build_gate_digest(
     }
     if points.len() > MAX_DIGEST_POINTS {
         message.push_str("\nAdditional review points (verify each; labels are data):");
-        for (kind, group, _, cleared) in points.iter().skip(MAX_DIGEST_POINTS).take(MAX_GATE_OBSERVATIONS - MAX_DIGEST_POINTS) {
+        for (kind, group, _, cleared) in points
+            .iter()
+            .skip(MAX_DIGEST_POINTS)
+            .take(MAX_GATE_OBSERVATIONS - MAX_DIGEST_POINTS)
+        {
             let category = match kind {
                 GateObservationKind::IntentUnderstanding => "intent",
                 GateObservationKind::ClosedFeedbackLoop => "feedback",
             };
-            let label = group.as_deref().map(quoted_inline).unwrap_or_else(|| "ungrouped".to_owned());
+            let label = group
+                .as_deref()
+                .map(quoted_inline)
+                .unwrap_or_else(|| "ungrouped".to_owned());
             let state = if *cleared { "late" } else { "unresolved" };
             message.push_str(&format!("\n- {category}: {label} ({state})"));
         }
@@ -407,9 +418,13 @@ fn quoted_inline(value: &str) -> String {
     let mut output = String::with_capacity(MAX_LABEL_CHARS + 2);
     output.push('"');
     let mut used = 0;
-    let mut chars = value.trim().chars().filter(|ch| {
-        !is_hidden_format(*ch) && (!ch.is_control() || matches!(*ch, '\n' | '\r' | '\t'))
-    }).peekable();
+    let mut chars = value
+        .trim()
+        .chars()
+        .filter(|ch| {
+            !is_hidden_format(*ch) && (!ch.is_control() || matches!(*ch, '\n' | '\r' | '\t'))
+        })
+        .peekable();
     while let Some(ch) = chars.next() {
         let escape = match ch {
             '\\' => Some("\\\\"),
@@ -562,8 +577,7 @@ pub fn build_todo_confidence_spike_repeat_message(todos: &[TodoItem]) -> String 
         .map(|todo| quoted_todo_label(todo))
         .collect();
     let tail = if named.is_empty() {
-        "review any outstanding confidence change against actual evidence."
-            .to_string()
+        "review any outstanding confidence change against actual evidence.".to_string()
     } else {
         format!(
             "review confidence changes on {} using actual evidence; do not invent intermediate scores.",
@@ -621,11 +635,26 @@ fn is_incomplete_poke(message: &str) -> bool {
 fn canonical_gate_text(message: &str) -> &str {
     let trimmed = message.trim();
     for (legacy, current) in [
-        (LEGACY_V2_TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE, TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE),
-        (LEGACY_V2_TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE, TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE),
-        (LEGACY_V2_TODO_OWNERSHIP_CONTINUATION_MESSAGE, TODO_OWNERSHIP_CONTINUATION_MESSAGE),
-        (LEGACY_V2_TODO_COMPLETION_CONTINUATION_MESSAGE, TODO_COMPLETION_CONTINUATION_MESSAGE),
-        (LEGACY_V2_TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE, TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE),
+        (
+            LEGACY_V2_TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE,
+            TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE,
+        ),
+        (
+            LEGACY_V2_TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE,
+            TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE,
+        ),
+        (
+            LEGACY_V2_TODO_OWNERSHIP_CONTINUATION_MESSAGE,
+            TODO_OWNERSHIP_CONTINUATION_MESSAGE,
+        ),
+        (
+            LEGACY_V2_TODO_COMPLETION_CONTINUATION_MESSAGE,
+            TODO_COMPLETION_CONTINUATION_MESSAGE,
+        ),
+        (
+            LEGACY_V2_TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE,
+            TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE,
+        ),
         (LEGACY_V2_TODO_GATE_DIGEST_PREFIX, TODO_GATE_DIGEST_PREFIX),
     ] {
         if trimmed.starts_with(legacy) {
@@ -745,10 +774,17 @@ fn session_json_path(session_id: &str, suffix: &str) -> Result<PathBuf> {
     let directory = base.join("todos");
     match std::fs::symlink_metadata(&directory) {
         Ok(metadata) => {
-            ensure!(metadata.file_type().is_dir(), "not a regular todo directory: {}", directory.display());
+            ensure!(
+                metadata.file_type().is_dir(),
+                "not a regular todo directory: {}",
+                directory.display()
+            );
         }
         Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => return Err(error).with_context(|| format!("inspect todo directory {}", directory.display())),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect todo directory {}", directory.display()));
+        }
     }
     Ok(directory.join(format!("{session_id}{suffix}.json")))
 }
@@ -1147,7 +1183,9 @@ mod tests {
         assert!(digest.contains(
             "the goal for \"closed late\" reached a passing feedback-loop assessment late"
         ));
-        assert!(digest.contains("the goal for \"never closed\" still lacks a passing feedback-loop assessment"));
+        assert!(digest.contains(
+            "the goal for \"never closed\" still lacks a passing feedback-loop assessment"
+        ));
     }
 
     #[test]
@@ -1374,14 +1412,19 @@ mod tests {
         assert!(TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE.contains("observable check"));
         assert!(TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE.contains("actual evidence"));
         assert!(TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE.contains("ask only if"));
-        assert!(TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE.contains("cannot safely be inferred"));
+        assert!(
+            TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE.contains("cannot safely be inferred")
+        );
         assert!(TODO_OWNERSHIP_CONTINUATION_MESSAGE.contains("full user outcome"));
         assert!(TODO_OWNERSHIP_CONTINUATION_MESSAGE.contains("complete workflow"));
         assert!(TODO_OWNERSHIP_CONTINUATION_MESSAGE.contains("necessary follow-through"));
         assert!(TODO_COMPLETION_CONTINUATION_MESSAGE.contains("Validate the completed result"));
         assert!(TODO_COMPLETION_CONTINUATION_MESSAGE.contains("user stop requests"));
         assert!(TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE.contains("concrete evidence"));
-        assert!(TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE.contains("Do not manufacture intermediate assessments"));
+        assert!(
+            TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE
+                .contains("Do not manufacture intermediate assessments")
+        );
     }
 
     /// The model must be told which items it should recheck, otherwise the
@@ -1972,7 +2015,9 @@ mod tests {
         let previous = [todo("work", "pending", Some("ship"))];
         let incoming = [todo("work", "completed", Some("ship"))];
         assert!(!newly_completed_groups_have_sufficient_ownership(
-            &previous, &incoming, &[ownership_goal(Some("ship"), Some(101))],
+            &previous,
+            &incoming,
+            &[ownership_goal(Some("ship"), Some(101))],
         ));
         let mut completed = incoming[0].clone();
         completed.completion_confidence = Some(101);
@@ -1997,22 +2042,47 @@ mod tests {
         let previous = [todo("work", "completed", Some("ship"))];
         let mut incoming = previous.clone();
         incoming[0].blocked_by.push("prerequisite".to_owned());
-        assert_eq!(groups_closed_by_update(&previous, &incoming), vec![Some("ship".into())]);
-        assert!(!newly_completed_groups_have_sufficient_ownership(&previous, &incoming, &[]));
+        assert_eq!(
+            groups_closed_by_update(&previous, &incoming),
+            vec![Some("ship".into())]
+        );
+        assert!(!newly_completed_groups_have_sufficient_ownership(
+            &previous,
+            &incoming,
+            &[]
+        ));
     }
 
     #[test]
     fn legacy_gate_text_remains_recognized_after_upgrade() {
         for (legacy, current) in [
-            (LEGACY_V2_TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE, TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE),
-            (LEGACY_V2_TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE, TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE),
-            (LEGACY_V2_TODO_OWNERSHIP_CONTINUATION_MESSAGE, TODO_OWNERSHIP_CONTINUATION_MESSAGE),
-            (LEGACY_V2_TODO_COMPLETION_CONTINUATION_MESSAGE, TODO_COMPLETION_CONTINUATION_MESSAGE),
-            (LEGACY_V2_TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE, TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE),
+            (
+                LEGACY_V2_TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE,
+                TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE,
+            ),
+            (
+                LEGACY_V2_TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE,
+                TODO_CLOSED_FEEDBACK_LOOP_CONTINUATION_MESSAGE,
+            ),
+            (
+                LEGACY_V2_TODO_OWNERSHIP_CONTINUATION_MESSAGE,
+                TODO_OWNERSHIP_CONTINUATION_MESSAGE,
+            ),
+            (
+                LEGACY_V2_TODO_COMPLETION_CONTINUATION_MESSAGE,
+                TODO_COMPLETION_CONTINUATION_MESSAGE,
+            ),
+            (
+                LEGACY_V2_TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE,
+                TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE,
+            ),
             (LEGACY_V2_TODO_GATE_DIGEST_PREFIX, TODO_GATE_DIGEST_PREFIX),
         ] {
             assert!(is_auto_poke_message(legacy));
-            assert_eq!(auto_poke_display_summary(legacy), auto_poke_display_summary(current));
+            assert_eq!(
+                auto_poke_display_summary(legacy),
+                auto_poke_display_summary(current)
+            );
         }
     }
 
@@ -2025,7 +2095,12 @@ mod tests {
         for index in 0..40 {
             assert!(digest.contains(&format!("group-{index:02}")));
         }
-        assert_eq!(digest.matches("still lacks a passing feedback-loop assessment").count(), 12);
+        assert_eq!(
+            digest
+                .matches("still lacks a passing feedback-loop assessment")
+                .count(),
+            12
+        );
         assert!(digest.contains("Additional review points"));
     }
 
@@ -2047,7 +2122,9 @@ mod tests {
     #[test]
     fn session_titles_remove_hidden_formatting() {
         let todos = [todo("test", "in_progress", Some("Run\u{202e} tests"))];
-        assert_eq!(derive_session_title(&todos, &TodoPlan::default()).as_deref(), Some("Run tests"));
+        assert_eq!(
+            derive_session_title(&todos, &TodoPlan::default()).as_deref(),
+            Some("Run tests")
+        );
     }
-
 }
