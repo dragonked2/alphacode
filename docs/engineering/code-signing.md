@@ -69,6 +69,62 @@ release, tags, or publishes anything.
 The reason this has to run on CI at all is the upload ceiling measured below:
 the maintainer's network cannot send the archive.
 
+## Double-zip trap: `archive: false` does not do what it looks like
+
+The first real submission through the connector (request `ee6df7d7`) was
+accepted, passed the malware scan, then failed in processing:
+
+> Expected path to match exactly 1 item, but found 0. [...] An error occurred
+> while processing `rehearsal-unsigned-alphacode-windows-x86_64.zip` as
+> specified in line 4, position 6 of your artifact configuration
+> (`<pe-file path="alphacode.exe">`).
+
+The upload step had used `actions/upload-artifact@v4` with `archive: false` and
+`path: alphacode-windows-x86_64.zip`, on the assumption that this sends the zip
+as-is. It does not. **GitHub always stores an artifact inside its own ZIP**, so
+the artifact SignPath received was a zip containing one entry:
+
+```
+rehearsal-unsigned-alphacode-windows-x86_64.zip   <- GitHub's container = <zip-file> root
+  alphacode-windows-x86_64.zip                    <- the archive we uploaded
+    alphacode.exe
+    AlphaCode.Desktop.exe
+```
+
+`<pe-file path="alphacode.exe">` is a root-level match, so it found 0 items.
+
+How this was established rather than guessed: the artifact was downloaded back
+from the run and its SHA-256 was **byte-identical** to the `8f379e6d...` that
+SignPath recorded for the received artifact, and that download contained exactly
+one entry, `alphacode-windows-x86_64.zip`.
+
+**The fix is to upload the binaries loose**, and let GitHub's container be the
+single `<zip-file>` root:
+
+```yaml
+- uses: actions/upload-artifact@v4
+  with:
+    name: unsigned-alphacode-windows-x86_64
+    path: |
+      target/<triple>/release/alphacode.exe
+      target/<triple>/release/AlphaCode.Desktop.exe
+```
+
+That is exactly what SignPath's onboarding mail means by *"GitHub requires you
+to put it in a zip file"*: you do not build the zip, GitHub does.
+
+`skip-decompress: true` in the submit step is unrelated to this -- it controls
+how the *signed* artifact is written back out (saved as a zip instead of being
+extracted), not how the unsigned one is wrapped.
+
+### This also affects `release.yml`
+
+`release.yml` uses the same pattern (`archive: false` plus the pre-built
+`.zip`), so the release pipeline would hit the identical failure the moment a
+valid production policy made the signing steps run. It is inert today only
+because `SIGNPATH_SIGNING_POLICY_SLUG` is unset, which short-circuits every
+signing step. It must be corrected in the same change that turns signing on.
+
 ## State re-verified 2026-11-26 (read-only REST API)
 
 Re-checked against the live organization rather than the portal UI, so this is
