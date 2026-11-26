@@ -255,14 +255,20 @@ jobs:
 
       - name: Verify signed binaries
         shell: bash
-        env:
-          ARCHIVE_BASE: alphacode-windows-x86_64
         run: |
           set -euo pipefail
-          signed="signed-win/${ARCHIVE_BASE}.zip"
-          [ -f "$signed" ] || { echo "::error::SignPath produced no ${ARCHIVE_BASE}.zip"; exit 1; }
+          # The connector names the downloaded zip after the *artifact name*
+          # (rehearsal-unsigned-alphacode-windows-x86_64.zip), not after the
+          # release archive, because the artifact we hand SignPath is now the
+          # loose binaries. So locate it rather than assuming a filename --
+          # the previous version hardcoded the release name and reported
+          # "SignPath produced no ..." on an otherwise successful run.
+          signed="$(find signed-win -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          [ -n "$signed" ] || { echo "::error::SignPath produced no signed artifact in signed-win/"; ls -la signed-win || true; exit 1; }
+          echo "Signed artifact: $signed"
           mkdir -p signed-check
           python scripts/signpath/archive-tool.py "$signed" --extract signed-check >/dev/null
+          ls -la signed-check
           # The order is the point: SignPath must not add a PE overlay (the
           # certificate table is excluded from that check by design) and must
           # not disturb the two structural fixes that produced this release.
@@ -299,7 +305,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rehearsal-signed-alphacode-windows-x86_64
-          path: signed-win/alphacode-windows-x86_64.zip
+          # Wildcard: the connector names the zip after the artifact name, not
+          # after the release archive. A hardcoded path silently matched
+          # nothing here.
+          path: signed-win/*.zip
           retention-days: 7
           if-no-files-found: error
 
