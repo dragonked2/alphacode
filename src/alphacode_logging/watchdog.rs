@@ -233,11 +233,30 @@ pub fn thread_states() -> Vec<String> {
                     rest.split_whitespace().next().map(str::to_string)
                 })
                 .unwrap_or_else(|| "?".to_string());
-            format!("{tid}:{name}:{state}:{wchan}")
+            // The record grammar is exactly four ':'-separated fields. Linux
+            // thread names are arbitrary bytes (Rust names test threads after
+            // the test path, e.g. `alphacode_base::R`), so the name and wchan
+            // are sanitised before formatting; otherwise a colon in the name
+            // would split one record into five fields and break any reader of
+            // the stall dump.
+            format!(
+                "{}:{}:{}:{}",
+                tid,
+                sanitize_field(&name),
+                state,
+                sanitize_field(&wchan)
+            )
         })
         .collect();
     states.sort();
     states
+}
+
+/// Replace characters that would break the `tid:name:state:wchan` record
+/// grammar, so every record has exactly four fields regardless of what the
+/// kernel reports for the thread name.
+fn sanitize_field(value: &str) -> String {
+    value.replace([':', '|'], "_")
 }
 
 fn read_trimmed(path: std::path::PathBuf) -> Option<String> {
@@ -414,5 +433,15 @@ mod tests {
                 "expected tid:name:state:wchan, got {first}"
             );
         }
+    }
+
+    #[test]
+    fn thread_name_field_is_sanitized_so_the_record_never_splits() {
+        // `find /proc`-style names are arbitrary; Rust names test threads after
+        // their module path, which contains ':'. The record grammar must survive
+        // that, so a name carrying the separators is collapsed first.
+        assert_eq!(sanitize_field("alphacode_base::R"), "alphacode_base__R");
+        assert_eq!(sanitize_field("a|b"), "a_b");
+        assert_eq!(sanitize_field("plain"), "plain");
     }
 }

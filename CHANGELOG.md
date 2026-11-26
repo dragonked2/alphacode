@@ -79,6 +79,18 @@ adheres to [Semantic Versioning](https://semver.org/).
   missing `ProductName`/`CompanyName`) and as a positive control against the
   rebuilt host.
 
+- **The stall-dump thread record no longer splits on a colon in the thread
+  name.** `watchdog::thread_states` formats each Linux thread as
+  `tid:name:state:wchan` and documented a four-field record, but interpolated
+  the kernel `comm` value verbatim. Rust names test threads after their module
+  path, so `comm` is routinely something like `alphacode_base::R`: the embedded
+  `::` produced a *five*-field record and broke any reader of the stall dump.
+  The name and wchan fields are now sanitised (colons and the `|` join
+  separator become `_`) so every record has exactly four fields regardless of
+  what the process names its threads. This is what failed
+  `test (ubuntu-24.04)` on the 1.1.22 CI run — the guard had never seen a
+  colon-bearing name on a developer machine.
+
 ### Added
 
 - **Authenticode code signing, via the SignPath Foundation.** AlphaCode was
