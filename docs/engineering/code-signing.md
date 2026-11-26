@@ -89,7 +89,56 @@ restriction the Foundation requires:
   `main` or `release/*`. Narrowing it later is good hygiene, but it is not what
   is broken and changing it now would add a variable to a blocked path.
 
-### Why the policy says "not valid"
+### The "CSR PENDING" badge does not ask us to upload anything
+
+The badge's hover text reads:
+
+> You need to upload the CA-signed certificate before you can use this
+> certificate for signing
+
+That reads like an instruction addressed to the project, and it is not. It is
+SignPath's generic description of the `CSR PENDING` state -- "this slot is
+waiting for a CA-signed certificate" -- and the subject of "you" depends on who
+can complete it. For a Foundation project the answer is the Foundation.
+
+Evidence, in order of strength:
+
+- **No upload control exists in the UI.** Checked while signed in as **Global
+  administrator** (the highest role an organization can have, confirmed on the
+  Users page). The Certificates index has no Add/Import action of any kind, the
+  certificate page offers only *Download CSR*, *Download X.509 certificate*
+  (disabled), *Show signing requests* and *History*, and the page has no forms.
+  If uploading were a tenant action there would be a button for the tenant
+  administrator.
+- **The certificate is not ours to complete.** Its subject is
+  `CN=SignPath Foundation` and it requires origin policy verification -- a
+  restriction only SignPath can operate, since it checks metadata only the
+  GitHub App connector can produce. A tenant that supplied its own certificate
+  would defeat that restriction.
+- **The Foundation's own copy says so.** [signpath.org](https://signpath.org/)
+  states the private key is generated and stored on *their* HSM and that they
+  "vouch for" the build "with our name". Ordering from a CA is their step.
+
+So the correct local action is to ask, not to look for a button. The request
+already sent to oss-support@signpath.org is the right one; what it should ask
+for specifically is that the **CA order for `release_certificate_2026` be
+placed and the issued certificate uploaded to this certificate slot**.
+
+### Dead ends checked, so nobody repeats them
+
+- **Upload the CSR to a free CA.** Certum is sometimes described as "free for
+  open source"; their OSS product is actually a discount tier at roughly EUR 69
+  plus a card and reader, and they issue to an individual, not to the
+  Foundation's HSM-held key. The free tiers that do exist (SignPath's own,
+  Certum's OSS tier) both issue to *their* entity, so neither can fill a
+  `CN=SignPath Foundation` CSR.
+- **Import our own PFX instead.** Technically supported, but see the route
+  table above: it costs money, moves the key out of an HSM, and is described by
+  SignPath as a temporary measure.
+- **Delete and recreate the certificate.** It would come back as another CSR
+  and burn one of the two HSM certificate slots the OSS quota grants.
+- **Quota is not the problem.** The organization shows 1 of 2 HSM slots used and
+  7 of 48,000 signatures for the period, so nothing is exhausted or throttled.
 
 `the selected signing policy is not valid` is SignPath refusing a policy whose
 certificate has no usable public key. In CSR mode the private key is generated
