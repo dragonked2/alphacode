@@ -69,6 +69,49 @@ release, tags, or publishes anything.
 The reason this has to run on CI at all is the upload ceiling measured below:
 the maintainer's network cannot send the archive.
 
+## Rehearsal result: signing works end to end (2026-11-26)
+
+The first fully green run of `signpath-rehearsal.yml` (run `45809064986`,
+source `25e21c7`) completed every step:
+
+| Step | Result |
+|---|---|
+| Build Windows binaries | success |
+| Package archive (same layout as the release) | success |
+| Structural guards (unsigned bytes) | success |
+| Upload unsigned binaries for signing | success |
+| Submit signing request | success -- `c65ec8ac-4590-4636-91a8-1272f740b193` |
+| Verify signed binaries | success |
+| Assert Authenticode signatures are present | success |
+| Upload + report | success |
+
+Both signed binaries pass every structural guard *after* signing:
+
+```
+OK: signed-check/alphacode.exe has no overlay and complete VERSIONINFO
+OK: signed-check/alphacode.exe contains 1 PE image
+OK: alphacode.exe contains none of the known AV trigger strings
+OK: signed-check/AlphaCode.Desktop.exe has no overlay and complete VERSIONINFO
+OK: signed-check/AlphaCode.Desktop.exe contains 1 PE image
+OK: AlphaCode.Desktop.exe contains none of the known AV trigger strings
+```
+
+and both report a signer:
+
+```
+alphacode.exe        : signer=CN=Test certificate for 'Alphacode [OSS]'
+AlphaCode.Desktop.exe: signer=CN=Test certificate for 'Alphacode [OSS]'
+```
+
+`Get-AuthenticodeSignature` reports `UnknownError` rather than `Valid` because
+the test certificate's chain is not trusted by Windows. That is the expected
+success condition for the test certificate -- a signer is present, and shipping
+it would be pointless, which is exactly why `release.yml` refuses
+`test-signing`.
+
+This is the "all set" evidence the Foundation asked for: a real GitHub Actions
+build, origin-verified through the connector, signed successfully.
+
 ## Double-zip trap: `archive: false` does not do what it looks like
 
 The first real submission through the connector (request `ee6df7d7`) was
