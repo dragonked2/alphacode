@@ -1,0 +1,301 @@
+name: signpath rehearsal
+
+# Produce the one piece of evidence the SignPath Foundation handshake is waiting
+# for: a signing request that actually SUCCEEDS.
+#
+# Why this exists
+# ---------------
+# The Foundation program is not a queue. `oss-support@signpath.org` stated the
+# sequence explicitly (2026-11-25):
+#
+#   "Once you're all set, we'll review the setup and order the actual production
+#    certificate and import it into your organization."
+#
+# and, earlier:
+#
+#   "After the technical setup and origin verification have been successfully
+#    completed, we can then order and import the production (release) certificate."
+#
+# So `release-signing` stays INVALID until we demonstrate a working setup. Every
+# signing request this organization has ever made is `Failed` -- the three on
+# record are a 250-byte probe and two upload probes, none of which contained the
+# `alphacode.exe` + `AlphaCode.Desktop.exe` pair the artifact configuration
+# names. Waiting for the certificate therefore accomplishes nothing.
+#
+# The real archive cannot be submitted from the maintainer's machine: measured
+# send rate to app.signpath.io is about 20 KB/s (100 KB -> HTTP 201 in 0.9 s,
+# 1 MB -> 201 in 48.9 s, 4 MB and up -> socket write timeout), so a 33 MB
+# archive never completes. See docs/engineering/code-signing.md. GitHub-hosted
+# runners do not share that path, which is exactly why this runs here.
+#
+# What this does NOT do
+# ---------------------
+# It never creates a release, never tags, never publishes and never touches
+# `dist/`. It signs with `test-signing` on purpose: that certificate is trusted
+# by nothing, so the output is a rehearsal artifact and not something a user
+# could mistake for an official build. The release pipeline still refuses
+# `test-signing` outright.
+#
+# Why a single job on windows-latest
+# ----------------------------------
+# The GitHub connector requires that every job leading to a signing request ran
+# on GitHub-hosted agents for OSS projects. One job keeps that trivially true
+# and avoids any second workflow being pulled into the origin evaluation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      signing_policy_slug:
+        description: >-
+          Signing policy to rehearse. `test-signing` works today; use
+          `release-signing` only after SignPath imports the production
+          certificate (it will fail while the certificate is CSR PENDING).
+        type: string
+        default: test-signing
+        required: true
+      artifact_configuration_slug:
+        description: Artifact configuration slug.
+        type: string
+        default: windows-release
+        required: true
+
+# Rehearsals are cheap to repeat and never publish anything, so superseding an
+# in-flight run is harmless.
+concurrency:
+  group: signpath-rehearsal-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Match the release build so the signed bytes are representative.
+  RUSTFLAGS: "-D warnings"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rehearse:
+    name: build, sign (test certificate), verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # build.rs embeds the git hash in the version string.
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Keep in sync with rust-toolchain.toml and release.yml.
+          toolchain: 1.94.1
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rehearsal-${{ runner.os }}-x86_64-pc-windows-msvc-1.94.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            rehearsal-${{ runner.os }}-x86_64-pc-windows-msvc-1.94.1-
+            release-v2-${{ runner.os }}-x86_64-pc-windows-msvc-1.94.1-
+
+      # Refuse to rehearse by publishing a test signature somewhere it could be
+      # confused for a release. This workflow has no publish step at all; the
+      # check is here so a future edit cannot quietly add one.
+      - name: Guard against release-signing misuse
+        shell: bash
+        env:
+          POLICY: ${{ inputs.signing_policy_slug }}
+        run: |
+          set -euo pipefail
+          case "$POLICY" in
+            test-signing) ;;
+            release-signing)
+              echo "::notice::Rehearsing the production policy. This only succeeds after SignPath imports the certificate."
+              ;;
+            *)
+              echo "::error::Unknown signing policy '$POLICY'. Use test-signing, or release-signing once the certificate is issued."
+              exit 1
+              ;;
+          esac
+
+      - name: Build Windows binaries
+        shell: bash
+        env:
+          TARGET: x86_64-pc-windows-msvc
+        run: |
+          set -euo pipefail
+          # Same remaps as release.yml: strip the builder's home directory out
+          # of the image. Without them the binary carries the runner account
+          # name thousands of times, which is a privacy leak and a reputation
+          # signal, and the signed bytes would not be representative.
+          workspace="$(cygpath -m "$PWD")"
+          registry="$HOME/.cargo/registry"
+          export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${workspace}=/alphacode --remap-path-prefix=${registry}=/cargo/registry"
+          export ALPHACODE_RELEASE_BUILD=1
+          export ALPHACODE_BUILD_GIT_DIRTY=0
+          # No tag on a dispatch; derive the identity from the manifest so
+          # `--version` reports the version this source actually declares.
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          export ALPHACODE_BUILD_SEMVER="$version"
+          echo "Rehearsal version: $version"
+          cargo build --release --locked --target "$TARGET" --bin alphacode
+
+      - name: Package archive (same layout as the release)
+        shell: bash
+        env:
+          TARGET: x86_64-pc-windows-msvc
+          ARCHIVE_BASE: alphacode-windows-x86_64
+          BIN: target/x86_64-pc-windows-msvc/release/alphacode.exe
+          HOST: target/x86_64-pc-windows-msvc/release/AlphaCode.Desktop.exe
+        run: |
+          set -euo pipefail
+          test -f "$BIN"  || { echo "::error::$BIN was not produced"; exit 1; }
+          test -f "$HOST" || { echo "::error::$HOST was not produced - the GUI host must ship beside the binary"; exit 1; }
+          # Python rather than `zip`, for the reasons documented in release.yml
+          # (Git for Windows ships no zip binary). arcname=basename keeps `zip -j`
+          # semantics so both files land at the archive root.
+          python - "$BIN" "$HOST" "${ARCHIVE_BASE}.zip" <<'PY'
+          import os, sys, zipfile
+
+          bin_path, host_path, out = sys.argv[1:4]
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+              for path in (bin_path, host_path):
+                  zf.write(path, arcname=os.path.basename(path))
+          PY
+          unzip -l "${ARCHIVE_BASE}.zip"
+
+      # The same structural guards the release runs, applied before signing, so
+      # a rehearsal failure is distinguishable from a signing failure.
+      - name: Structural guards (unsigned bytes)
+        shell: bash
+        env:
+          TARGET: x86_64-pc-windows-msvc
+          ARCHIVE_BASE: alphacode-windows-x86_64
+        run: |
+          set -euo pipefail
+          python scripts/verify-pe-single-image.py "target/$TARGET/release/alphacode.exe"
+          python scripts/verify-no-av-triggers.py  "target/$TARGET/release/alphacode.exe"
+          python scripts/verify-pe-metadata.py     "target/$TARGET/release/AlphaCode.Desktop.exe"
+          python scripts/verify-no-av-triggers.py  "target/$TARGET/release/AlphaCode.Desktop.exe"
+          listing="$(unzip -Z1 "${ARCHIVE_BASE}.zip")"
+          for required in alphacode.exe AlphaCode.Desktop.exe; do
+            grep -qx "$required" <<<"$listing" || {
+              echo "::error::${ARCHIVE_BASE}.zip is missing $required at the archive root"; exit 1; }
+          done
+
+      # archive:false stores the zip as-is, so SignPath receives exactly the
+      # structure scripts/signpath/artifact-configuration.xml describes: a
+      # <zip-file> root holding the two named <pe-file> entries.
+      - name: Upload unsigned archive for signing
+        id: rehearsal-upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: rehearsal-unsigned-alphacode-windows-x86_64
+          path: alphacode-windows-x86_64.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Submit signing request
+        id: sign
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ inputs.signing_policy_slug }}
+          artifact-configuration-slug: ${{ inputs.artifact_configuration_slug }}
+          github-artifact-id: ${{ steps.rehearsal-upload.outputs.artifact-id }}
+          wait-for-completion: true
+          skip-decompress: true
+          output-artifact-directory: signed-win
+
+      - name: Record the signing request URL
+        shell: bash
+        env:
+          REQUEST_ID: ${{ steps.sign.outputs.signing-request-id }}
+          REQUEST_URL: ${{ steps.sign.outputs.signing-request-web-url }}
+          POLICY: ${{ inputs.signing_policy_slug }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## SignPath rehearsal succeeded"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Signing policy | \`$POLICY\` |"
+            echo "| Signing request | \`$REQUEST_ID\` |"
+            echo "| Request URL | $REQUEST_URL |"
+            echo "| Source revision | \`${{ github.sha }}\` |"
+            echo
+            echo "This is the artifact-level success the Foundation setup check asks for."
+            echo "Send the request URL to oss-support@signpath.org."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Signing request: $REQUEST_ID"
+          echo "URL: $REQUEST_URL"
+
+      - name: Verify signed binaries
+        shell: bash
+        env:
+          ARCHIVE_BASE: alphacode-windows-x86_64
+        run: |
+          set -euo pipefail
+          signed="signed-win/${ARCHIVE_BASE}.zip"
+          [ -f "$signed" ] || { echo "::error::SignPath produced no ${ARCHIVE_BASE}.zip"; exit 1; }
+          mkdir -p signed-check
+          python scripts/signpath/archive-tool.py "$signed" --extract signed-check >/dev/null
+          # The order is the point: SignPath must not add a PE overlay (the
+          # certificate table is excluded from that check by design) and must
+          # not disturb the two structural fixes that produced this release.
+          for binary in alphacode.exe AlphaCode.Desktop.exe; do
+            path="signed-check/$binary"
+            [ -f "$path" ] || { echo "::error::$signed is missing $binary after signing"; exit 1; }
+            python scripts/verify-pe-metadata.py "$path"
+            python scripts/verify-pe-single-image.py "$path"
+            python scripts/verify-no-av-triggers.py "$path"
+          done
+
+      - name: Assert Authenticode signatures are present
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('alphacode.exe', 'AlphaCode.Desktop.exe')) {
+            $sig = Get-AuthenticodeSignature -LiteralPath "signed-check/$name"
+            Write-Host ("{0}: {1} signer={2}" -f $name, $sig.Status, $sig.SignerCertificate.Subject)
+            if (-not $sig.SignerCertificate) {
+              Write-Host "::error::signed-check/$name has no Authenticode signature"
+              exit 1
+            }
+            # Expected on the self-signed test certificate: a signer is present
+            # but the chain is untrusted. That is the success condition for a
+            # rehearsal. Once this runs against the production policy the status
+            # must be Valid.
+            if ($sig.Status -ne 'Valid') {
+              Write-Host "::warning::$name is signed but the chain is not trusted (self-signed test certificate)."
+            }
+          }
+          Write-Host "Signed archive verified."
+
+      - name: Upload the signed rehearsal archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: rehearsal-signed-alphacode-windows-x86_64
+          path: signed-win/alphacode-windows-x86_64.zip
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Report the signed binaries
+        shell: pwsh
+        run: |
+          foreach ($name in @('alphacode.exe', 'AlphaCode.Desktop.exe')) {
+            $sig = Get-AuthenticodeSignature -LiteralPath "signed-check/$name"
+            $fileVersion = (Get-Item "signed-check/$name").VersionInfo.FileVersion
+            Add-Content $env:GITHUB_STEP_SUMMARY ""
+            Add-Content $env:GITHUB_STEP_SUMMARY "### $name"
+            Add-Content $env:GITHUB_STEP_SUMMARY "- FileVersion: $fileVersion"
+            Add-Content $env:GITHUB_STEP_SUMMARY "- Signature status: $($sig.Status)"
+            Add-Content $env:GITHUB_STEP_SUMMARY "- Signer: $($sig.SignerCertificate.Subject)"
+          }
