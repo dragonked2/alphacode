@@ -53,6 +53,7 @@ pub mod perf;
 pub mod plugin;
 pub mod replay;
 pub mod restart_snapshot;
+pub mod secret_management;
 pub mod server;
 pub mod server_spawn;
 pub mod session_effort;

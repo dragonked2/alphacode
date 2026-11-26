@@ -36,6 +36,13 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
         echo "set CARGO_TARGET_DIR=$(cygpath -w "$CARGO_TARGET_DIR")"
         echo "set ALPHACODE_RELEASE_BUILD=1"
         echo "set ALPHACODE_BUILD_GIT_DIRTY=0"
+        # Match .github/workflows/release.yml: remap the workspace and the cargo
+        # registry to stable virtual prefixes. `strip = true` drops the symbol
+        # table but not `file!()` string literals, so without this the local
+        # release binary carries the builder's home directory ~2,000 times -- a
+        # privacy leak and an "unsigned PE full of one account's paths"
+        # reputation signal. Verified: 2,097 occurrences before, 0 after.
+        echo "set RUSTFLAGS=${RUSTFLAGS:-} --remap-path-prefix=$(cygpath -m "$REPO")=/alphacode --remap-path-prefix=$(cygpath -m "$HOME/.cargo/registry")=/cargo/registry"
         echo "cd /d \"$(cygpath -w "$REPO")\""
         echo "cargo build --release --locked --bin alphacode"
     } > "$script"
@@ -62,7 +69,18 @@ python3 scripts/verify-pe-single-image.py "$HOST" || exit 1
 echo "==> AV trigger guard"
 # The bundled skill corpus ships deflated; if it regressed to plaintext
 # include_str! storage the binary matches infostealer YARA rules again.
+# The GUI host embeds gui.ps1 as a managed resource, so it is scanned too:
+# the release workflow's 1.1.21 gap was that only the CLI was checked.
 python3 scripts/verify-no-av-triggers.py "$BIN" || exit 1
+python3 scripts/verify-no-av-triggers.py "$HOST" || exit 1
+
+echo "==> PE metadata guard"
+# The 1.1.21 host was flagged `overlay` + dropper on VirusTotal: build.rs
+# appended a VERSIONINFO .res past the last section (684 bytes of overlay) and
+# Windows still reported ProductName/CompanyName/LegalCopyright as empty. Both
+# binaries must have zero overlay and complete VERSIONINFO from the mapped image.
+python3 scripts/verify-pe-metadata.py "$BIN" || exit 1
+python3 scripts/verify-pe-metadata.py "$HOST" || exit 1
 
 echo "==> package"
 ARCHIVE="alphacode-windows-x86_64"

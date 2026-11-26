@@ -331,9 +331,16 @@ fn telemetry_alphacode_repo_dir() -> Option<PathBuf> {
         }
     }
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if let Some(repo) = find_alphacode_repo_in_ancestors(&manifest_dir) {
-        return Some(repo);
+    // Release builds must not carry `env!("CARGO_MANIFEST_DIR")`: it bakes the
+    // builder's absolute path into the binary, which is a privacy leak and an
+    // "unsigned PE full of one account's paths" reputation signal. The
+    // executable-relative and working-directory fallbacks below cover the case
+    // in a release.
+    if !crate::alphacode_build_meta::is_release_build() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        if let Some(repo) = find_alphacode_repo_in_ancestors(&manifest_dir) {
+            return Some(repo);
+        }
     }
 
     if let Ok(exe) = std::env::current_exe()

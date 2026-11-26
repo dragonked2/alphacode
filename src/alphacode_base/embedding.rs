@@ -16,6 +16,9 @@ use crate::storage::alphacode_dir;
 
 /// LRU cache capacity for recent embeddings
 const EMBEDDING_CACHE_CAPACITY: usize = 128;
+const MAX_CACHE_KEY_BYTES: usize = 4096;
+const LOAD_RETRY_DELAY: Duration = Duration::from_secs(60);
+static MODEL_LOAD_GATE: Mutex<()> = Mutex::new(());
 
 /// Global embedder cache and runtime stats.
 ///
@@ -37,7 +40,8 @@ pub struct Embedder {
 #[derive(Default)]
 struct EmbedderCache {
     embedder: Option<Arc<Embedder>>,
-    load_error: Option<String>,
+    load_error: Option<Instant>,
+    generation: u64,
     loaded_at: Option<Instant>,
     last_used_at: Option<Instant>,
     load_count: u64,
@@ -45,8 +49,8 @@ struct EmbedderCache {
     embed_calls: u64,
     embed_failures: u64,
     total_embed_ms: u64,
-    /// LRU embedding cache: maps text hash -> (embedding, insertion order)
-    embedding_lru: std::collections::HashMap<u64, (EmbeddingVec, u64)>,
+    /// Exact bounded text keys avoid hash collision aliasing. RAM only.
+    embedding_lru: std::collections::HashMap<String, (EmbeddingVec, u64)>,
     lru_counter: u64,
     cache_hits: u64,
 }
@@ -88,7 +92,9 @@ impl Embedder {
     pub fn load() -> Result<Self> {
         let model_dir = models_dir()?;
         if !backend::is_model_available(&model_dir) {
-            crate::logging::info("Embedding model missing; downloading (one-time setup)...");
+            crate::logging::info(
+                "Local embedding model unavailable; attempting backend initialization",
+            );
         }
         let inner = backend::Embedder::load_from_dir(&model_dir)?;
         Ok(Self { inner })
@@ -118,36 +124,63 @@ impl Embedder {
 /// Returns an `Arc` so callers can keep using the model even if an idle
 /// unload happens concurrently in the background.
 pub fn get_embedder() -> Result<Arc<Embedder>> {
+    // Fast path does not wait on the model load gate or disk initialization.
+    {
+        let mut cache = embedder_cache()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Embedder cache lock poisoned"))?;
+        cache.last_used_at = Some(Instant::now());
+        if let Some(embedder) = cache.embedder.as_ref() {
+            return Ok(Arc::clone(embedder));
+        }
+        if cache
+            .load_error
+            .is_some_and(|at| at.elapsed() < LOAD_RETRY_DELAY)
+        {
+            anyhow::bail!("Local embedding backend temporarily unavailable");
+        }
+    }
+    let _load = MODEL_LOAD_GATE
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Embedder load lock poisoned"))?;
+    let generation = {
+        let mut cache = embedder_cache()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Embedder cache lock poisoned"))?;
+        cache.last_used_at = Some(Instant::now());
+        if let Some(embedder) = cache.embedder.as_ref() {
+            return Ok(Arc::clone(embedder));
+        }
+        if cache
+            .load_error
+            .is_some_and(|at| at.elapsed() < LOAD_RETRY_DELAY)
+        {
+            anyhow::bail!("Local embedding backend temporarily unavailable");
+        }
+        cache.generation
+    };
+    let loaded = Embedder::load();
     let mut cache = embedder_cache()
         .lock()
         .map_err(|_| anyhow::anyhow!("Embedder cache lock poisoned"))?;
-
-    cache.last_used_at = Some(Instant::now());
-
-    if let Some(embedder) = cache.embedder.as_ref() {
-        return Ok(Arc::clone(embedder));
+    if cache.generation != generation {
+        anyhow::bail!("Embedding model initialization invalidated");
     }
-
-    if let Some(err) = cache.load_error.as_ref() {
-        return Err(anyhow::anyhow!("{}", err));
-    }
-
-    let loaded = match Embedder::load() {
+    let loaded = match loaded {
         Ok(embedder) => Arc::new(embedder),
-        Err(e) => {
-            let msg = e.to_string();
-            cache.load_error = Some(msg.clone());
-            return Err(anyhow::anyhow!(msg));
+        Err(err) => {
+            cache.load_error = Some(Instant::now());
+            return Err(err);
         }
     };
-
     cache.embedder = Some(Arc::clone(&loaded));
     cache.load_error = None;
     cache.load_count = cache.load_count.saturating_add(1);
     let now = Instant::now();
     cache.loaded_at = Some(now);
     cache.last_used_at = Some(now);
-
+    drop(cache);
+    drop(_load);
     crate::logging::info("Embedding model loaded into memory");
     crate::runtime_memory_log::emit_event(
         crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
@@ -159,39 +192,51 @@ pub fn get_embedder() -> Result<Arc<Embedder>> {
     Ok(loaded)
 }
 
-/// Hash text for the LRU embedding cache.
-fn hash_text(text: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut hasher);
-    hasher.finish()
-}
-
 /// Generate embedding for text using the global embedder.
 ///
 /// Results are cached in an LRU so repeated queries for the same text
 /// return instantly.
 pub fn embed(text: &str) -> Result<EmbeddingVec> {
-    let text_hash = hash_text(text);
+    anyhow::ensure!(!text.trim().is_empty(), "Cannot embed empty text");
+    let cacheable = text.len() <= MAX_CACHE_KEY_BYTES;
 
     // Check cache first
-    if let Ok(mut cache) = embedder_cache().lock()
-        && let Some((emb, _)) = cache.embedding_lru.get(&text_hash)
+    if cacheable
+        && let Ok(mut cache) = embedder_cache().lock()
+        && let Some((emb, _)) = cache.embedding_lru.get(text)
     {
         let result = emb.clone();
         cache.cache_hits = cache.cache_hits.saturating_add(1);
         cache.last_used_at = Some(Instant::now());
         let counter = cache.lru_counter;
         cache.lru_counter = counter.wrapping_add(1);
-        if let Some(entry) = cache.embedding_lru.get_mut(&text_hash) {
+        if let Some(entry) = cache.embedding_lru.get_mut(text) {
             entry.1 = counter;
         }
         return Ok(result);
     }
 
-    let embedder = get_embedder()?;
     let started = Instant::now();
-    let result = embedder.embed(text);
+    let embedder = match get_embedder() {
+        Ok(embedder) => embedder,
+        Err(err) => {
+            if let Ok(mut cache) = embedder_cache().lock() {
+                cache.embed_calls = cache.embed_calls.saturating_add(1);
+                cache.embed_failures = cache.embed_failures.saturating_add(1);
+                cache.total_embed_ms = cache
+                    .total_embed_ms
+                    .saturating_add(saturating_u64_from_u128(started.elapsed().as_millis()));
+            }
+            return Err(err);
+        }
+    };
+    let result = embedder.embed(text).and_then(|v| {
+        anyhow::ensure!(
+            v.len() == embedding_dim() && valid_vector(&v),
+            "Invalid local embedding vector"
+        );
+        Ok(v)
+    });
     let elapsed_ms = saturating_u64_from_u128(started.elapsed().as_millis());
 
     if let Ok(mut cache) = embedder_cache().lock() {
@@ -199,12 +244,23 @@ pub fn embed(text: &str) -> Result<EmbeddingVec> {
         cache.total_embed_ms = cache.total_embed_ms.saturating_add(elapsed_ms);
         cache.last_used_at = Some(Instant::now());
         if let Ok(ref emb) = result {
-            if cache.embedding_lru.len() >= EMBEDDING_CACHE_CAPACITY {
+            // An unloaded/replaced model must not repopulate the cleared cache.
+            if !cacheable
+                || !cache
+                    .embedder
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &embedder))
+            {
+                return result;
+            }
+            if cache.embedding_lru.len() >= EMBEDDING_CACHE_CAPACITY
+                && !cache.embedding_lru.contains_key(text)
+            {
                 let oldest_key = cache
                     .embedding_lru
                     .iter()
                     .min_by_key(|(_, (_, counter))| *counter)
-                    .map(|(&k, _)| k);
+                    .map(|(k, _)| k.clone());
                 if let Some(k) = oldest_key {
                     cache.embedding_lru.remove(&k);
                 }
@@ -213,7 +269,7 @@ pub fn embed(text: &str) -> Result<EmbeddingVec> {
             cache.lru_counter = counter.wrapping_add(1);
             cache
                 .embedding_lru
-                .insert(text_hash, (emb.clone(), counter));
+                .insert(text.to_owned(), (emb.clone(), counter));
         } else {
             cache.embed_failures = cache.embed_failures.saturating_add(1);
         }
@@ -239,8 +295,14 @@ pub fn maybe_unload_if_idle(idle_for: Duration) -> bool {
         };
 
         let idle = last_used.elapsed();
-        if idle >= idle_for {
+        if idle >= idle_for
+            && cache
+                .embedder
+                .as_ref()
+                .is_some_and(|model| Arc::strong_count(model) == 1)
+        {
             cache.embedder = None;
+            cache.generation = cache.generation.wrapping_add(1);
             cache.loaded_at = None;
             cache.unload_count = cache.unload_count.saturating_add(1);
             cache.embedding_lru.clear();
@@ -272,14 +334,15 @@ pub fn maybe_unload_if_idle(idle_for: Duration) -> bool {
 /// Force unload the global embedder and clear its embedding cache.
 pub fn unload_now() -> bool {
     let mut unloaded = false;
-    if let Ok(mut cache) = embedder_cache().lock()
-        && cache.embedder.is_some()
-    {
-        cache.embedder = None;
-        cache.loaded_at = None;
-        cache.unload_count = cache.unload_count.saturating_add(1);
+    if let Ok(mut cache) = embedder_cache().lock() {
+        cache.generation = cache.generation.wrapping_add(1);
+        cache.load_error = None;
         cache.embedding_lru.clear();
-        unloaded = true;
+        unloaded = cache.embedder.take().is_some();
+        cache.loaded_at = None;
+        if unloaded {
+            cache.unload_count = cache.unload_count.saturating_add(1);
+        }
     }
 
     if unloaded {
@@ -319,8 +382,11 @@ pub fn stats() -> EmbedderStats {
 
             let cache_bytes_estimate = cache
                 .embedding_lru
-                .values()
-                .map(|(embedding, _)| embedding.len().saturating_mul(std::mem::size_of::<f32>()))
+                .iter()
+                .map(|(text, (embedding, _))| {
+                    text.capacity()
+                        .saturating_add(embedding.len().saturating_mul(std::mem::size_of::<f32>()))
+                })
                 .sum::<usize>() as u64;
 
             EmbedderStats {
@@ -378,24 +444,69 @@ fn artifact_sizes() -> (u64, u64) {
     (model_bytes, tokenizer_bytes)
 }
 
-/// Compute cosine similarity between two embeddings.
+fn valid_vector(vector: &[f32]) -> bool {
+    !vector.is_empty() && vector.iter().all(|v| v.is_finite()) && vector.iter().any(|v| *v != 0.0)
+}
+
+fn checked_cosine(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.is_empty() || a.len() != b.len() {
+        return None;
+    }
+    let (mut dot, mut norm_a, mut norm_b) = (0.0f64, 0.0f64, 0.0f64);
+    for (&x, &y) in a.iter().zip(b) {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let (x, y) = (f64::from(x), f64::from(y));
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
+    }
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return None;
+    }
+    Some((dot / (norm_a.sqrt() * norm_b.sqrt())).clamp(-1.0, 1.0) as f32)
+}
+
+/// Invalid vectors map to zero for compatibility with the scalar API. Retrieval
+/// should exclude invalid vectors rather than interpret zero as a real score.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    backend::cosine_similarity(a, b)
+    checked_cosine(a, b).unwrap_or(0.0)
 }
 
-/// Compute cosine similarities between a query and many candidates.
 pub fn batch_cosine_similarity(query: &[f32], candidates: &[&[f32]]) -> Vec<f32> {
-    backend::batch_cosine_similarity(query, candidates)
+    candidates
+        .iter()
+        .map(|candidate| cosine_similarity(query, candidate))
+        .collect()
 }
 
-/// Find the top-k most similar embeddings from a list.
+/// Filter invalid vectors before ranking; preserve deterministic index ties.
 pub fn find_similar(
     query: &[f32],
     candidates: &[EmbeddingVec],
     threshold: f32,
     top_k: usize,
 ) -> Vec<(usize, f32)> {
-    backend::find_similar(query, candidates, threshold, top_k)
+    if top_k == 0 || !threshold.is_finite() || !valid_vector(query) {
+        return Vec::new();
+    }
+    let mut results: Vec<_> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, v)| {
+            checked_cosine(query, v)
+                .filter(|score| *score >= threshold)
+                .map(|score| (idx, score))
+        })
+        .collect();
+    let order = |a: &(usize, f32), b: &(usize, f32)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
+    if results.len() > top_k {
+        results.select_nth_unstable_by(top_k, order);
+        results.truncate(top_k);
+    }
+    results.sort_unstable_by(order);
+    results
 }
 
 /// Get the models directory path.
@@ -422,6 +533,34 @@ pub const fn embedding_dim() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_vectors_do_not_rank_even_at_negative_threshold() {
+        let candidates = vec![
+            vec![f32::NAN, 1.0],
+            vec![0.0, 0.0],
+            vec![1.0],
+            vec![1.0, 0.0],
+        ];
+        assert_eq!(
+            find_similar(&[1.0, 0.0], &candidates, -1.0, 10),
+            vec![(3, 1.0)]
+        );
+        assert_eq!(cosine_similarity(&[f32::MAX], &[f32::MAX]), 1.0);
+        assert_eq!(
+            cosine_similarity(&[f32::MIN_POSITIVE], &[f32::MIN_POSITIVE]),
+            1.0
+        );
+    }
+
+    #[test]
+    fn ranking_ties_are_deterministic() {
+        let candidates = vec![vec![1.0], vec![1.0], vec![1.0]];
+        assert_eq!(
+            find_similar(&[1.0], &candidates, 0.0, 2),
+            vec![(0, 1.0), (1, 1.0)]
+        );
+    }
 
     #[test]
     fn test_cosine_similarity() {

@@ -1369,7 +1369,11 @@ fn test_render_messages_shows_auto_poke_continuations_as_system_not_user() {
     assert!(
         system_contents
             .iter()
-            .any(|content| content.contains("Double-checking confidence")),
+            // The user-facing notice for this continuation is "Reviewing
+            // completion evidence..." (see todo.rs::system_notice_for). The
+            // assertion keeps the invariant -- a short system notice rather
+            // than the model-facing instruction -- while tracking the copy.
+            .any(|content| content.contains("Reviewing completion evidence")),
         "quality continuation should render as a short system notice: {rendered:?}"
     );
     // The model-facing instruction text stays out of the transcript.

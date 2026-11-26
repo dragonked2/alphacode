@@ -2487,7 +2487,10 @@ fn test_finish_turn_auto_poke_queues_confidence_summary_when_todos_done() {
         assert!(commands::is_poke_message(summary));
         assert!(commands::is_todo_confidence_summary_message(summary));
         assert!(summary.starts_with(crate::todo::TODO_COMPLETION_CONTINUATION_MESSAGE));
-        assert!(summary.contains("completion confidence"));
+        // Wording tracks TODO_COMPLETION_CONTINUATION_MESSAGE, which now says
+        // "Completion confidence needs review". The invariant this protects is
+        // that the gate names the assessment it is asking to update.
+        assert!(summary.to_ascii_lowercase().contains("completion confidence"));
         // The continuation self-identifies as an automated gate so the model
         // does not mistake it for a user message, but never discloses the
         // numeric threshold.

@@ -72,7 +72,8 @@ pub struct DisplayConfig {
     /// The decoration is intentionally *calm*: a stable wordmark with optional
     /// slow fade-in, not the historical 3D ASCII donut (which redrew ~60 frames
     /// a second of subpixel shading characters and read as fuzzy / glitchy in
-    /// many terminals). Flip this back on with `idle_animation = true` to
+    /// many terminals). The historical donut ran at ~60 FPS; the modern default
+    /// is a calm wordmark at 20 FPS. Flip this back on with `idle_animation = true` to
     /// restore the 3D donut/orbit-rings animation. Default: false.
     pub idle_animation: bool,
     /// Briefly animate user prompt line when it enters viewport (default: true)
@@ -88,6 +89,8 @@ pub struct DisplayConfig {
     /// capped at 30 FPS at runtime (see `redraw_schedule.rs` for the measured
     /// CPU data behind that cap); functional motion (spinners, streaming
     /// reveal, scroll catch-up) keeps the configured rate.
+    ///
+    /// Note: The default is 20 FPS. Documentation claiming 60 FPS was incorrect.
     pub animation_fps: u32,
     /// FPS for active redraw (processing, streaming): 1-120 (default: 60)
     pub redraw_fps: u32,

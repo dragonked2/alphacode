@@ -1,13 +1,15 @@
 //! Persistent memory event log for post-session analysis.
 //!
 //! Writes structured JSONL (one JSON object per line) to:
-//!   `~/.alphacode/logs/memory-events-YYYY-MM-DD.jsonl`
+//!   `<AlphaCode home>/logs/memory-events-YYYY-MM-DD.jsonl`
 //!
 //! Every memory pipeline event - embedding search, sidecar verification,
 //! injection, extraction, maintenance, tool actions - is captured with
-//! wall-clock timestamps, session ID, and full details.
+//! wall-clock timestamps, session ID, and metadata only. Raw memory content,
+//! prompts, tool arguments, and provider error bodies are intentionally omitted.
 //!
-//! Logs are kept for 14 days (separate from general log rotation).
+//! Logs are retained for 14 days when cleanup runs; each daily file is capped
+//! at 16 MiB on a best-effort basis. Excess records are dropped.
 
 use crate::memory_types::MemoryEventKind;
 use chrono::Local;
@@ -18,52 +20,117 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 static MEMORY_LOGGER: Mutex<Option<MemoryLogger>> = Mutex::new(None);
+const MAX_DAILY_LOG_BYTES: u64 = 16 * 1024 * 1024;
+static LOG_FAILURE_REPORTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn report_log_failure() {
+    if !LOG_FAILURE_REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("AlphaCode: memory event logging unavailable or daily limit reached");
+    }
+}
+
+fn regular_or_absent(path: &std::path::Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => meta.file_type().is_file(),
+        Err(err) => err.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+fn safe_label(value: &serde_json::Value, allowed: &[&str]) -> String {
+    let Some(text) = value.as_str() else {
+        return "other".into();
+    };
+    let normalized = text.to_ascii_lowercase();
+    if allowed.contains(&normalized.as_str()) {
+        normalized
+    } else {
+        "other".into()
+    }
+}
+
+fn safe_session(value: &str) -> Option<String> {
+    if !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        Some(value.to_owned())
+    } else {
+        None
+    }
+}
 
 struct MemoryLogger {
     file: File,
     current_date: String,
+    path: PathBuf,
+    written: u64,
 }
 
 impl MemoryLogger {
     fn open(date: &str) -> Option<Self> {
         let dir = log_dir()?;
         fs::create_dir_all(&dir).ok()?;
+        if !fs::symlink_metadata(&dir).ok()?.file_type().is_dir() {
+            return None;
+        }
         let path = dir.join(format!("memory-events-{}.jsonl", date));
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .ok()?;
+        if !regular_or_absent(&path) {
+            return None;
+        }
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path).ok()?;
+        let metadata = file.metadata().ok()?;
+        if !metadata.is_file() {
+            return None;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))
+                .ok()?;
+        }
         Some(Self {
             file,
-            current_date: date.to_string(),
+            current_date: date.to_owned(),
+            path,
+            written: metadata.len(),
         })
     }
 
-    fn write_entry(&mut self, entry: &LogEntry) {
-        if let Ok(json) = serde_json::to_string(entry) {
-            let _ = writeln!(self.file, "{}", json);
-            let _ = self.file.flush();
+    fn write_entry(&mut self, entry: &LogEntry) -> bool {
+        let Ok(mut json) = serde_json::to_vec(entry) else {
+            return false;
+        };
+        json.push(b'\n');
+        // Refresh size to account for other appenders (not a cross-process lock).
+        let Ok(meta) = self.file.metadata() else {
+            return false;
+        };
+        self.written = meta.len();
+        if self.written.saturating_add(json.len() as u64) > MAX_DAILY_LOG_BYTES {
+            return false;
         }
+        if self.file.write_all(&json).is_err() {
+            return false;
+        }
+        self.written = self.written.saturating_add(json.len() as u64);
+        true
     }
 }
 
 fn log_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".alphacode").join("logs"))
-}
-
-fn ensure_logger(date: &str) -> bool {
-    if let Ok(mut guard) = MEMORY_LOGGER.lock() {
-        if let Some(ref logger) = *guard
-            && logger.current_date == date
-        {
-            return true;
-        }
-        *guard = MemoryLogger::open(date);
-        guard.is_some()
-    } else {
-        false
-    }
+    crate::storage::alphacode_dir()
+        .ok()
+        .map(|root| root.join("logs"))
 }
 
 #[derive(Serialize)]
@@ -83,27 +150,44 @@ fn write_log(event: &str, detail: Option<serde_json::Value>) {
     let now = Local::now();
     let date = now.format("%Y-%m-%d").to_string();
 
-    if !ensure_logger(&date) {
-        return;
-    }
-
+    let session_id = detail
+        .as_ref()
+        .and_then(|d| d.get("target_session"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(safe_session)
+        .or_else(|| current_session_id().as_deref().and_then(safe_session));
     let entry = LogEntry {
         timestamp: now.format("%Y-%m-%dT%H:%M:%S%.3f%z").to_string(),
-        session_id: current_session_id(),
-        event: event.to_string(),
+        session_id,
+        event: event.to_owned(),
         detail,
     };
-
-    if let Ok(mut guard) = MEMORY_LOGGER.lock()
-        && let Some(logger) = guard.as_mut()
+    // Date check and write must share one lock to avoid midnight races.
+    let Ok(mut guard) = MEMORY_LOGGER.lock() else {
+        report_log_failure();
+        return;
+    };
+    if guard.as_ref().is_none_or(|logger| {
+        logger.current_date != date || !regular_or_absent(&logger.path) || !logger.path.is_file()
+    }) {
+        *guard = MemoryLogger::open(&date);
+    }
+    if !guard
+        .as_mut()
+        .is_some_and(|logger| logger.write_entry(&entry))
     {
-        logger.write_entry(&entry);
+        report_log_failure();
     }
 }
 
 /// Log a memory event from the in-memory event system.
 pub fn log_event(kind: &MemoryEventKind) {
-    let (event, detail) = match kind {
+    let (event, detail) = event_metadata(kind);
+    write_log(event, detail);
+}
+
+fn event_metadata(kind: &MemoryEventKind) -> (&'static str, Option<serde_json::Value>) {
+    match kind {
         MemoryEventKind::EmbeddingStarted => ("embedding_started", None),
 
         MemoryEventKind::EmbeddingComplete { latency_ms, hits } => (
@@ -119,7 +203,7 @@ pub fn log_event(kind: &MemoryEventKind) {
         MemoryEventKind::SidecarRelevant { memory_preview } => (
             "sidecar_relevant",
             Some(serde_json::json!({
-                "memory_preview": memory_preview,
+                "memory_preview_chars": memory_preview.chars().count(),
             })),
         ),
 
@@ -135,7 +219,7 @@ pub fn log_event(kind: &MemoryEventKind) {
         MemoryEventKind::MemorySurfaced { memory_preview } => (
             "memory_surfaced",
             Some(serde_json::json!({
-                "memory_preview": memory_preview,
+                "memory_preview_chars": memory_preview.chars().count(),
             })),
         ),
 
@@ -151,11 +235,8 @@ pub fn log_event(kind: &MemoryEventKind) {
                 "count": count,
                 "prompt_chars": prompt_chars,
                 "age_ms": age_ms,
-                "preview": preview,
-                "items": items.iter().map(|i| serde_json::json!({
-                    "section": i.section,
-                    "content": i.content,
-                })).collect::<Vec<_>>(),
+                "preview_chars": preview.chars().count(),
+                "item_count": items.len(),
             })),
         ),
 
@@ -191,7 +272,7 @@ pub fn log_event(kind: &MemoryEventKind) {
         MemoryEventKind::MaintenanceTagInferred { tag, applied } => (
             "maintenance_tag_inferred",
             Some(serde_json::json!({
-                "tag": tag,
+                "tag_chars": tag.chars().count(),
                 "applied": applied,
             })),
         ),
@@ -208,7 +289,7 @@ pub fn log_event(kind: &MemoryEventKind) {
 
         MemoryEventKind::ExtractionStarted { reason } => (
             "extraction_started",
-            Some(serde_json::json!({ "reason": reason })),
+            Some(serde_json::json!({ "reason_chars": reason.chars().count() })),
         ),
 
         MemoryEventKind::ExtractionComplete { count } => (
@@ -216,9 +297,10 @@ pub fn log_event(kind: &MemoryEventKind) {
             Some(serde_json::json!({ "count": count })),
         ),
 
-        MemoryEventKind::Error { message } => {
-            ("error", Some(serde_json::json!({ "message": message })))
-        }
+        MemoryEventKind::Error { message } => (
+            "error",
+            Some(serde_json::json!({ "message_chars": message.chars().count() })),
+        ),
 
         MemoryEventKind::ToolRemembered {
             content,
@@ -227,46 +309,45 @@ pub fn log_event(kind: &MemoryEventKind) {
         } => (
             "tool_remembered",
             Some(serde_json::json!({
-                "content": content,
-                "scope": scope,
-                "category": category,
+                "content_chars": content.chars().count(),
+                "scope": safe_label(&serde_json::to_value(scope).unwrap_or_default(), &["project", "global", "all"]),
+                "category": safe_label(&serde_json::to_value(category).unwrap_or_default(), &["fact", "preference", "correction", "procedure", "skill", "note", "goal"]),
             })),
         ),
 
         MemoryEventKind::ToolRecalled { query, count } => (
             "tool_recalled",
             Some(serde_json::json!({
-                "query": query,
+                "query_chars": query.chars().count(),
                 "count": count,
             })),
         ),
 
-        MemoryEventKind::ToolForgot { id } => {
-            ("tool_forgot", Some(serde_json::json!({ "id": id })))
-        }
+        MemoryEventKind::ToolForgot { id } => (
+            "tool_forgot",
+            Some(serde_json::json!({ "id_chars": id.chars().count() })),
+        ),
 
         MemoryEventKind::ToolTagged { id, tags } => (
             "tool_tagged",
             Some(serde_json::json!({
-                "id": id,
-                "tags": tags,
+                "id_chars": id.chars().count(),
+                "tag_count": tags.len(),
             })),
         ),
 
         MemoryEventKind::ToolLinked { from, to } => (
             "tool_linked",
             Some(serde_json::json!({
-                "from": from,
-                "to": to,
+                "from_id_chars": from.chars().count(),
+                "to_id_chars": to.chars().count(),
             })),
         ),
 
         MemoryEventKind::ToolListed { count } => {
             ("tool_listed", Some(serde_json::json!({ "count": count })))
         }
-    };
-
-    write_log(event, detail);
+    }
 }
 
 /// Log when a pending memory is prepared (before it's actually injected).
@@ -274,11 +355,11 @@ pub fn log_pending_prepared(session_id: &str, prompt: &str, count: usize, memory
     write_log(
         "pending_prepared",
         Some(serde_json::json!({
-            "target_session": session_id,
+            "target_session": safe_session(session_id),
             "count": count,
             "prompt_chars": prompt.chars().count(),
-            "prompt_preview": crate::alphacode_core::util::truncate_str(prompt, 500),
-            "memory_ids": memory_ids,
+
+            "memory_id_count": memory_ids.len(),
         })),
     );
 }
@@ -291,8 +372,8 @@ pub fn log_marked_injected(session_id: &str, ids: &[String]) {
     write_log(
         "marked_injected",
         Some(serde_json::json!({
-            "target_session": session_id,
-            "memory_ids": ids,
+            "target_session": safe_session(session_id),
+            "memory_id_count": ids.len(),
         })),
     );
 }
@@ -306,9 +387,9 @@ pub fn log_marked_known(session_id: &str, ids: &[String], reason: &str) {
     write_log(
         "marked_known",
         Some(serde_json::json!({
-            "target_session": session_id,
-            "memory_ids": ids,
-            "reason": reason,
+            "target_session": safe_session(session_id),
+            "memory_id_count": ids.len(),
+            "reason_chars": reason.chars().count(),
         })),
     );
 }
@@ -318,7 +399,7 @@ pub fn log_pending_consumed(session_id: &str, count: usize, age_ms: u64, prompt_
     write_log(
         "pending_consumed",
         Some(serde_json::json!({
-            "target_session": session_id,
+            "target_session": safe_session(session_id),
             "count": count,
             "age_ms": age_ms,
             "prompt_chars": prompt_chars,
@@ -331,8 +412,8 @@ pub fn log_pending_discarded(session_id: &str, reason: &str) {
     write_log(
         "pending_discarded",
         Some(serde_json::json!({
-            "target_session": session_id,
-            "reason": reason,
+            "target_session": safe_session(session_id),
+            "reason_chars": reason.chars().count(),
         })),
     );
 }
@@ -342,9 +423,9 @@ pub fn log_topic_change(session_id: &str, old_topic: &str, new_topic: &str) {
     write_log(
         "topic_change",
         Some(serde_json::json!({
-            "target_session": session_id,
-            "old_topic": old_topic,
-            "new_topic": new_topic,
+            "target_session": safe_session(session_id),
+            "old_topic_chars": old_topic.chars().count(),
+            "new_topic_chars": new_topic.chars().count(),
         })),
     );
 }
@@ -354,7 +435,7 @@ pub fn log_final_extraction(session_id: &str, transcript_chars: usize) {
     write_log(
         "final_extraction_started",
         Some(serde_json::json!({
-            "target_session": session_id,
+            "target_session": safe_session(session_id),
             "transcript_chars": transcript_chars,
         })),
     );
@@ -370,12 +451,23 @@ pub fn log_candidate_filter(
     write_log(
         "candidate_filter",
         Some(serde_json::json!({
-            "target_session": session_id,
+            "target_session": safe_session(session_id),
             "total_candidates": total_candidates,
             "after_dedup": after_dedup,
-            "context_preview": crate::alphacode_core::util::truncate_str(context_preview, 200),
+            "context_chars": context_preview.chars().count(),
         })),
     );
+}
+
+fn safe_decision(decision: &str) -> &str {
+    // Keep the known metrics labels (both snake_case and enum Debug spelling).
+    match decision {
+        "judged" | "Judged" | "all_judges_failed" | "AllJudgesFailed" | "unparseable"
+        | "Unparseable" | "transport_error" | "TransportError" | "cadence_carry"
+        | "CadenceCarry" | "opted_out" | "OptedOut" | "no_backend" | "NoBackend"
+        | "no_candidates" | "NoCandidates" => decision,
+        _ => "other",
+    }
 }
 
 /// Log the terminal judge decision for a memory surfacing turn. This is the
@@ -391,8 +483,8 @@ pub fn log_judge_decision(
     write_log(
         "judge_decision",
         Some(serde_json::json!({
-            "target_session": session_id,
-            "decision": decision,
+            "target_session": safe_session(session_id),
+            "decision": safe_decision(decision),
             "no_llm": no_llm,
             "degradation": degradation,
             "candidate_count": candidate_count,
@@ -423,8 +515,8 @@ fn cleanup_old_memory_logs_in(dir: &std::path::Path, now: chrono::DateTime<Local
         if !(name.starts_with("memory-events-") && name.ends_with(".jsonl")) {
             continue;
         }
-        if let Ok(metadata) = entry.metadata()
-            && metadata.is_file()
+        if let Ok(metadata) = fs::symlink_metadata(entry.path())
+            && metadata.file_type().is_file()
             && let Ok(modified) = metadata.modified()
         {
             let modified: chrono::DateTime<Local> = modified.into();
@@ -439,6 +531,25 @@ fn cleanup_old_memory_logs_in(dir: &std::path::Path, now: chrono::DateTime<Local
 mod tests {
     use super::*;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn error_event_does_not_persist_raw_body() {
+        let kind = MemoryEventKind::Error {
+            message: "test-secret-value".into(),
+        };
+        let (name, detail) = event_metadata(&kind);
+        assert_eq!(name, "error");
+        let detail = detail.unwrap();
+        assert_eq!(detail["message_chars"], 17);
+        assert!(!detail.to_string().contains("test-secret-value"));
+    }
+
+    #[test]
+    fn untrusted_metadata_is_bounded() {
+        assert_eq!(safe_session("session-123").as_deref(), Some("session-123"));
+        assert!(safe_session("secret\ntext").is_none());
+        assert_eq!(safe_decision("raw provider response"), "other");
+    }
 
     #[test]
     fn memory_log_cleanup_respects_14_day_window() {

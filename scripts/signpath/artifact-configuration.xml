@@ -1,0 +1,34 @@
+<!--
+  SignPath artifact configuration for the AlphaCode Windows release archive.
+
+  Upload this with the SignPath "Custom" artifact-configuration editor (paste
+  the XML), or click "Upload an artifact sample" and feed it
+  dist/alphacode-windows-x86_64.zip. SignPath will generate an equivalent
+  configuration that you can replace with this file.
+
+  Why the root element is <zip-file>: the release ships TWO Windows binaries,
+  alphacode.exe (the CLI) and AlphaCode.Desktop.exe (the .NET/WPF GUI host).
+  They must be Authenticode-signed. A ZIP root lets SignPath sign both in a
+  single signing request, which is the shape the CI upload step produces
+  (actions/upload-artifact@v4 stores a ZIP).
+
+  Why an EXPLICIT name list instead of a wildcard: the previous layout shipped
+  the GUI host *embedded inside* alphacode.exe (see
+  docs/engineering/windows-av-false-positive.md). Naming both files exactly
+  means a change that re-embeds, renames, or adds a third binary fails the
+  signing request instead of silently signing the wrong thing. If that ever
+  happens, update this file deliberately.
+
+  hash-algorithm defaults to sha-256, which is what SmartScreen and modern
+  Windows expect; it is left implicit on purpose.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="alphacode.exe">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="AlphaCode.Desktop.exe">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

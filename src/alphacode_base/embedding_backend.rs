@@ -19,10 +19,10 @@
 //!   require instruction prefixes; others (MiniLM, OpenAI) do not. Each backend
 //!   owns its own input formatting via [`EmbeddingBackend::format_query`] /
 //!   [`EmbeddingBackend::format_passage`], so callers never hardcode prefixes.
-//! - **Local is the always-available default.** Remote backends are opt-in and
+//! - **Local is the default compatibility backend, not necessarily operational.** Remote backends are opt-in and
 //!   only selected when an embeddings-capable credential is present.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::memory_types::LEGACY_EMBEDDING_MODEL;
 
@@ -110,7 +110,7 @@ impl EmbeddingBackend for LocalOnnxBackend {
 /// against local MiniLM vectors (different vector space): see the module
 /// invariants. OpenAI embeddings are L2-normalized by the API, so plain cosine
 /// over the returned vectors is correct.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAiEmbeddingBackend {
     /// Stable `"openai:<model>"` identifier persisted on each MemoryEntry.
     model_id: String,
@@ -122,6 +122,15 @@ pub struct OpenAiEmbeddingBackend {
     api_key: String,
     /// Reported embedding dimensionality.
     dim: usize,
+}
+
+impl std::fmt::Debug for OpenAiEmbeddingBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiEmbeddingBackend")
+            .field("model_id", &self.model_id)
+            .field("dim", &self.dim)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Default OpenAI embedding model. 3-small is the cost/quality sweet spot
@@ -154,8 +163,19 @@ impl OpenAiEmbeddingBackend {
             .map(|b| b.trim_end_matches('/').to_string())
             .filter(|b| !b.is_empty())
             .unwrap_or_else(|| OPENAI_EMBEDDINGS_BASE.to_string());
+        let mut model_id = format!("openai:{model}");
+        if base_url != OPENAI_EMBEDDINGS_BASE {
+            // Stable non-secret namespace for distinct compatible gateways.
+            let fingerprint = base_url.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+            });
+            model_id.push_str(&format!(":endpoint-{fingerprint:016x}"));
+        }
+        if dim != default_openai_dim(&model) {
+            model_id.push_str(&format!(":dim-{dim}"));
+        }
         Self {
-            model_id: format!("openai:{model}"),
+            model_id,
             model,
             base_url,
             api_key: api_key.into(),
@@ -173,6 +193,35 @@ impl OpenAiEmbeddingBackend {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
+        anyhow::ensure!(
+            self.dim > 0 && self.dim <= 65_536,
+            "Invalid embedding dimension"
+        );
+        anyhow::ensure!(
+            inputs.iter().all(|text| !text.trim().is_empty()),
+            "Empty embedding input"
+        );
+        // Limit per-request work; larger batches are split by embed_passages.
+        anyhow::ensure!(inputs.len() <= 64, "Embedding batch exceeds limit");
+        anyhow::ensure!(
+            inputs.iter().all(|text| text.len() <= 128 * 1024),
+            "Embedding input exceeds byte limit"
+        );
+        let base = reqwest::Url::parse(&self.base_url)
+            .map_err(|_| anyhow::anyhow!("Invalid embedding endpoint"))?;
+        anyhow::ensure!(
+            base.scheme() == "https"
+                || (base.scheme() == "http"
+                    && matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))),
+            "Embedding endpoint must use HTTPS or local loopback HTTP"
+        );
+        anyhow::ensure!(
+            base.username().is_empty()
+                && base.password().is_none()
+                && base.query().is_none()
+                && base.fragment().is_none(),
+            "Invalid embedding endpoint components"
+        );
         let url = format!("{}/embeddings", self.base_url);
         let api_key = self.api_key.clone();
         let model = self.model.clone();
@@ -184,12 +233,19 @@ impl OpenAiEmbeddingBackend {
                 .spawn(move || -> Result<Vec<Vec<f32>>> {
                     let client = reqwest::blocking::Client::builder()
                         .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
+                        .connect_timeout(std::time::Duration::from_secs(10))
+                        .redirect(reqwest::redirect::Policy::none())
                         .timeout(std::time::Duration::from_secs(60))
                         .build()?;
-                    let body = serde_json::json!({
-                        "model": model,
+                    let mut body = serde_json::json!({
+                        "model": &model,
                         "input": inputs,
                     });
+                    if model.starts_with("text-embedding-3-")
+                        && expected_dim != default_openai_dim(&model)
+                    {
+                        body["dimensions"] = serde_json::json!(expected_dim);
+                    }
                     let resp = client
                         .post(&url)
                         .header("Authorization", format!("Bearer {api_key}"))
@@ -197,43 +253,26 @@ impl OpenAiEmbeddingBackend {
                         .json(&body)
                         .send()?;
                     let status = resp.status();
-                    let text = resp.text()?;
-                    if !status.is_success() {
-                        anyhow::bail!(
-                            "OpenAI embeddings request failed ({status}): {}",
-                            text.chars().take(400).collect::<String>()
-                        );
-                    }
-                    let parsed: EmbeddingsResponse = serde_json::from_str(&text)
-                        .map_err(|e| anyhow::anyhow!("parse embeddings response: {e}"))?;
-                    let mut data = parsed.data;
-                    // The API returns items with an `index` field; sort to be safe.
-                    data.sort_by_key(|d| d.index);
-                    Ok(data.into_iter().map(|d| d.embedding).collect())
+                    anyhow::ensure!(
+                        status.is_success(),
+                        "OpenAI embeddings request failed ({status})"
+                    );
+                    use std::io::Read;
+                    const MAX_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+                    let mut bytes = Vec::new();
+                    resp.take(MAX_RESPONSE_BYTES + 1).read_to_end(&mut bytes)?;
+                    anyhow::ensure!(
+                        bytes.len() as u64 <= MAX_RESPONSE_BYTES,
+                        "Embedding response exceeds byte limit"
+                    );
+                    let parsed: EmbeddingsResponse =
+                        serde_json::from_slice(&bytes).context("Invalid embeddings response")?;
+                    validate_response(parsed, want, expected_dim)
                 })
                 .join()
                 .map_err(|_| anyhow::anyhow!("OpenAI embeddings worker thread panicked"))?
         })?;
 
-        if vectors.len() != want {
-            anyhow::bail!(
-                "OpenAI embeddings returned {} vectors for {} inputs",
-                vectors.len(),
-                want
-            );
-        }
-        if let Some(first) = vectors.first()
-            && first.len() != expected_dim
-        {
-            // Not fatal (cosine still works), but log so an index/dim mismatch is
-            // visible rather than silently corrupting cross-model gating.
-            crate::logging::warn(&format!(
-                "OpenAI embedding dim {} != configured {} for model {}",
-                first.len(),
-                expected_dim,
-                self.model
-            ));
-        }
         Ok(vectors)
     }
 }
@@ -247,6 +286,32 @@ struct EmbeddingsResponse {
 struct EmbeddingsDatum {
     index: usize,
     embedding: Vec<f32>,
+}
+
+fn validate_response(
+    mut response: EmbeddingsResponse,
+    want: usize,
+    dim: usize,
+) -> Result<Vec<Vec<f32>>> {
+    anyhow::ensure!(
+        response.data.len() == want,
+        "Unexpected embedding response count"
+    );
+    response.data.sort_unstable_by_key(|item| item.index);
+    for (index, item) in response.data.iter().enumerate() {
+        anyhow::ensure!(item.index == index, "Missing or duplicate embedding index");
+        anyhow::ensure!(item.embedding.len() == dim, "Embedding dimension mismatch");
+        anyhow::ensure!(
+            item.embedding.iter().all(|v| v.is_finite())
+                && item.embedding.iter().any(|v| *v != 0.0),
+            "Invalid embedding vector"
+        );
+    }
+    Ok(response
+        .data
+        .into_iter()
+        .map(|item| item.embedding)
+        .collect())
 }
 
 impl EmbeddingBackend for OpenAiEmbeddingBackend {
@@ -265,8 +330,12 @@ impl EmbeddingBackend for OpenAiEmbeddingBackend {
     }
 
     fn embed_passages(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        let inputs: Vec<String> = texts.iter().map(|t| self.format_passage(t)).collect();
-        self.embed_inputs(inputs)
+        let mut result = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(64) {
+            let inputs = batch.iter().map(|text| self.format_passage(text)).collect();
+            result.extend(self.embed_inputs(inputs)?);
+        }
+        Ok(result)
     }
 
     // OpenAI embeddings are symmetric and prefix-free: identity formatting.
@@ -276,10 +345,10 @@ impl EmbeddingBackend for OpenAiEmbeddingBackend {
 ///
 /// Selects the OpenAI/openai-compatible remote backend when the user has
 /// opted in (`agents.memory_embedding_backend = "openai"`) AND an embeddings
-/// credential is resolvable; otherwise falls back to the always-available local
+/// credential is resolvable; otherwise falls back to the compatibility local
 /// ONNX backend. Selection is intentionally conservative: a misconfigured or
-/// keyless remote setting silently degrades to local rather than failing
-/// retrieval.
+/// keyless remote setting selects the local compatibility backend.
+/// Callers must handle unavailable dense retrieval using lexical search.
 pub fn active_backend() -> Box<dyn EmbeddingBackend> {
     if let Some(remote) = openai_backend_from_config() {
         return Box::new(remote);
@@ -374,5 +443,55 @@ mod tests {
         let truncated =
             OpenAiEmbeddingBackend::new("text-embedding-3-large", "sk-x", None, Some(256));
         assert_eq!(truncated.dim(), 256);
+    }
+    #[test]
+    fn embedding_response_rejects_duplicate_indices_and_bad_vectors() {
+        let data = |index, embedding| EmbeddingsDatum { index, embedding };
+        assert!(
+            validate_response(
+                EmbeddingsResponse {
+                    data: vec![data(0, vec![1.0, 0.0]), data(0, vec![1.0, 0.0])]
+                },
+                2,
+                2
+            )
+            .is_err()
+        );
+        assert!(
+            validate_response(
+                EmbeddingsResponse {
+                    data: vec![data(0, vec![0.0, 0.0])]
+                },
+                1,
+                2
+            )
+            .is_err()
+        );
+        assert!(
+            validate_response(
+                EmbeddingsResponse {
+                    data: vec![data(0, vec![f32::NAN, 1.0])]
+                },
+                1,
+                2
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn debug_does_not_disclose_key_and_spaces_are_distinct() {
+        let a =
+            OpenAiEmbeddingBackend::new("text-embedding-3-small", "secret-key-test", None, None);
+        let b = OpenAiEmbeddingBackend::new("text-embedding-3-small", "key", None, Some(256));
+        let c = OpenAiEmbeddingBackend::new(
+            "text-embedding-3-small",
+            "key",
+            Some("https://example.invalid/v1".into()),
+            None,
+        );
+        assert!(!format!("{a:?}").contains("secret-key-test"));
+        assert_ne!(a.model_id(), b.model_id());
+        assert_ne!(a.model_id(), c.model_id());
     }
 }
