@@ -69,6 +69,81 @@ release, tags, or publishes anything.
 The reason this has to run on CI at all is the upload ceiling measured below:
 the maintainer's network cannot send the archive.
 
+## Verified account state (2026-11-26, read from app.signpath.io)
+
+Read directly from the signed-in account rather than inferred:
+
+| Object | State |
+|---|---|
+| Project `alphacode` | `VALID` |
+| Policy `test-signing` | valid, Test certificate 2026 (`CN=Test certificate for 'Alphacode [OSS]'`, expires 2029-11-25, software key store) |
+| Policy `release-signing` | `INVALID` -- certificate is `CSR PENDING` |
+| Certificate `release_certificate_2026` | `X.509`, HSM key store, method "CA-issued certificate (from CSR)", RSA 4096, **no** `Valid from` / `Valid to` |
+
+Nothing on our side is misconfigured. `release-signing` already carries every
+restriction the Foundation requires:
+
+- Require trusted build system: on (GitHub.com is linked to the project)
+- Verify origin policy: on, repository `https://github.com/dragonked2/alphacode.git`
+- Allowed branch names: `**` -- this is wider than the docs' recommendation of
+  `main` or `release/*`. Narrowing it later is good hygiene, but it is not what
+  is broken and changing it now would add a variable to a blocked path.
+
+### Why the policy says "not valid"
+
+`the selected signing policy is not valid` is SignPath refusing a policy whose
+certificate has no usable public key. In CSR mode the private key is generated
+in SignPath's HSM and the *public* half leaves as a CSR; until the Foundation
+orders the certificate from its CA and imports the signed result, the
+certificate has no `Valid from`/`Valid to` and cannot sign. A CSR X.509 slot can only be completed by someone able to purchase a
+certificate from a commercial CA, so this is a wait, not a fix.
+
+The obvious workaround -- generate our own key, buy an OV certificate somewhere,
+and import it as a PFX -- is the wrong trade here. SignPath does support PFX
+import, and describes it as a *temporary* measure because the private key may
+already have been exposed; a CSR keeps the key inside its HSM from the start.
+More to the point, what we want is a certificate that chains to a public root,
+which costs money (roughly USD 200-500/year for an OV certificate, token or HSM
+included; Azure Artifact Signing is about USD 10/month but requires three years
+of verifiable business history, which an individual project does not have). The
+Foundation's programme exists precisely so an open-source project does not have
+to pay that. Ranking the routes:
+
+| Route | Cost | Publisher shown | Verdict |
+|---|---|---|---|
+| Foundation CSR (current) | free | SignPath Foundation | wait for the certificate |
+| Own OV certificate via PFX | ~USD 200-500/yr | our organisation | only if a paying customer requires it |
+| Test certificate | free | "Unknown publisher" | no gain, correctly refused |
+| Our own CA in users' root store | free | our own name | security downgrade, rejected |
+
+### The publisher name users will see
+
+The certificate subject is fixed by the Foundation:
+
+```
+CN=SignPath Foundation, O=SignPath Foundation, C=US, S=DE, L=Lewes
+```
+
+So the Authenticode publisher on a signed release will read **"SignPath
+Foundation"**, not "Alphacode" or "Ali Essam". This is how the Foundation's free
+OSS programme works: it vouches that the binary came from the linked repository
+(it verifies the origin policy) rather than transferring its identity to the
+project. It is strictly better than "Unknown publisher" -- the chain is trusted,
+so there is no red warning -- but the release notes should not imply users will
+see the project's own name.
+
+### Two operational consequences to expect when it does land
+
+1. **The release build will wait on a human.** `release-signing` has
+   "Use approval process" enabled with 1 required approval (approver: Ali
+   Essam). Both workflows pass `wait-for-completion: true`, so the release job
+   will block at the signing step until the request is approved in the web UI.
+   That is by design -- it is the Foundation's gate -- but it means a tag push
+   is not a hands-off release. Approval can also be revoked, which is why it is
+   better to approve promptly than to leave a run parked for an hour.
+2. **The record has no signing request to show yet.** `My Requests` contains only
+   the test-certificate requests; a CSR-pending certificate cannot receive one.
+
 ## Why the test certificate is not a stopgap
 
 The obvious question while the production certificate is pending is whether the
