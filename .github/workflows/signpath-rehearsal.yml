@@ -187,16 +187,32 @@ jobs:
               echo "::error::${ARCHIVE_BASE}.zip is missing $required at the archive root"; exit 1; }
           done
 
-      # archive:false stores the zip as-is, so SignPath receives exactly the
-      # structure scripts/signpath/artifact-configuration.xml describes: a
-      # <zip-file> root holding the two named <pe-file> entries.
-      - name: Upload unsigned archive for signing
+      # Upload the two binaries LOOSE, not as a pre-made zip.
+      #
+      # GitHub always stores an uploaded artifact inside its own ZIP. Uploading
+      # a zip we built ourselves therefore produces a zip-in-a-zip:
+      #
+      #   rehearsal-unsigned-....zip        <- GitHub's container (the <zip-file> root)
+      #     alphacode-windows-x86_64.zip    <- ours
+      #       alphacode.exe
+      #       AlphaCode.Desktop.exe
+      #
+      # `<pe-file path="alphacode.exe">` then matches 0 items. Verified against a
+      # real request (ee6df7d7): SignPath reported "Expected path to match
+      # exactly 1 item, but found 0", and the SHA-256 it recorded for the
+      # received artifact was byte-identical to the double-wrapped download.
+      #
+      # Uploading the loose files makes GitHub's container the single root that
+      # the artifact configuration describes. This is the layout SignPath's own
+      # guidance means by "GitHub requires you to put it in a zip file".
+      - name: Upload unsigned binaries for signing
         id: rehearsal-upload
         uses: actions/upload-artifact@v4
         with:
           name: rehearsal-unsigned-alphacode-windows-x86_64
-          path: alphacode-windows-x86_64.zip
-          archive: false
+          path: |
+            target/x86_64-pc-windows-msvc/release/alphacode.exe
+            target/x86_64-pc-windows-msvc/release/AlphaCode.Desktop.exe
           if-no-files-found: error
 
       - name: Submit signing request
