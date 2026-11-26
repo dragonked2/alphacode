@@ -20,6 +20,56 @@ Signing is the last structural input to Windows reputation remaining after the
 | First signed release | blocked on the production certificate |
 | API signing request, small artifact | **accepted (HTTP 201)** -- token, slug and config are proven correct |
 
+### State re-verified 2026-11-26 (read-only REST API)
+
+Re-checked against the live organization rather than the portal UI, so this is
+the server's own answer:
+
+| Object | Server answer |
+|---|---|
+| `alphacode` project | `status: Valid`, repo URL set |
+| `release-signing` policy | **`status: Invalid`** (certificate `CSR PENDING`) |
+| `test-signing` policy | `status: Valid` |
+| `windows-release` artifact configuration | `isDefault: true`, XML **byte-identical** to `scripts/signpath/artifact-configuration.xml` apart from comments |
+| `release-signing` submitters / approvers | CI user `CI builds`; approver `Ali Essam`, `numberOfRequiredApprovals: 1` |
+| `release-signing` origin checks | `verifiesTrustedBuildSystem: true`, `verifiesOriginPolicy: true` |
+| GitHub trusted build system | linked to the project, `status: Active` |
+
+Nothing in that list is actionable from the repository: the only red item is the
+production certificate, which is SignPath's external step.
+
+**Do not pre-set `SIGNPATH_SIGNING_POLICY_SLUG` while `release-signing` is
+`Invalid`.** The submit step in `release.yml` has no `continue-on-error`, so a
+request against an invalid policy fails the Windows build job and therefore
+fails the whole release -- an unsigned archive is *not* published as the
+fallback in that case. The gate protects against this only for the
+`test-signing` and unset cases, not for "set to a policy that is still invalid".
+
+### Large-upload throughput, measured
+
+The earlier note said a 32 MB submit "stalls". It is a throughput ceiling on
+this network path, not an API problem. Measured 2026-11-26 by submitting probe
+archives of random bytes (each fails validation afterwards, which is the
+expected outcome -- the point was the transfer):
+
+| Artifact size | Result |
+|---|---|
+| 100 KB | **HTTP 201 in 0.9 s** |
+| 1 MB | **HTTP 201 in 48.9 s** (about 20 KB/s) |
+| 4 MB | write timeout after 20 s |
+| 8 MB | write timeout after 20 s |
+| 33 MB (real archive) | write timeout after 20 s |
+
+So the ceiling is the client's send rate, roughly 20 KB/s to `app.signpath.io`,
+and anything past a few MB cannot complete before the socket write times out.
+Recompressing the archive does not help: the two binaries are already close to
+incompressible (33,410,364 bytes from a 33,366,424-byte input).
+
+What this means for this host: the artifact configuration **cannot** be
+rehearsed locally against the real archive. The first genuine exercise of it is
+the CI run after the certificate is imported, on a GitHub-hosted runner, which
+does not share this path.
+
 The production certificate is the blocker for a *signed* 1.1.22. Until SignPath
 imports it, `release-signing` is INVALID and the release pipeline publishes
 unsigned (with a warning). Do **not** set `SIGNPATH_SIGNING_POLICY_SLUG=test-signing`
