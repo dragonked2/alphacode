@@ -16,11 +16,60 @@ Signing is the last structural input to Windows reputation remaining after the
 | CI user + API token | **created**, token in `SIGNPATH_API_TOKEN` |
 | GitHub.com trusted build system | linked to the project |
 | Repository variables | `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG` set; policy var **intentionally unset** |
-| Production certificate | **pending SignPath** (CSR PENDING) -- not something the repo can finish |
-| First signed release | blocked on the production certificate |
+| Production certificate | **not ordered yet** -- SignPath orders it after the setup check passes (see below) |
+| First signed release | blocked on a successful test-signing request, then on the certificate |
 | API signing request, small artifact | **accepted (HTTP 201)** -- token, slug and config are proven correct |
+| Signing requests that succeeded | **none yet** -- the three on record are probes and all `Failed` |
 
-### State re-verified 2026-11-26 (read-only REST API)
+### The certificate is not in a queue -- it has not been ordered yet
+
+This is the part that was previously misread as "waiting on SignPath". The
+Foundation program is a handshake, stated by `oss-support@signpath.org` on
+2026-11-25:
+
+> Once you're all set, we'll review the setup and **order the actual production
+> certificate and import it into your organization.**
+
+and, earlier the same day:
+
+> After the technical setup and **origin verification** have been successfully
+> completed, we can then **order and import** the production (release)
+> certificate into your subscription.
+
+So `CsrPending` is not SignPath slowly processing a request. It is the
+placeholder that stays pending until *they* order the certificate, and they do
+that only after the setup is demonstrably working. Waiting on it accomplishes
+nothing; the prerequisite is a **successful signing request**.
+
+Checklist state at that point (all verified against the API, not the UI):
+
+| Step | State |
+|---|---|
+| Organization invitation accepted | done (notification 2026-11-25 11:04) |
+| CI user notification address confirmed | done -- `confirmedEmail` set, `status: Active` |
+| Project `alphacode` | `Valid` |
+| Artifact configuration `windows-release` | `isDefault: true`, matches the repo XML |
+| GitHub trusted build system linked | `Active` |
+| GitHub Actions integration exercised | **not yet -- every signing request is `Failed`** |
+| Origin verification | blocked on the above |
+| Production certificate ordered and imported | blocked on origin verification |
+
+The three failed requests on record are a 250-byte probe and two upload probes
+of invalid PE data, run to prove token/slugs/configuration. None of them
+contained the `alphacode.exe` + `AlphaCode.Desktop.exe` pair the artifact
+configuration names, so none exercised the real path.
+
+`.github/workflows/signpath-rehearsal.yml` exists to produce that missing
+evidence. It is `workflow_dispatch`-only, runs a single `windows-latest` job
+(so the connector's "all jobs on GitHub-hosted runners" rule holds), builds the
+same two-file archive the release produces, submits it with `test-signing`, and
+then re-runs every structural guard on the signed bytes. It never creates a
+release, tags, or publishes anything.
+
+The reason this has to run on CI at all is the upload ceiling measured below:
+the maintainer's network cannot send the archive.
+
+## State re-verified 2026-11-26 (read-only REST API)
 
 Re-checked against the live organization rather than the portal UI, so this is
 the server's own answer:
