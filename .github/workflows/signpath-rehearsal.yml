@@ -132,8 +132,17 @@ jobs:
           # of the image. Without them the binary carries the runner account
           # name thousands of times, which is a privacy leak and a reputation
           # signal, and the signed bytes would not be representative.
+          #
+          # Both paths go through `cygpath -m`. This shell is MSYS, so `$HOME`
+          # is a POSIX path (`/c/Users/runneradmin`), while rustc records
+          # native Windows paths (`C:\Users\runneradmin\...`) in `file!()`.
+          # Remapping a POSIX prefix therefore matches nothing: measured 2,076
+          # surviving occurrences of `C:\Users\runneradmin` in a build that
+          # "remapped" `$HOME/.cargo/registry`. scripts/release-build.sh
+          # already used cygpath for both; this now matches it.
           workspace="$(cygpath -m "$PWD")"
-          registry="$HOME/.cargo/registry"
+          registry="$(cygpath -m "$HOME/.cargo/registry")"
+          echo "remap: ${workspace}=>/alphacode  ${registry}=>/cargo/registry"
           export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${workspace}=/alphacode --remap-path-prefix=${registry}=/cargo/registry"
           export ALPHACODE_RELEASE_BUILD=1
           export ALPHACODE_BUILD_GIT_DIRTY=0

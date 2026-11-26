@@ -252,8 +252,19 @@ jobs:
           # strings came from (`...\.cargo\registry\src\index.crates.io-...`).
           # Append to the workflow's RUSTFLAGS rather than replacing it: the
           # top-level `-D warnings` must still apply to the Windows release.
+          #
+          # Both paths must go through `cygpath -m`. This step runs under the
+          # MSYS bash that ships with Git for Windows, where `$HOME` is a POSIX
+          # path (`/c/Users/runneradmin`), while rustc records native Windows
+          # paths (`C:\Users\runneradmin\...`) in `file!()`. Remapping a POSIX
+          # prefix matches nothing: measured 2,076 surviving occurrences of the
+          # runner's profile path with `registry="$HOME/.cargo/registry"`. That
+          # is precisely the "unsigned PE full of one account's paths" signal
+          # the remap exists to remove, and `verify-pe-metadata.py` fails the
+          # build over it -- so this defeated the guard it was meant to satisfy.
+          # scripts/release-build.sh already used cygpath for both paths.
           workspace="$(cygpath -m "$PWD")"
-          registry="$HOME/.cargo/registry"
+          registry="$(cygpath -m "$HOME/.cargo/registry")"
           export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${workspace}=/alphacode --remap-path-prefix=${registry}=/cargo/registry"
           cargo build --release --locked --target "$TARGET" --bin alphacode
 
