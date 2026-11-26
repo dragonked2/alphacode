@@ -69,6 +69,73 @@ release, tags, or publishes anything.
 The reason this has to run on CI at all is the upload ceiling measured below:
 the maintainer's network cannot send the archive.
 
+## Why the test certificate is not a stopgap
+
+The obvious question while the production certificate is pending is whether the
+test certificate can stand in for it. It cannot, for a reason that has nothing
+to do with project policy:
+
+**A code-signing certificate either chains to a trusted root or it does not,
+and the signing key's location does not change that.** Windows shows the
+publisher from the signing certificate only after building a chain to a root in
+its trusted store. Anything else reads as "Unknown publisher". A certificate we
+generate ourselves, or hire someone to generate, produces exactly that result no
+matter where the key lives -- on a hardware token, in a SignPath HSM, or in a
+local file. SignPath's own documentation states the same thing about its test
+certificates: they "are not created by a commercial CA and are therefore not
+trusted by operating systems or browsers."
+
+So the test certificate yields no reputation gain over shipping unsigned. It
+buys only the pipeline wiring and the proof that both binaries survive signing,
+which are the two things already demonstrated by run `45809064986`. The
+`test-signing` refusal in `release.yml` is therefore correct and should stay.
+
+### Adding our own certificate to users' trusted stores
+
+The one genuinely working variant: generate our own CA, sign with it, and add
+the root to each user's Trusted Root store via the installer. That makes "Valid"
+appear on the machine we modified, and only there.
+
+It is not a substitute for a CA certificate:
+
+- **It is a security downgrade.** It asks every user to trust a certificate
+  whose private key we hold. If that key leaks, an attacker can sign *anything*
+  -- including malware impersonating other vendors -- and every user who ran the
+  installer trusts it. A CA-issued OV certificate carries no such power: the key
+  signs only our own files, and revoking it affects only us.
+- **Antivirus does not consult the local root store the way you would hope.**
+  Engines score an unknown signer against reputation data they already have;
+  `CN=Test certificate` with zero history is a *new* signal, not a removed one.
+  The specific detections in this release (`TR/Dropper.Gen`,
+  `MachineLearning/Anomalous.100%`, `Malicious.moderate.ml.score`) are
+  behaviour and structure scores. Signing removes a couple of "no valid
+  signature" heuristics; it does not clear those. See
+  [windows-av-false-positive.md](windows-av-false-positive.md).
+- **It breaks the release checksum contract.** The certificate table is appended
+  bytes, so any signing -- ours included -- changes the archive hash. That is
+  handled, but it is work done for no trust gain.
+- **It teaches users the wrong lesson.** Shipping an installer that silently
+  plants a root certificate is what actual malware does. It would be a worse
+  reputation signal than being unsigned, and a fair reason for a security
+  researcher to distrust the project.
+
+### What is actually in our control
+
+Nobody who is not a CA can make an Authenticode signature trusted. What we can
+do, and have done, is remove the things that make an unsigned binary look
+hostile:
+
+| Signal | State |
+|---|---|
+| PE overlay (packer shape) | fixed -- VERSIONINFO is a real resource, not appended bytes |
+| Home-directory paths in the PE (2,076 occurrences) | fixed via `cygpath`-mapped `--remap-path-prefix` |
+| Known AV trigger strings | guarded by `verify-no-av-triggers.py`, run on signed bytes too |
+| Nested/double-zipped archive | fixed -- binaries upload loose |
+| Debug-looking metadata | `strip = true`, complete VERSIONINFO |
+
+That is the direct fix for the 11/74 VirusTotal result. A trusted signature
+layers on top of it once the certificate lands.
+
 ## Rehearsal result: signing works end to end (2026-11-26)
 
 The first fully green run of `signpath-rehearsal.yml` (run `45809064986`,

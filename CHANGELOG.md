@@ -93,15 +93,24 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Authenticode code signing, via the SignPath Foundation.** AlphaCode was
-  accepted into SignPath's free code-signing program for open-source projects.
-  `release.yml` now signs both `alphacode.exe` and `AlphaCode.Desktop.exe`
-  through SignPath before the Windows archive is published, so the release
-  carries signed bytes with no unsigned window. Every signing step is gated on a
-  `SIGNPATH_API_TOKEN` secret and is inert until it is set, so a build before
-  the account is finished publishes exactly as before. `scripts/signpath/`
-  ships the artifact configuration and a local signing helper, and
-  `docs/engineering/code-signing.md` is the setup runbook.
+- **Code-signing pipeline, wired and rehearsed via the SignPath Foundation.**
+  AlphaCode was accepted into SignPath's free code-signing program for
+  open-source projects. `release.yml` can sign both `alphacode.exe` and
+  `AlphaCode.Desktop.exe` before the Windows archive is published, replacing
+  the archive in place and recomputing its checksum so the upload, the
+  `.sha256` sidecar and `SHA256SUMS` all describe the signed bytes.
+
+  **This release is still published unsigned.** Signing activates only when the
+  `SIGNPATH_SIGNING_POLICY_SLUG` variable names the production policy, which
+  fails with `The selected signing policy is not valid` until SignPath imports
+  the production certificate. Until then the detect step behaves exactly as
+  before: no token, no policy, or the `test-signing` policy all publish an
+  unsigned archive, because a test-signed binary reads as "Unknown publisher"
+  in Windows just like an unsigned one and would gain nothing while looking
+  signed. The end-to-end path is proven against the test certificate -- run
+  `45809064986` signs both binaries and passes every structural guard on the
+  signed output. `scripts/signpath/` ships the artifact configuration and a
+  local signing helper, and `docs/engineering/code-signing.md` is the runbook.
 - `scripts/verify-pe-metadata.py` now subtracts the Authenticode certificate
   table before measuring overlay: the certificate table is bytes *after* the
   last section by design, so the previous overlay check would have failed every
