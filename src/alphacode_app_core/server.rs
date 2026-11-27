@@ -1,3 +1,4 @@
+pub(crate) mod auto_title;
 mod available_models_dedup;
 mod await_members_state;
 mod background_tasks;

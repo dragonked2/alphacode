@@ -31,19 +31,190 @@ fn truncate(value: &str, limit: usize) -> String {
     crate::util::truncate_str(value, limit).to_string()
 }
 
+fn is_placeholder_title(title: &str, id: &str) -> bool {
+    let trimmed = title.trim();
+    if trimmed.is_empty() || trimmed == id {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "new conversation"
+            | "new chat"
+            | "alphacode"
+            | "alphacode chat"
+            | "alphacode companion"
+            | "untitled"
+            | "__companion__"
+    ) {
+        return true;
+    }
+    let hex_part = trimmed.strip_prefix("session_").unwrap_or(trimmed);
+    if hex_part.len() == 36
+        && hex_part
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() || ch == '-')
+    {
+        return true;
+    }
+    false
+}
+
+fn is_greeting_only(text: &str) -> bool {
+    let clean = text
+        .trim()
+        .trim_matches(|ch: char| ch.is_ascii_punctuation() || matches!(ch, '؟' | '،' | '!' | '.'))
+        .to_lowercase();
+    matches!(
+        clean.as_str(),
+        "hi" | "hello"
+            | "hey"
+            | "yo"
+            | "test"
+            | "ping"
+            | "اهلا"
+            | "أهلا"
+            | "أهلاً"
+            | "هلا"
+            | "مرحبا"
+            | "مرحباً"
+            | "السلام عليكم"
+            | "سلام"
+            | "ازيك"
+            | "ازيكم"
+            | "هاي"
+            | "صباح الخير"
+            | "مساء الخير"
+    )
+}
+
+pub(crate) fn smart_title_from_text(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with("<system-reminder>")
+        || trimmed.starts_with("<session-context>")
+    {
+        return None;
+    }
+    let first_line = trimmed
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let mut text = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    for prefix in [
+        "من فضلك ",
+        "لو سمحت ",
+        "ممكن تساعدني في ",
+        "ممكن تساعدني ",
+        "ممكن ",
+        "عاوزك ",
+        "عايزك ",
+        "عاوز ",
+        "عايز ",
+        "اريد ",
+        "أريد ",
+        "please help me ",
+        "help me ",
+        "can you please ",
+        "can you ",
+        "could you ",
+        "i want you to ",
+        "i need to ",
+    ] {
+        if let Some(rest) = text.strip_prefix(prefix) {
+            if !rest.trim().is_empty() {
+                text = rest.trim().to_string();
+                break;
+            }
+        } else {
+            let lower = text.to_ascii_lowercase();
+            if lower.starts_with(prefix) && text.is_char_boundary(prefix.len()) {
+                let rest = text[prefix.len()..].trim();
+                if !rest.is_empty() {
+                    text = rest.to_string();
+                    break;
+                }
+            }
+        }
+    }
+
+    let cleaned = text
+        .trim_end_matches(['?', '؟', '!', '.', ',', '،', ':', ';'])
+        .trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let max_chars = 46;
+    if cleaned.chars().count() <= max_chars {
+        return Some(cleaned.to_string());
+    }
+    let slice: String = cleaned.chars().take(max_chars).collect();
+    if let Some((head, _)) = slice.rsplit_once(' ')
+        && head.chars().count() >= 14
+    {
+        return Some(format!("{head}…"));
+    }
+    Some(format!("{slice}…"))
+}
+
+fn derive_smart_title(info: &SessionInfo) -> String {
+    if !is_placeholder_title(&info.title, &info.id) {
+        return truncate(&info.title, MAX_TITLE_CHARS);
+    }
+    let user_candidates: Vec<String> = info
+        .messages_preview
+        .iter()
+        .filter(|m| m.role.eq_ignore_ascii_case("user"))
+        .filter_map(|m| smart_title_from_text(&m.content))
+        .collect();
+    if let Some(substantive) = user_candidates.iter().find(|t| !is_greeting_only(t)) {
+        return truncate(substantive, MAX_TITLE_CHARS);
+    }
+    if let Some(first) = user_candidates.into_iter().next() {
+        return truncate(&first, MAX_TITLE_CHARS);
+    }
+    if let Some(first_prompt) = info.first_user_prompt.as_deref()
+        && let Some(smart) = smart_title_from_text(first_prompt)
+    {
+        return truncate(&smart, MAX_TITLE_CHARS);
+    }
+    if let Some(dir) = info.working_dir.as_deref()
+        && let Some(folder) = std::path::Path::new(dir)
+            .file_name()
+            .and_then(|n| n.to_str())
+    {
+        return truncate(&format!("{folder} · Chat"), MAX_TITLE_CHARS);
+    }
+    truncate(&info.title, MAX_TITLE_CHARS)
+}
+
 /// Collapse a session into the desktop sidebar's row shape.
 ///
 /// Fields mirror what `gui.ps1` renders: `id`, `title`, `detail`, plus the
 /// metadata a desktop workspace needs to label the chat (state, source, model,
 /// saved bookmark, working directory, last activity).
 fn session_row(info: &SessionInfo) -> Value {
-    let title = truncate(&info.title, MAX_TITLE_CHARS);
+    let title = derive_smart_title(info);
     let label = info
         .save_label
         .as_deref()
         .map(|label| truncate(label, MAX_LABEL_CHARS));
     // This path is also used for workspace actions, so it must remain exact.
     let branch = info.working_dir.clone();
+    let preview_line = info.messages_preview.iter().rev().find_map(|msg| {
+        let trimmed = msg.content.trim();
+        (!trimmed.is_empty()
+            && !trimmed.starts_with("<system-reminder>")
+            && !trimmed.starts_with("<session-context>"))
+        .then(|| {
+            truncate(
+                &trimmed.split_whitespace().collect::<Vec<_>>().join(" "),
+                90,
+            )
+        })
+    });
     let detail = {
         let mut parts: Vec<String> = Vec::new();
         if let Some(badge) = info.source.badge() {
@@ -74,6 +245,7 @@ fn session_row(info: &SessionInfo) -> Value {
         "id": info.id,
         "title": title,
         "detail": detail,
+        "preview": preview_line.unwrap_or_else(|| detail.clone()),
         "status": status,
         "saved": info.saved,
         "save_label": label,
@@ -81,6 +253,8 @@ fn session_row(info: &SessionInfo) -> Value {
         "working_dir": branch,
         "model": info.model.as_deref().map(|model| truncate(model, MAX_LABEL_CHARS)),
         "is_debug": info.is_debug,
+        "message_count": info.message_count,
+        "modified": info.last_message_time.timestamp(),
         "last_active_at": info.last_active_at.map(|at| at.to_rfc3339()),
         "last_message_time": info.last_message_time.to_rfc3339(),
     })
@@ -207,5 +381,20 @@ mod tests {
             detail.contains("Alphax Free"),
             "the product label should appear instead: {detail}"
         );
+    }
+
+    #[test]
+    fn smart_title_strips_filler_and_greetings() {
+        assert_eq!(
+            smart_title_from_text("can you please fix the auth login bug?"),
+            Some("fix the auth login bug".to_string())
+        );
+        assert_eq!(
+            smart_title_from_text("ممكن تساعدني في حل مشكلة الجي يو اي؟"),
+            Some("حل مشكلة الجي يو اي".to_string())
+        );
+        assert!(is_greeting_only("اهلا"));
+        assert!(is_greeting_only("hi!"));
+        assert!(!is_greeting_only("حل مشكلة الشات"));
     }
 }

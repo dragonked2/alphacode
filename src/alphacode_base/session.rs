@@ -945,6 +945,16 @@ impl Session {
         self.updated_at = Utc::now();
     }
 
+    /// Set or clear the AI-generated display title without touching any explicit
+    /// user rename (`custom_title`).
+    pub fn set_generated_title(&mut self, title: Option<String>) {
+        self.title = title.and_then(|title| {
+            let title = title.trim();
+            (!title.is_empty()).then(|| title.to_string())
+        });
+        self.updated_at = Utc::now();
+    }
+
     /// Get the title users should see for this session: custom rename first,
     /// then the generated/imported title, if one exists.
     pub fn display_title(&self) -> Option<&str> {

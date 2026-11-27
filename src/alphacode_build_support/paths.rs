@@ -595,8 +595,13 @@ pub fn shared_server_update_candidate(is_selfdev_session: bool) -> Option<(PathB
         return Some(shared_server);
     }
 
-    if let Some(stable) = existing_binary(stable_binary_path(), "stable") {
-        return Some(stable);
+    if let Some((stable, channel)) = existing_binary(stable_binary_path(), "stable") {
+        let stale_compared_to_client = std::env::current_exe().ok().is_some_and(|current_exe| {
+            shared_server_binary_is_strictly_older_than(&stable, &current_exe)
+        });
+        if !stale_compared_to_client {
+            return Some((stable, channel));
+        }
     }
 
     std::env::current_exe().ok().map(|exe| (exe, "current"))
