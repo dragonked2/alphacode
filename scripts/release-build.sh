@@ -27,6 +27,12 @@ VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
 echo "==> AlphaCode $VERSION"
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
+    echo "==> building GUI frontend (src/cli/gui/ui)"
+    ( cd "$REPO/src/cli/gui/ui" && npm ci && npm run build ) || {
+        echo "error: GUI frontend build failed" >&2
+        exit 1
+    }
+
     echo "==> cargo build --release --locked"
     script="$(mktemp "${TMPDIR:-/tmp}/ac-release-XXXXXX.cmd")"
     {
@@ -81,6 +87,15 @@ echo "==> PE metadata guard"
 # binaries must have zero overlay and complete VERSIONINFO from the mapped image.
 python3 scripts/verify-pe-metadata.py "$BIN" || exit 1
 python3 scripts/verify-pe-metadata.py "$HOST" || exit 1
+
+echo "==> embedded GUI asset guard"
+for needle in ALPHACODE_EMBEDDED_GUI_UI_V1 index.html; do
+    if ! grep -aq -- "$needle" "$BIN"; then
+        echo "error: embedded GUI marker '$needle' missing from $BIN" >&2
+        exit 1
+    fi
+done
+echo "    OK: embedded GUI assets present in $BIN"
 
 echo "==> package"
 ARCHIVE="alphacode-windows-x86_64"

@@ -127,7 +127,7 @@ fn main() {
     emit_build_environment(&info);
     configure_mmdr();
     configure_bundled_skills(&repo_root);
-    configure_gui_assets(&repo_root);
+    configure_gui_assets(&repo_root, &info);
     configure_windows_desktop(&repo_root, &info);
 }
 
@@ -592,12 +592,19 @@ fn configure_mmdr() {
 // GUI static assets
 // -----------------------------------------------------------------------------
 
-/// Generate `OUT_DIR/gui_embedded_assets.rs` from `src/cli/gui/ui/dist` when
-/// built frontend assets exist, or an empty table otherwise so `alphacode`
-/// compiles cleanly even without a prior `npm run build`.
-fn configure_gui_assets(root: &Path) {
+const ENV_REQUIRE_GUI_ASSETS: &str = "ALPHACODE_REQUIRE_GUI_ASSETS";
+
+/// Compress built frontend assets (`src/cli/gui/ui/dist`) with deterministic
+/// gzip and generate `OUT_DIR/gui_embedded_assets.rs`.
+///
+/// On release builds (`ALPHACODE_RELEASE_BUILD=1`) or when
+/// `ALPHACODE_REQUIRE_GUI_ASSETS=1` is set, missing or incomplete frontend
+/// assets are a hard build error so a release can never ship an empty GUI.
+/// Local developer builds without `ui/dist` still compile cleanly with an
+/// empty asset table.
+fn configure_gui_assets(root: &Path, info: &BuildInfo) {
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
-    let generated = out.join("gui_embedded_assets.rs");
+    let packer = root.join("scripts").join("gui_assets_pack.py");
     let dist_dir = root
         .join("src")
         .join("cli")
@@ -605,33 +612,34 @@ fn configure_gui_assets(root: &Path) {
         .join("ui")
         .join("dist");
 
+    println!("cargo:rerun-if-env-changed={ENV_REQUIRE_GUI_ASSETS}");
+    println!("cargo:rerun-if-changed={}", packer.display());
     println!("cargo:rerun-if-changed={}", dist_dir.display());
-
-    let mut entries: Vec<(String, PathBuf)> = Vec::new();
-    if dist_dir.join("index.html").is_file() {
-        collect_gui_dist_files(&dist_dir, &dist_dir, &mut entries);
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+    if dist_dir.is_dir() {
+        watch_gui_dist_files(&dist_dir);
     }
 
-    let mut code = String::from("pub(super) const EMBEDDED_UI_ASSETS: &[(&str, &[u8])] = &[\n");
-    for (rel, abs) in &entries {
-        let rel_escaped: String = rel.escape_default().collect();
-        let abs_escaped: String = abs.to_string_lossy().escape_default().collect();
-        code.push_str(&format!(
-            "    (\"{rel_escaped}\", include_bytes!(\"{abs_escaped}\")),\n"
-        ));
-    }
-    code.push_str("];\n");
+    let require_assets = info.release
+        || env::var(ENV_REQUIRE_GUI_ASSETS)
+            .ok()
+            .is_some_and(|value| parse_bool(&value));
 
-    let needs_write = fs::read_to_string(&generated)
-        .map(|existing| existing != code)
-        .unwrap_or(true);
-    if needs_write {
-        fs::write(&generated, code).expect("write gui_embedded_assets.rs");
+    let mut cmd = Command::new(python_interpreter());
+    cmd.arg(&packer).arg(&dist_dir).arg(&out);
+    if require_assets {
+        cmd.arg("--require");
     }
+    let output = cmd.output().expect("run GUI asset packer");
+    assert!(
+        output.status.success(),
+        "GUI asset packer failed ({}): {} {}",
+        packer.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
-fn collect_gui_dist_files(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+fn watch_gui_dist_files(dir: &Path) {
     println!("cargo:rerun-if-changed={}", dir.display());
     let Ok(read_dir) = fs::read_dir(dir) else {
         return;
@@ -639,17 +647,9 @@ fn collect_gui_dist_files(root: &Path, dir: &Path, out: &mut Vec<(String, PathBu
     for entry in read_dir.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_gui_dist_files(root, &path, out);
+            watch_gui_dist_files(&path);
         } else if path.is_file() {
             println!("cargo:rerun-if-changed={}", path.display());
-            if let Ok(rel) = path.strip_prefix(root) {
-                let rel_posix = rel
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("/");
-                out.push((rel_posix, path));
-            }
         }
     }
 }

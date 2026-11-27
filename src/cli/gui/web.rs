@@ -40,11 +40,51 @@ fn mime_for_ext(ext: &str) -> &'static str {
     }
 }
 
-fn lookup_embedded_asset(rel: &str) -> Option<&'static [u8]> {
-    EMBEDDED_UI_ASSETS
+fn lookup_embedded_asset_gz(rel: &str) -> Option<&'static [u8]> {
+    EMBEDDED_UI_ASSETS_GZIP
         .binary_search_by_key(&rel, |(path, _)| path)
         .ok()
-        .map(|idx| EMBEDDED_UI_ASSETS[idx].1)
+        .map(|idx| EMBEDDED_UI_ASSETS_GZIP[idx].1)
+}
+
+fn accepts_gzip(request: &str) -> bool {
+    for line in request.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("accept-encoding") {
+            return value.split(',').any(|part| {
+                part.split(';')
+                    .next()
+                    .is_some_and(|enc| enc.trim().eq_ignore_ascii_case("gzip"))
+            });
+        }
+    }
+    false
+}
+
+fn decode_gzip_asset(gz: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut decoder = flate2::read::GzDecoder::new(gz);
+    let mut out = Vec::new();
+    decoder.read_to_end(&mut out).ok()?;
+    Some(out)
+}
+
+fn embedded_asset_payload(
+    gz: &'static [u8],
+    client_accepts_gzip: bool,
+) -> Option<(Cow<'static, [u8]>, Option<&'static str>)> {
+    if client_accepts_gzip {
+        Some((Cow::Borrowed(gz), Some("gzip")))
+    } else {
+        decode_gzip_asset(gz).map(|raw| (Cow::Owned(raw), None))
+    }
+}
+
+/// Non-empty marker string when the React frontend bundle was embedded at build time.
+pub(crate) fn embedded_ui_bundle_marker() -> &'static str {
+    EMBEDDED_UI_BUNDLE_MARKER
 }
 
 /// Sanitize a request URL path into a safe relative asset path (POSIX separators).
@@ -90,12 +130,24 @@ fn http_response(
     status: u16,
     reason: &str,
     content_type: &str,
+    content_encoding: Option<&str>,
     body: &[u8],
     include_body: bool,
 ) -> Vec<u8> {
+    let encoding_header = content_encoding
+        .map(|enc| format!("Content-Encoding: {enc}\r\nVary: Accept-Encoding\r\n"))
+        .unwrap_or_else(|| "Vary: Accept-Encoding\r\n".to_string());
+    let marker = embedded_ui_bundle_marker();
+    let marker_header = if marker.is_empty() {
+        String::new()
+    } else {
+        format!("X-AlphaCode-UI: {marker}\r\n")
+    };
     let header = format!(
         "HTTP/1.1 {status} {reason}\r\n\
          Content-Type: {content_type}\r\n\
+         {encoding_header}\
+         {marker_header}\
          Content-Length: {}\r\n\
          Cache-Control: no-cache\r\n\
          X-Content-Type-Options: nosniff\r\n\
@@ -141,12 +193,14 @@ async fn serve_http(mut stream: TcpStream, disk_dist: Option<Arc<PathBuf>>) -> R
     let mut parts = first_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let raw_path = parts.next().unwrap_or("/");
+    let client_accepts_gzip = accepts_gzip(request);
 
     if !matches!(method, "GET" | "HEAD") {
         let resp = http_response(
             405,
             "Method Not Allowed",
             "text/plain; charset=utf-8",
+            None,
             b"Method Not Allowed",
             true,
         );
@@ -160,6 +214,7 @@ async fn serve_http(mut stream: TcpStream, disk_dist: Option<Arc<PathBuf>>) -> R
             400,
             "Bad Request",
             "text/plain; charset=utf-8",
+            None,
             b"Bad Request",
             include_body,
         );
@@ -167,13 +222,15 @@ async fn serve_http(mut stream: TcpStream, disk_dist: Option<Arc<PathBuf>>) -> R
         return Ok(());
     };
 
-    let (status, reason, ct, body): (u16, &str, &str, Cow<'static, [u8]>) =
-        if let Some(bytes) = lookup_embedded_asset(&rel) {
+    let (status, reason, ct, encoding, body): (u16, &str, &str, Option<&str>, Cow<'static, [u8]>) =
+        if let Some(gz) = lookup_embedded_asset_gz(&rel)
+            && let Some((payload, enc)) = embedded_asset_payload(gz, client_accepts_gzip)
+        {
             let ext = Path::new(&rel)
                 .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
-            (200, "OK", mime_for_ext(ext), Cow::Borrowed(bytes))
+            (200, "OK", mime_for_ext(ext), enc, payload)
         } else if let Some(dist) = disk_dist.as_deref()
             && let Some(bytes) = read_disk_asset(dist, &rel).await
         {
@@ -181,20 +238,29 @@ async fn serve_http(mut stream: TcpStream, disk_dist: Option<Arc<PathBuf>>) -> R
                 .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
-            (200, "OK", mime_for_ext(ext), Cow::Owned(bytes))
+            (200, "OK", mime_for_ext(ext), None, Cow::Owned(bytes))
         } else if !has_file_extension(&rel) || rel == "index.html" {
             // SPA fallback: serve index.html for client-side routes
-            if let Some(bytes) = lookup_embedded_asset("index.html") {
-                (200, "OK", "text/html; charset=utf-8", Cow::Borrowed(bytes))
+            if let Some(gz) = lookup_embedded_asset_gz("index.html")
+                && let Some((payload, enc)) = embedded_asset_payload(gz, client_accepts_gzip)
+            {
+                (200, "OK", "text/html; charset=utf-8", enc, payload)
             } else if let Some(dist) = disk_dist.as_deref()
                 && let Some(bytes) = read_disk_asset(dist, "index.html").await
             {
-                (200, "OK", "text/html; charset=utf-8", Cow::Owned(bytes))
+                (
+                    200,
+                    "OK",
+                    "text/html; charset=utf-8",
+                    None,
+                    Cow::Owned(bytes),
+                )
             } else {
                 (
                     404,
                     "Not Found",
                     "text/plain; charset=utf-8",
+                    None,
                     Cow::Borrowed(b"404"),
                 )
             }
@@ -203,11 +269,12 @@ async fn serve_http(mut stream: TcpStream, disk_dist: Option<Arc<PathBuf>>) -> R
                 404,
                 "Not Found",
                 "text/plain; charset=utf-8",
+                None,
                 Cow::Borrowed(b"404"),
             )
         };
 
-    let resp = http_response(status, reason, ct, &body, include_body);
+    let resp = http_response(status, reason, ct, encoding, &body, include_body);
     stream.write_all(&resp).await?;
     Ok(())
 }
@@ -527,9 +594,9 @@ pub async fn run(no_update: bool, open_browser: bool) -> Result<()> {
     let exe = std::env::current_exe().context("cannot determine executable path")?;
     let disk_dist = find_dist(&exe).map(Arc::new);
 
-    if EMBEDDED_UI_ASSETS.is_empty() && disk_dist.is_none() {
+    if EMBEDDED_UI_ASSETS_GZIP.is_empty() && disk_dist.is_none() {
         bail!(
-            "ui/dist not found — run `npm run build` inside `src/cli/gui/ui/` first.\n\
+            "ui/dist not found — run `npm ci && npm run build` inside `src/cli/gui/ui/` first.\n\
              Searched relative to: {}",
             exe.display()
         );
@@ -542,10 +609,11 @@ pub async fn run(no_update: bool, open_browser: bool) -> Result<()> {
     let url = format!("http://127.0.0.1:{bound_port}");
 
     println!("AlphaCode Desktop GUI → {url}");
-    if !EMBEDDED_UI_ASSETS.is_empty() {
+    if !EMBEDDED_UI_ASSETS_GZIP.is_empty() {
         println!(
-            "Serving UI: embedded ({} asset(s))",
-            EMBEDDED_UI_ASSETS.len()
+            "Serving UI: embedded gzip ({} asset(s), {})",
+            EMBEDDED_UI_ASSETS_GZIP.len(),
+            embedded_ui_bundle_marker()
         );
     } else if let Some(ref dist) = disk_dist {
         println!("Serving UI: {}", dist.display());
@@ -683,5 +751,37 @@ mod tests {
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
         assert_eq!(args_native, vec!["gui", "--bridge"]);
+    }
+
+    #[test]
+    fn accepts_gzip_parses_request_headers() {
+        assert!(accepts_gzip(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept-Encoding: gzip, deflate, br\r\n\r\n"
+        ));
+        assert!(accepts_gzip(
+            "GET / HTTP/1.1\r\naccept-encoding: br, GZIP;q=0.8\r\n\r\n"
+        ));
+        assert!(!accepts_gzip(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept-Encoding: identity\r\n\r\n"
+        ));
+        assert!(!accepts_gzip("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
+    }
+
+    #[test]
+    fn decode_gzip_asset_round_trips_and_embedded_bundle_decodes() {
+        use std::io::Write;
+        let sample = b"<!doctype html><html><body>AlphaCode</body></html>";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder.write_all(sample).unwrap();
+        let gz = encoder.finish().unwrap();
+        assert_eq!(decode_gzip_asset(&gz).as_deref(), Some(sample.as_slice()));
+
+        if !EMBEDDED_UI_ASSETS_GZIP.is_empty() {
+            assert_eq!(embedded_ui_bundle_marker(), "ALPHACODE_EMBEDDED_GUI_UI_V1");
+            let index_gz = lookup_embedded_asset_gz("index.html").expect("embedded index.html");
+            let index_raw = decode_gzip_asset(index_gz).expect("valid gzip index.html");
+            let html = String::from_utf8(index_raw).expect("UTF-8 index.html");
+            assert!(html.to_ascii_lowercase().contains("<!doctype html>"));
+        }
     }
 }

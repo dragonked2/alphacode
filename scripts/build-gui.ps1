@@ -22,9 +22,17 @@ $uiDir = Join-Path $repoRoot 'src\cli\gui\ui'
 Push-Location $uiDir
 try {
     if (-not (Test-Path 'node_modules')) {
-        npm install
-        if ($LASTEXITCODE -ne 0) {
-            throw "npm install failed with exit code $LASTEXITCODE"
+        if (Test-Path 'package-lock.json') {
+            npm ci
+            if ($LASTEXITCODE -ne 0) {
+                throw "npm ci failed with exit code $LASTEXITCODE"
+            }
+        }
+        else {
+            npm install
+            if ($LASTEXITCODE -ne 0) {
+                throw "npm install failed with exit code $LASTEXITCODE"
+            }
         }
     }
     npm run build

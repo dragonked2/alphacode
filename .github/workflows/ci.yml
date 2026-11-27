@@ -68,6 +68,19 @@ jobs:
             release-v2-${{ runner.os }}-${{ matrix.target }}-1.94.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}-
             release-v2-${{ runner.os }}-${{ matrix.target }}-1.94.1-
 
+      - name: Setup Node.js for GUI frontend build
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: src/cli/gui/ui/package-lock.json
+
+      - name: Build GUI frontend assets
+        working-directory: src/cli/gui/ui
+        run: |
+          npm ci
+          npm run build
+
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
@@ -94,6 +107,7 @@ jobs:
         shell: bash
         env:
           REMAP_MARKER: ${{ steps.remap.outputs.marker }}
+          ALPHACODE_REQUIRE_GUI_ASSETS: "1"
         run: |
           set -euo pipefail
           # `${REMAP_MARKER:-}` is empty on non-Windows runners, so the branch is
@@ -107,6 +121,21 @@ jobs:
             export ALPHACODE_BUILD_PATH_MARKER="$REMAP_MARKER"
           fi
           cargo build --release --locked --target ${{ matrix.target }} --bin alphacode
+
+      - name: Verify embedded GUI assets are present in release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/alphacode"
+          [ -f "${BIN}.exe" ] && BIN="${BIN}.exe"
+          test -f "$BIN" || { echo "::error::$BIN was not produced"; exit 1; }
+          for needle in ALPHACODE_EMBEDDED_GUI_UI_V1 index.html; do
+            if ! grep -aq -- "$needle" "$BIN"; then
+              echo "::error file=build.rs::embedded GUI marker '$needle' missing from $BIN"
+              exit 1
+            fi
+          done
+          echo "OK: embedded GUI frontend bundle verified in $BIN"
 
       # Structural release guards, run on every PR rather than only at tag time.
       # `release.yml` catches a bad artifact only after a tag is pushed; these
@@ -236,6 +265,16 @@ jobs:
       - run: cargo clippy --locked --lib --all-targets -- -D warnings
       # Same gap as in the test job: the workspace member needs its own run.
       - run: cargo clippy -p alphagrep --locked --all-targets -- -D warnings
+      - name: Verify Linux musl build does not pull gtk/webkit2gtk
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo tree --locked --target x86_64-unknown-linux-musl --prefix none \
+            | grep -Eq '^(gtk|gtk-sys|webkit2gtk|webkit2gtk-sys|tao|wry|soup3|javascriptcore-rs) '; then
+            echo "::error::x86_64-unknown-linux-musl unexpectedly depends on gtk/webkit2gtk/tao/wry"
+            exit 1
+          fi
+          echo "OK: x86_64-unknown-linux-musl has no gtk/webkit2gtk/tao/wry dependencies"
 
   gui-diagnostics:
     name: Windows GUI diagnostics

@@ -122,6 +122,19 @@ jobs:
               ;;
           esac
 
+      - name: Setup Node.js for GUI frontend build
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: src/cli/gui/ui/package-lock.json
+
+      - name: Build GUI frontend assets
+        working-directory: src/cli/gui/ui
+        run: |
+          npm ci
+          npm run build
+
       - name: Build Windows binaries
         shell: bash
         env:

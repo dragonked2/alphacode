@@ -168,6 +168,19 @@ jobs:
             release-v2-${{ runner.os }}-${{ matrix.target }}-1.94.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}-
             release-v2-${{ runner.os }}-${{ matrix.target }}-1.94.1-
 
+      - name: Setup Node.js for GUI frontend build
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: src/cli/gui/ui/package-lock.json
+
+      - name: Build GUI frontend assets
+        working-directory: src/cli/gui/ui
+        run: |
+          npm ci
+          npm run build
+
       # Extract the release version from the git tag and expose it as
       # ALPHACODE_BUILD_SEMVER so the build script embeds the *exact* tag
       # version (e.g. 1.0.28) into the binary instead of computing a
@@ -554,6 +567,16 @@ jobs:
             fi
           done
           echo "OK: bundled /bugbounty skill is present in the release binary ($BIN)"
+          # Positive guard: verify the compiled React GUI frontend was actually
+          # embedded (not the empty dev fallback) so released binaries never
+          # open a blank desktop window.
+          for ui_needle in ALPHACODE_EMBEDDED_GUI_UI_V1 index.html; do
+            if ! grep -aq -- "$ui_needle" "$BIN"; then
+              echo "::error file=build.rs::embedded GUI marker '$ui_needle' missing from $BIN — GUI frontend assets were not built before cargo build"
+              exit 1
+            fi
+          done
+          echo "OK: embedded GUI frontend bundle is present in the release binary ($BIN)"
 
       - name: Verify cross-compiled macOS ARM64 identity
         if: matrix.target == 'aarch64-apple-darwin' && runner.arch == 'X64'

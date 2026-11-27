@@ -104,6 +104,19 @@ jobs:
             alpine-3.22-${{ matrix.triple }}-1.94.1-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}-
             alpine-3.22-${{ matrix.triple }}-1.94.1-
 
+      - name: Setup Node.js for GUI frontend build
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: src/cli/gui/ui/package-lock.json
+
+      - name: Build GUI frontend assets
+        working-directory: src/cli/gui/ui
+        run: |
+          npm ci
+          npm run build
+
       - name: Build in Alpine 3.22 container
         run: |
           mkdir -p "$GITHUB_WORKSPACE/.alpine-cargo"

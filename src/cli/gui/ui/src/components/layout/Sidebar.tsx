@@ -329,9 +329,7 @@ export function Sidebar({
         <input
           ref={fileInputRef}
           type="file"
-          // @ts-expect-error webkitdirectory is standard for folder picking
           webkitdirectory=""
-          directory=""
           multiple
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
