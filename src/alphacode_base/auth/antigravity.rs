@@ -1,7 +1,7 @@
 use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 
 const GOOGLE_AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -175,6 +175,16 @@ pub fn save_tokens(tokens: &AntigravityTokens) -> Result<()> {
     result
 }
 
+pub fn clear_tokens() -> Result<()> {
+    let path = tokens_path()?;
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    super::token_cache::cache().invalidate(&path);
+    super::AuthStatus::invalidate_cache();
+    Ok(())
+}
+
 pub fn has_cached_auth() -> bool {
     load_tokens().is_ok()
 }
@@ -331,7 +341,7 @@ async fn manual_login(
     auth_url: &str,
     no_browser: bool,
 ) -> Result<AntigravityTokens> {
-    if !io::stdin().is_terminal() {
+    if !crate::alphacode_base::auth::interactive_stdin() {
         anyhow::bail!(
             "Antigravity login needs an interactive terminal for manual callback entry. Re-run in an interactive terminal."
         );
@@ -355,7 +365,8 @@ async fn manual_login(
     eprintln!(
         "If the browser shows a local callback error, copy the full URL from the address bar before closing the tab.\n"
     );
-    eprint!("Callback URL: ");
+    eprintln!("Callback URL:");
+    let _ = io::stderr().flush();
     io::stdout().flush()?;
     let input = crate::secret_input::read_secret_line()?;
     if input.trim().is_empty() {

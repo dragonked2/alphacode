@@ -406,3 +406,16 @@ async fn wait_for_callback_async_surfaces_provider_error() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn callback_html_includes_alphacode_svg_logo_and_status() {
+    let ok = success_callback_response();
+    assert!(ok.contains("HTTP/1.1 200 OK"));
+    assert!(ok.contains("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\""));
+    assert!(ok.contains("AlphaCode"));
+    assert!(ok.contains("Authentication Complete"));
+
+    let err = bad_request_response("<bad & input>");
+    assert!(err.contains("HTTP/1.1 400 Bad Request"));
+    assert!(err.contains("&lt;bad &amp; input&gt;"));
+}

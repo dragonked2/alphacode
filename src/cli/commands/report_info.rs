@@ -12,6 +12,7 @@ struct AuthStatusProviderReport {
     display_name: String,
     status: String,
     method: String,
+    account: Option<String>,
     health: String,
     credential_source: String,
     expiry_confidence: String,
@@ -27,6 +28,7 @@ struct AuthStatusProviderReport {
 struct AuthStatusReport {
     any_available: bool,
     providers: Vec<AuthStatusProviderReport>,
+    oauth_accounts: Vec<crate::alphacode_base::auth::OAuthAccountSnapshot>,
 }
 
 #[derive(Debug, Serialize)]
@@ -37,6 +39,7 @@ struct AuthDoctorProviderReport {
     recommended: bool,
     status: String,
     method: String,
+    account: Option<String>,
     health: String,
     credential_source: String,
     credential_source_detail: String,
@@ -140,16 +143,41 @@ pub(super) fn run_auth_status_command(emit_json: bool) -> Result<()> {
     if emit_json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        for provider in report.providers {
+        for provider in &report.providers {
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 provider.id,
                 provider.status,
                 provider.auth_kind,
                 provider.method,
+                provider.account.as_deref().unwrap_or("-"),
                 provider.health,
                 provider.validation.as_deref().unwrap_or("not validated")
             );
+        }
+        if !report.oauth_accounts.is_empty() {
+            println!("\nSigned-in OAuth accounts:");
+            for acc in &report.oauth_accounts {
+                let state = match (acc.active, acc.valid) {
+                    (true, true) => "active",
+                    (true, false) => "active, expired",
+                    (false, true) => "saved",
+                    (false, false) => "saved, expired",
+                };
+                let extra = acc
+                    .project_id
+                    .as_deref()
+                    .or(acc.subscription_type.as_deref())
+                    .map(|v| format!(" ({v})"))
+                    .unwrap_or_default();
+                println!(
+                    "  - {}: {}{} [{}]",
+                    acc.provider_name,
+                    acc.primary_identity(),
+                    extra,
+                    state
+                );
+            }
         }
     }
 
@@ -169,6 +197,7 @@ fn build_auth_status_report() -> AuthStatusReport {
                 display_name: provider.display_name.to_string(),
                 status: auth_state_label(assessment.state).to_string(),
                 method: assessment.method_detail.clone(),
+                account: assessment.account_summary.clone(),
                 health: assessment.health_summary(),
                 credential_source: assessment.credential_source.label().to_string(),
                 expiry_confidence: assessment.expiry_confidence.label().to_string(),
@@ -190,6 +219,7 @@ fn build_auth_status_report() -> AuthStatusReport {
     AuthStatusReport {
         any_available: status.has_any_available(),
         providers: reports,
+        oauth_accounts: crate::alphacode_base::auth::connected_oauth_accounts(),
     }
 }
 
@@ -213,6 +243,7 @@ pub(super) async fn run_auth_doctor_command(
         println!("auth_kind: {}", provider.auth_kind);
         println!("status: {}", provider.status);
         println!("method: {}", provider.method);
+        println!("account: {}", provider.account.as_deref().unwrap_or("none"));
         println!("health: {}", provider.health);
         println!(
             "credential_source: {} ({})",
@@ -302,6 +333,7 @@ async fn build_auth_doctor_report(
             validation_result.as_deref(),
         );
         let method = assessment.method_detail.clone();
+        let account = assessment.account_summary.clone();
         let health = assessment.health_summary();
         let needs_attention = crate::alphacode_base::auth::doctor::needs_attention(
             &assessment,
@@ -315,6 +347,7 @@ async fn build_auth_doctor_report(
             recommended: provider.recommended,
             status: auth_state_label(assessment.state).to_string(),
             method,
+            account,
             health,
             credential_source: assessment.credential_source.label().to_string(),
             credential_source_detail: assessment.credential_source_detail.clone(),

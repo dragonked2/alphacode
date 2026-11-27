@@ -128,6 +128,15 @@ pub fn save_tokens(tokens: &GoogleTokens) -> Result<()> {
     crate::storage::write_json_secret(&path, tokens)
 }
 
+pub fn clear_tokens() -> Result<()> {
+    let path = tokens_path()?;
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    super::AuthStatus::invalidate_cache();
+    Ok(())
+}
+
 pub fn build_auth_url(
     creds: &GoogleCredentials,
     tier: GmailAccessTier,
