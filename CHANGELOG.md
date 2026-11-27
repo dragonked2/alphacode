@@ -4,6 +4,37 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Cross-platform native Desktop & Web GUI workbench (`alphacode --gui`, `alphacode gui --web`, `alphacode gui --legacy`).**
+  - Uses native OS webviews via `tao`/`wry` (WebView2 on Windows, WKWebView on macOS — target-gated in `Cargo.toml` so Linux/Alpine builds never pull in `webkit2gtk`/`gtk3`) backed by a loopback-only WebSocket bridge (`cli::gui::web`) with strict origin checks, and a lightweight bundled React 19 + TypeScript + Tailwind 4 frontend (`src/cli/gui/ui/`, ~201 kB gzipped total, zero Electron bloat).
+  - Supports live structured tool/thinking streams, sandboxed workspace IDE operations (file tree/editor with path-traversal protection, Quick Open `Ctrl+P`, Git diff viewer, bounded shell pane), recon/swarm/workflow panels, command palette, Arabic/English UI localization, explicit loading indicators when resuming stored conversations, and CLI parity (`capabilities`, `slash_commands`, `doctor`, `usage`, `memory`, `config`, `schedule`, `account_switch`).
+  - Adds local SQLite persistence (`cli::gui::db` via bundled `rusqlite` in WAL mode) for GUI preferences, workspaces, and chat metadata with strict per-workspace chat isolation (requiring an open workspace folder before sending prompts and migrating legacy GUI state once).
+  - Preserves and updates the Windows WPF legacy host (`AlphaCode.Legacy.exe` via `--legacy`, `GuiHost.cs`, `gui.ps1`) with matching workspace isolation, loading feedback, and session rename sync, while keeping zero PE overlay and complete `.rsrc` VERSIONINFO metadata in `build.rs`.
+  - Adds `scripts/build-gui.ps1` and updates `scripts/test-gui-smoke.ps1` for repeatable GUI asset builds and smoke verification.
+
+- **Cross-platform native Arabic script shaping and Unicode Bidirectional (BiDi / UAX #9) layout engine.**
+  - Added `alphacode_render_core::bidi`, wired through `alphacode_core::output_style`, `alphacode_tui_markdown`, and interactive composer input (`ui_input`), with dedicated RTL test coverage (`arabic_rtl.rs`).
+  - Supports native OpenType/DirectWrite shaping on modern terminals across Windows, macOS, and Linux, Presentation Forms-B fallback on legacy consoles, isolated URLs/paths/flags/code spans, and grapheme-accurate cursor alignment.
+
+- **Reliable automatic conversation titling and session sync.**
+  - Added `alphacode_app_core::server::auto_title` and enhanced `debug_sessions_index.rs` to filter greetings/slash commands, strip `<think>`/`<thinking>` blocks and placeholder/UUID titles, derive clean fallback titles when a model omits one, and broadcast `session_renamed` updates to connected clients.
+
+- **Unified OAuth account visibility, sign-out, and provider connection management across CLI, TUI, and GUI.**
+  - Added `connected_oauth_accounts()`, `account_summary_for_provider()`, `logout_login_provider()`, and Copilot `saved_github_username()`/`clear_tokens()` in `alphacode_base::auth`.
+  - Extended `alphacode auth status` and `alphacode auth doctor` reports (`cli/commands/report_info.rs`) and TUI login/account pickers (`tui/app/auth*.rs`, `tui/login_picker.rs`) to display signed-in account identities.
+  - Added a branded HTML OAuth callback response with HTML escaping and managed GUI browser sign-in (`ALPHACODE_GUI_BROWSER_LOGIN=1`).
+
+### Fixed
+
+- **Google Gemini and Antigravity provider & runtime compatibility (`alphacode_provider_gemini*`, `alphacode_provider_antigravity*`, `alphacode_base::provider::antigravity`).**
+  - Added `gemini_compatible_schema` to normalize tool JSON Schemas into the OpenAPI 3.0 / Vertex `Schema` subset accepted by Gemini Code Assist and Cloud Code `generateContent` (stripping unsupported draft keywords and normalizing array `type` fields that triggered HTTP 400 errors).
+  - Improved failover classification and actionable diagnostics when individual Gemini Code Assist OAuth is retired, and added Antigravity Gemini model catalog filtering/mapping with preferred ordering.
+- **Shared server binary selection (`alphacode_build_support::paths.rs`).**
+  - Prevented `shared_server_update_candidate` from selecting a `stable` binary that is strictly older than the currently running executable.
+
 ## [1.1.22] - 2026-11-25
 
 ### Fixed
