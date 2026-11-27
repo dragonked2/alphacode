@@ -18,11 +18,11 @@ use chrono::Utc;
 
 pub use crate::alphacode_provider_antigravity::is_known_model;
 pub use crate::alphacode_provider_antigravity::{
-    AVAILABLE_MODELS, CatalogModel, CatalogSnapshot, DEFAULT_FALLBACK_MODEL, FETCH_MODELS_API_URL,
-    FetchAvailableModelsResponse, GENERATE_CONTENT_API_URL, PersistedCatalog, X_GOOG_API_CLIENT,
-    antigravity_compatible_schema, antigravity_user_agent, catalog_is_stale, catalog_model_detail,
-    client_metadata_header, is_retryable_empty_turn, merge_antigravity_model_ids,
-    parse_fetch_available_models_response, remap_unsupported_model,
+    ANTIGRAVITY_API_BASES, AVAILABLE_MODELS, CatalogModel, CatalogSnapshot, DEFAULT_FALLBACK_MODEL,
+    FETCH_MODELS_API_URL, FetchAvailableModelsResponse, GENERATE_CONTENT_API_URL, PersistedCatalog,
+    X_GOOG_API_CLIENT, antigravity_compatible_schema, antigravity_user_agent, catalog_is_stale,
+    catalog_model_detail, client_metadata_header, is_retryable_empty_turn,
+    merge_antigravity_model_ids, parse_fetch_available_models_response, remap_unsupported_model,
 };
 
 /// Path of the persisted warm-catalog cache shared by the runtime crate and
@@ -72,42 +72,54 @@ async fn fetch_available_models_with_project(
         serde_json::json!({})
     };
 
-    let response = client
-        .post(FETCH_MODELS_API_URL)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", access_token),
-        )
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .header(reqwest::header::USER_AGENT, antigravity_user_agent())
-        .header(
-            reqwest::header::HeaderName::from_static("x-goog-api-client"),
-            X_GOOG_API_CLIENT,
-        )
-        .header(
-            reqwest::header::HeaderName::from_static("client-metadata"),
-            client_metadata_header(),
-        )
-        .json(&request)
-        .send()
-        .await
-        .context("Failed to fetch Antigravity model catalog")?;
+    let mut errors = Vec::new();
+    for base_url in ANTIGRAVITY_API_BASES {
+        let url = format!("{base_url}/v1internal:fetchAvailableModels");
+        let response = match client
+            .post(&url)
+            .header(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", access_token),
+            )
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::USER_AGENT, antigravity_user_agent())
+            .header(
+                reqwest::header::HeaderName::from_static("x-goog-api-client"),
+                X_GOOG_API_CLIENT,
+            )
+            .header(
+                reqwest::header::HeaderName::from_static("client-metadata"),
+                client_metadata_header(),
+            )
+            .json(&request)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                errors.push(format!("{base_url}: {err}"));
+                continue;
+            }
+        };
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = crate::util::http_error_body(response, "HTTP error").await;
-        anyhow::bail!(
-            "Antigravity model catalog request failed ({}): {}",
-            status,
-            body.trim()
-        );
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = crate::util::http_error_body(response, "HTTP error").await;
+            errors.push(format!("{base_url} ({}): {}", status, body.trim()));
+            continue;
+        }
+
+        let parsed: FetchAvailableModelsResponse = response
+            .json()
+            .await
+            .context("Failed to decode Antigravity model catalog response")?;
+        return Ok(parse_fetch_available_models_response(&parsed));
     }
 
-    let parsed: FetchAvailableModelsResponse = response
-        .json()
-        .await
-        .context("Failed to decode Antigravity model catalog response")?;
-    Ok(parse_fetch_available_models_response(&parsed))
+    anyhow::bail!(
+        "Antigravity model catalog request failed: {}",
+        errors.join("; ")
+    )
 }
 
 /// Fetch the live Antigravity model catalog using the resolved Google OAuth

@@ -241,6 +241,19 @@ impl Agent {
         Ok(self.session.display_title_or_name().to_string())
     }
 
+    pub fn should_auto_generate_title(&self) -> bool {
+        !self.session.is_canary
+            && self.session.parent_id.is_none()
+            && self.session.display_title().is_none()
+    }
+
+    pub fn set_generated_session_title(&mut self, title: Option<String>) -> Result<String> {
+        self.session.set_generated_title(title);
+        self.log_env_snapshot("auto_title_session");
+        self.session.save()?;
+        Ok(self.session.display_title_or_name().to_string())
+    }
+
     /// Update the saved-chat marker in the authoritative session.
     pub fn set_session_bookmark(&mut self, saved: bool, label: Option<String>) -> Result<()> {
         if saved {
@@ -252,12 +265,61 @@ impl Agent {
         Ok(())
     }
 
+    pub fn refresh_provider_auth(&self) {
+        self.provider.on_auth_changed_preserve_current_provider();
+    }
+
     pub fn session_bookmark(&self) -> (bool, Option<String>) {
         (self.session.saved, self.session.save_label.clone())
     }
 
+    fn first_user_title_fallback(&self) -> Option<String> {
+        for message in &self.session.messages {
+            if message.role != crate::message::Role::User {
+                continue;
+            }
+            for block in &message.content {
+                let crate::message::ContentBlock::Text { text, .. } = block else {
+                    continue;
+                };
+                let trimmed = text.trim();
+                if trimmed.is_empty()
+                    || trimmed.starts_with("<system-reminder>")
+                    || trimmed.starts_with("<session-context>")
+                {
+                    continue;
+                }
+                let first_line = trimmed
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .unwrap_or("");
+                if first_line.is_empty() {
+                    continue;
+                }
+                let compact = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
+                let mut truncated = crate::util::truncate_str(&compact, 48).to_string();
+                if compact.chars().count() > 48 {
+                    truncated.push_str("...");
+                }
+                if !truncated.is_empty() {
+                    return Some(truncated);
+                }
+            }
+        }
+        None
+    }
+
     pub fn session_display_title(&self) -> String {
-        self.session.display_title_or_name().to_string()
+        if let Some(title) = self.session.display_title() {
+            return title.to_string();
+        }
+        let name = self.session.display_name();
+        if name != self.session.id && !looks_like_session_uuid(name) {
+            return name.to_string();
+        }
+        self.first_user_title_fallback()
+            .unwrap_or_else(|| name.to_string())
     }
 
     pub fn autoreview_enabled(&self) -> Option<bool> {
@@ -300,5 +362,35 @@ impl Agent {
     /// Get the stored messages (for transcript export)
     pub fn messages(&self) -> &[StoredMessage] {
         &self.session.messages
+    }
+}
+
+fn looks_like_session_uuid(value: &str) -> bool {
+    let raw = value.trim();
+    let candidate = raw.strip_prefix("session_").unwrap_or(raw);
+    let mut parts = candidate.split('-');
+    let expected = [8usize, 4, 4, 4, 12];
+    expected.into_iter().all(|len| {
+        parts
+            .next()
+            .is_some_and(|part| part.len() == len && part.chars().all(|c| c.is_ascii_hexdigit()))
+    }) && parts.next().is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_session_uuid;
+
+    #[test]
+    fn looks_like_session_uuid_matches_bare_and_prefixed_uuids() {
+        assert!(looks_like_session_uuid(
+            "66022031-1234-5678-9abc-def012345678"
+        ));
+        assert!(looks_like_session_uuid(
+            "session_66022031-1234-5678-9abc-def012345678"
+        ));
+        assert!(!looks_like_session_uuid("fix auth refresh"));
+        assert!(!looks_like_session_uuid("session_short"));
+        assert!(!looks_like_session_uuid(""));
     }
 }
