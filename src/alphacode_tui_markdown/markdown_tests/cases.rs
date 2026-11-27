@@ -7,3 +7,4 @@ include!("cases/streaming_cost.rs");
 include!("cases/streaming_incremental_equivalence.rs");
 include!("cases/wrapping_currency.rs");
 include!("cases/placeholders.rs");
+include!("cases/arabic_rtl.rs");

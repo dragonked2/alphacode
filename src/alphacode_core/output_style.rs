@@ -59,10 +59,15 @@ pub fn terminal_text(text: &str) -> Cow<'_, str> {
 
 /// Adapt terminal-facing text using an explicit emoji preference.
 pub fn terminal_text_with_emoji(text: &str, enabled: bool) -> Cow<'_, str> {
-    if enabled || text.is_ascii() || !contains_emoji(text) {
+    let intermediate = if enabled || text.is_ascii() || !contains_emoji(text) {
         Cow::Borrowed(text)
     } else {
         Cow::Owned(replace_emoji_with_ascii(text))
+    };
+    if crate::alphacode_render_core::contains_rtl(&intermediate) {
+        Cow::Owned(crate::alphacode_render_core::prepare_rtl_text(&intermediate).into_owned())
+    } else {
+        intermediate
     }
 }
 
