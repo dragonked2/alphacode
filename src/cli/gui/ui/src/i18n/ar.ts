@@ -1,0 +1,98 @@
+// AlphaCode – Arabic translations (العربية)
+export const ar = {
+  // App
+  appTitle: 'ألفاكود',
+  appSubtitle: 'مساعد البرمجة بالذكاء الاصطناعي',
+
+  // Header
+  connected: 'متصل',
+  connecting: 'جارٍ الاتصال…',
+  disconnected: 'غير متصل',
+  commandPalette: 'لوحة الأوامر',
+  settings: 'الإعدادات',
+  themeToggle: 'تبديل المظهر',
+  langToggle: 'English',
+
+  // Sidebar
+  newChat: 'محادثة جديدة',
+  liveChats: 'مباشر',
+  savedChats: 'محفوظة',
+  search: 'البحث في المحادثات…',
+  workspaces: 'مساحات العمل',
+  noChats: 'لا توجد محادثات بعد.',
+  today: 'اليوم',
+  yesterday: 'أمس',
+  older: 'أقدم',
+
+  // Composer
+  composerPlaceholder: 'اسأل ألفاكود أي شيء…',
+  send: 'إرسال',
+  stop: 'إيقاف',
+  charCount: '{count} / 16,000',
+  model: 'النموذج',
+  modelSearch: 'البحث في النماذج…',
+  reasoning: 'التفكير',
+  effortAuto: 'تلقائي',
+  effortLow: 'منخفض',
+  effortMed: 'متوسط',
+  effortHigh: 'عالٍ',
+
+  // Conversation
+  copyCode: 'نسخ',
+  copied: '✓ تم النسخ',
+  toolCalls: 'استدعاءات الأدوات',
+  thinking: 'جارٍ التفكير…',
+  you: 'أنت',
+  assistant: 'ألفاكود',
+  errorResponse: 'حدث خطأ ما. يرجى المحاولة مرة أخرى.',
+
+  // Workflow panel
+  workflowPanel: 'سير العمل',
+  todos: 'المهام',
+  plan: 'الخطة',
+  agents: 'الوكلاء',
+  agentIdle: 'خامل',
+  agentWorking: 'يعمل',
+  agentDone: 'منتهٍ',
+  agentError: 'خطأ',
+  noTodos: 'لا توجد مهام بعد.',
+  noPlan: 'لا توجد خطة بعد.',
+  noAgents: 'لا يوجد وكلاء نشطون في السرب.',
+
+  // Settings modal
+  settingsTitle: 'الإعدادات',
+  appearance: 'المظهر',
+  theme: 'السمة',
+  themeDark: 'داكن',
+  themeLight: 'فاتح',
+  fontSize: 'حجم الخط',
+  providers: 'المزودون',
+  apiKey: 'مفتاح API',
+  oauthConnect: 'الاتصال عبر OAuth',
+  localEndpoint: 'نقطة النهاية المحلية',
+  workspace: 'مساحة العمل',
+  workspaceFolder: 'مجلد مساحة العمل',
+  browse: 'تصفح',
+  save: 'حفظ',
+  cancel: 'إلغاء',
+  close: 'إغلاق',
+
+  // Command palette
+  commandPaletteTitle: 'لوحة الأوامر',
+  commandSearch: 'البحث في الأوامر…',
+  cmdNewChat: 'محادثة جديدة',
+  cmdSettings: 'فتح الإعدادات',
+  cmdToggleTheme: 'تبديل السمة',
+  cmdToggleLang: 'تبديل اللغة',
+  cmdToggleSidebar: 'تبديل الشريط الجانبي',
+  cmdToggleWorkflow: 'تبديل لوحة سير العمل',
+  cmdOpenTerminal: 'فتح الطرفية التفاعلية (Ctrl+`)',
+  cmdOpenTools: 'استعراض كتالوج الأدوات الـ 51 (Ctrl+T)',
+  cmdOpenDiff: 'فتح فاحص الفروقات والرقع البرمجية',
+  cmdOpenRecon: 'فتح لوحة الاستطلاع الأمني وفحص الثغرات',
+  cmdOpenSwarm: 'فتح لوحة متابعة أسراب الوكلاء (Swarm)',
+  cmdOpenChat: 'التبديل إلى نافذة المحادثة',
+  cmdDoctor: 'تشخيص بيئة النظام والأدوات (/doctor)',
+  cmdCompact: 'ضغط سياق المحادثة وتوفير التوكنز (/compact)',
+  noResults: 'لا توجد نتائج.',
+};

@@ -282,6 +282,15 @@ fn rendered_list_marker_width(text: &str) -> Option<usize> {
     (!rest.is_empty()).then_some(width)
 }
 
+fn rendered_user_prompt_prefix_width(text: &str) -> Option<usize> {
+    let digit_count = text.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    if digit_count == 0 {
+        return None;
+    }
+    let rest = text.get(digit_count..)?.strip_prefix("› ")?;
+    (!rest.is_empty()).then(|| digit_count + UnicodeWidthStr::width("› "))
+}
+
 fn repeated_gutter_prefix(line: &Line<'static>) -> Option<(Vec<Span<'static>>, usize)> {
     let plain = line_plain_text(line);
     let mut leading_width = 0usize;
@@ -303,6 +312,16 @@ fn repeated_gutter_prefix(line: &Line<'static>) -> Option<(Vec<Span<'static>>, u
     }
     let gutter_width = gutter_count * UnicodeWidthStr::width("│ ");
     let base_prefix_width = leading_width + gutter_width;
+
+    if gutter_count == 0
+        && leading_width == 0
+        && let Some(prompt_prefix_width) = rendered_user_prompt_prefix_width(rest)
+    {
+        return Some((
+            vec![Span::raw(" ".repeat(prompt_prefix_width))],
+            prompt_prefix_width,
+        ));
+    }
 
     if let Some(marker_width) = rendered_list_marker_width(rest) {
         let total_width = base_prefix_width + marker_width;

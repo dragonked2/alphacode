@@ -1313,6 +1313,9 @@ impl MultiProvider {
             }
         }
 
+        let mut newly_initialized: Vec<(ActiveProvider, Arc<dyn Provider>, &'static str)> =
+            Vec::new();
+
         let already_has_antigravity = self.antigravity_provider().is_some();
         if !already_has_antigravity
             && crate::alphacode_base::auth::antigravity::load_tokens().is_ok()
@@ -1320,6 +1323,11 @@ impl MultiProvider {
                 external::instantiate_expected_external_provider(external::ANTIGRAVITY_RUNTIME)
         {
             crate::logging::info("Hot-initialized Antigravity provider after login");
+            newly_initialized.push((
+                ActiveProvider::Antigravity,
+                Arc::clone(&antigravity),
+                "Antigravity",
+            ));
             *self
                 .antigravity
                 .write()
@@ -1333,6 +1341,7 @@ impl MultiProvider {
                 external::instantiate_expected_external_provider(external::GEMINI_RUNTIME)
         {
             crate::logging::info("Hot-initialized Gemini provider after login");
+            newly_initialized.push((ActiveProvider::Gemini, Arc::clone(&gemini), "Gemini"));
             *self
                 .gemini
                 .write()
@@ -1348,6 +1357,7 @@ impl MultiProvider {
                 external::instantiate_expected_external_provider(external::CURSOR_RUNTIME)
         {
             crate::logging::info("Hot-initialized Cursor provider after login");
+            newly_initialized.push((ActiveProvider::Cursor, Arc::clone(&cursor), "Cursor"));
             *self
                 .cursor
                 .write()
@@ -1357,11 +1367,16 @@ impl MultiProvider {
         let already_has_bedrock = self.bedrock_provider().is_some();
         if !already_has_bedrock && bedrock::BedrockProvider::has_credentials() {
             crate::logging::info("Hot-initialized AWS Bedrock provider after login");
+            let bedrock = Arc::new(bedrock::BedrockProvider::new());
+            newly_initialized.push((
+                ActiveProvider::Bedrock,
+                Arc::clone(&bedrock) as Arc<dyn Provider>,
+                "AWS Bedrock",
+            ));
             *self
                 .bedrock
                 .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                Some(Arc::new(bedrock::BedrockProvider::new()));
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(bedrock);
         }
 
         // Login must populate newly configured, non-active profiles now, rather
@@ -1391,6 +1406,11 @@ impl MultiProvider {
         };
         if let Some((provider, label)) = provider_to_refresh {
             self.spawn_post_auth_model_refresh(provider, label);
+        }
+        for (kind, provider, label) in newly_initialized {
+            if kind != active_provider {
+                self.spawn_post_auth_model_refresh(provider, label);
+            }
         }
         crate::logging::auth_event("auth_changed_completed", "multi-provider", &[]);
     }

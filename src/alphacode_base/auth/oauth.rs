@@ -4,7 +4,7 @@ use anyhow::Result;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::{BufRead, BufReader, IsTerminal, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
@@ -153,15 +153,212 @@ pub fn generate_state_public() -> String {
 
 const CALLBACK_READ_TIMEOUT_SECS: u64 = 5;
 
-fn bad_request_response(message: &str) -> String {
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn callback_html_response(status: &str, ok: bool, title: &str, detail: &str) -> String {
+    let pill_fg = if ok { "#34D399" } else { "#F87171" };
+    let pill_bg = if ok {
+        "rgba(52, 211, 153, 0.10)"
+    } else {
+        "rgba(248, 113, 113, 0.10)"
+    };
+    let pill_border = if ok {
+        "rgba(52, 211, 153, 0.28)"
+    } else {
+        "rgba(248, 113, 113, 0.28)"
+    };
+    let status_text = if ok {
+        "&#10003; Connected"
+    } else {
+        "&#10005; Failed"
+    };
+    let subtitle = if ok {
+        "You can close this tab and return to AlphaCode."
+    } else {
+        detail
+    };
+    let title_esc = escape_html(title);
+    let subtitle_esc = escape_html(subtitle);
+    let favicon_svg = "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect x='12' y='12' width='488' height='488' rx='132' fill='%23171511'/%3E%3Cpath d='M256 63 444 181 400 376 256 461 112 376 68 181Z' fill='%232B241A' stroke='%23D7A93F' stroke-width='18' stroke-linejoin='round'/%3E%3Cpath d='m154 342 102-203 102 203M190 276h132' fill='none' stroke='%23F7D88C' stroke-width='34' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E";
     let body = format!(
-        "<html><body><h1>Authentication not completed</h1><p>{}</p><p>You can close this tab and return to alphacode.</p></body></html>",
-        message
+        r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,{favicon_svg}" />
+  <title>AlphaCode &middot; {title_esc}</title>
+  <style>
+    :root {{ color-scheme: dark; }}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    html, body {{ height: 100%; }}
+    body {{
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+      background:
+        radial-gradient(520px circle at 50% 0%, rgba(241, 200, 106, 0.09), transparent 65%),
+        #080A0F;
+      color: #F3F4F6;
+      -webkit-font-smoothing: antialiased;
+    }}
+    .card {{
+      width: 100%;
+      max-width: 392px;
+      background: #0F131C;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 20px;
+      padding: 36px 28px 30px;
+      text-align: center;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65);
+    }}
+    .logo-wrap {{
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+    }}
+    .logo-wrap svg {{
+      width: 48px;
+      height: 48px;
+      display: block;
+      filter: drop-shadow(0 6px 18px rgba(215, 169, 63, 0.22));
+    }}
+    .wordmark {{
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #E5E7EB;
+    }}
+    .pill {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      color: {pill_fg};
+      background: {pill_bg};
+      border: 1px solid {pill_border};
+      margin-bottom: 16px;
+    }}
+    h1 {{
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.015em;
+      color: #F9FAFB;
+      margin-bottom: 8px;
+    }}
+    p {{
+      font-size: 13.5px;
+      line-height: 1.55;
+      color: #9CA3AF;
+    }}
+    .actions {{
+      margin-top: 24px;
+    }}
+    .btn {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 9px 18px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.05);
+      color: #E5E7EB;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }}
+    .btn:hover {{
+      background: rgba(255, 255, 255, 0.10);
+      border-color: rgba(241, 200, 106, 0.35);
+    }}
+    .note {{
+      margin-top: 12px;
+      font-size: 11.5px;
+      color: #6B7280;
+      min-height: 16px;
+    }}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="logo-wrap">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" aria-label="AlphaCode logo">
+        <defs>
+          <linearGradient id="acSurface" x2="1" y2="1">
+            <stop stop-color="#3A2F20"/>
+            <stop offset="1" stop-color="#171511"/>
+          </linearGradient>
+          <linearGradient id="acAccent" x2=".8" y2="1">
+            <stop stop-color="#F7D88C"/>
+            <stop offset=".55" stop-color="#D7A93F"/>
+            <stop offset="1" stop-color="#A77424"/>
+          </linearGradient>
+        </defs>
+        <rect x="12" y="12" width="488" height="488" rx="132" fill="url(#acSurface)"/>
+        <path d="M256 63 444 181 400 376 256 461 112 376 68 181Z" fill="#2B241A" stroke="url(#acAccent)" stroke-width="13" stroke-linejoin="round"/>
+        <path d="m154 342 102-203 102 203M190 276h132" fill="none" stroke="url(#acAccent)" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="m239 328 23 22-23 22m48 0h27" fill="none" stroke="#FFF0C9" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="wordmark">AlphaCode</span>
+    </div>
+    <div class="pill">{status_text}</div>
+    <h1>{title_esc}</h1>
+    <p>{subtitle_esc}</p>
+    <div class="actions">
+      <button class="btn" onclick="tryClose()">Close Tab</button>
+      <div id="close-note" class="note"></div>
+    </div>
+  </main>
+  <script>
+    function tryClose() {{
+      window.close();
+      setTimeout(function () {{
+        var el = document.getElementById('close-note');
+        if (el) el.textContent = 'You can safely close this browser tab.';
+      }}, 150);
+    }}
+  </script>
+</body>
+</html>"##
     );
     format!(
-        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
+    )
+}
+
+fn success_callback_response() -> String {
+    callback_html_response(
+        "200 OK",
+        true,
+        "Authentication Complete",
+        "You have been signed in successfully. You can close this window and return to AlphaCode.",
+    )
+}
+
+fn bad_request_response(message: &str) -> String {
+    callback_html_response(
+        "400 Bad Request",
+        false,
+        "Authentication Not Completed",
+        message,
     )
 }
 
@@ -319,13 +516,7 @@ pub fn wait_for_callback(port: u16, expected_state: &str) -> Result<String> {
             continue;
         }
 
-        let body = "<html><body><h1>Success!</h1><p>You can close this window.</p></body></html>";
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream.write_all(response.as_bytes())?;
+        stream.write_all(success_callback_response().as_bytes())?;
 
         return Ok(code);
     }
@@ -455,13 +646,9 @@ pub async fn wait_for_callback_async_on_listener(
             continue;
         }
 
-        let body = "<html><body><h1>Success!</h1><p>You can close this window and return to alphacode.</p></body></html>";
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        writer.write_all(response.as_bytes()).await?;
+        writer
+            .write_all(success_callback_response().as_bytes())
+            .await?;
 
         return Ok(code);
     }
@@ -479,7 +666,7 @@ pub async fn login_claude(no_browser: bool) -> Result<OAuthTokens> {
         return exchange_claude_code(&verifier, trimmed, claude::REDIRECT_URI).await;
     }
 
-    if !std::io::stdin().is_terminal() {
+    if !crate::alphacode_base::auth::interactive_stdin() {
         anyhow::bail!(
             "Claude login needs an authorization code from stdin. Re-run in an interactive terminal, or set ALPHACODE_CLAUDE_AUTH_CODE."
         );

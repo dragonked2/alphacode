@@ -471,6 +471,52 @@ pub fn saved_hosts_path() -> PathBuf {
     legacy_copilot_config_dir().join("hosts.json")
 }
 
+/// Read the saved GitHub username (without network calls) from Copilot config files if available.
+pub fn saved_github_username() -> Option<String> {
+    for path in [
+        copilot_cli_dir().join("config.json"),
+        legacy_copilot_config_dir().join("hosts.json"),
+        legacy_copilot_config_dir().join("apps.json"),
+    ] {
+        let Ok(validated) = crate::storage::validate_external_auth_file(&path) else {
+            continue;
+        };
+        let Ok(data) = std::fs::read_to_string(&validated) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&data) else {
+            continue;
+        };
+        if let Some(user) = find_username_in_value(&value) {
+            return Some(user);
+        }
+    }
+    None
+}
+
+fn find_username_in_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            for key in ["user", "login", "username"] {
+                if let Some(Value::String(name)) = map.get(key) {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+            for child in map.values() {
+                if let Some(user) = find_username_in_value(child) {
+                    return Some(user);
+                }
+            }
+            None
+        }
+        Value::Array(items) => items.iter().find_map(find_username_in_value),
+        _ => None,
+    }
+}
+
 fn load_token_from_config_json(path: &Path) -> Result<String> {
     let path = crate::storage::validate_external_auth_file(path)?;
     let data = std::fs::read_to_string(&path)
@@ -850,6 +896,30 @@ pub fn save_github_token(token: &str, username: &str) -> Result<()> {
     )?;
     super::AuthStatus::invalidate_cache();
 
+    Ok(())
+}
+
+/// Remove AlphaCode's saved GitHub Copilot token and clear cached GitHub auth.
+pub fn clear_tokens() -> Result<()> {
+    let hosts_path = ExternalCopilotAuthSource::HostsJson.path();
+    if hosts_path.exists() {
+        if let Ok(data) = std::fs::read_to_string(&hosts_path)
+            && let Ok(mut config) =
+                serde_json::from_str::<HashMap<String, HashMap<String, String>>>(&data)
+        {
+            config.remove("github.com");
+            if config.is_empty() {
+                std::fs::remove_file(&hosts_path)?;
+            } else {
+                let json = serde_json::to_string_pretty(&config)?;
+                crate::storage::write_text_secret(&hosts_path, &json)?;
+            }
+        } else {
+            std::fs::remove_file(&hosts_path)?;
+        }
+    }
+    invalidate_github_token_cache();
+    super::AuthStatus::invalidate_cache();
     Ok(())
 }
 

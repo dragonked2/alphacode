@@ -1,0 +1,212 @@
+@import "tailwindcss";
+
+/* ============================================================
+   AlphaCode Design System — Luminous Slate-Charcoal & Gold
+   ============================================================ */
+:root {
+  color-scheme: dark;
+
+  /* -- Brand Palette -- */
+  --ac-gold:            #F5C451;
+  --ac-gold-bright:     #FFD666;
+  --ac-gold-soft:       rgba(245, 196, 81, 0.16);
+  --ac-gold-text:       #1E1605;
+
+  /* -- Backgrounds (luminous dark slate default) -- */
+  --ac-bg-window:       #111520;
+  --ac-bg-sidebar:      #151A28;
+  --ac-bg-canvas:       #171C2B;
+  --ac-bg-surface:      #1E2436;
+  --ac-bg-elevated:     #252C40;
+  --ac-bg-code:         #111622;
+  --ac-bg-user-msg:     #242D43;
+
+  /* -- Text -- */
+  --ac-text:            #F4F6FA;
+  --ac-text-muted:      #C4CCDB;
+  --ac-text-dim:        #94A1B8;
+
+  /* -- Borders & Glows -- */
+  --ac-border:          rgba(255, 255, 255, 0.10);
+  --ac-border-subtle:   rgba(255, 255, 255, 0.06);
+  --ac-border-glow:     rgba(245, 196, 81, 0.34);
+  --ac-surface-sheen:   inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --ac-composer-glow:   0 8px 30px rgba(8, 12, 24, 0.42), 0 0 0 1px rgba(245, 196, 81, 0.14);
+
+  /* -- Status -- */
+  --ac-success:         #5CE0A8;
+  --ac-warning:         #F5C451;
+  --ac-danger:          #FB7185;
+  --ac-danger-solid:    #E11D48;
+  --ac-danger-bg:       rgba(225, 29, 72, 0.14);
+  --ac-danger-border:   rgba(251, 113, 133, 0.42);
+
+  /* -- Controls -- */
+  --ac-control:         rgba(255, 255, 255, 0.06);
+  --ac-control-hover:   rgba(255, 255, 255, 0.11);
+
+  /* -- Typography -- */
+  --ac-font-ui:         'Segoe UI Variable Text', 'Cairo', 'Segoe UI Arabic', 'Segoe UI', Tahoma, sans-serif;
+  --ac-font-code:       'Cascadia Code', Consolas, 'Courier New', monospace;
+
+  --ac-radius:          10px;
+  --ac-shadow:          rgba(5, 8, 18, 0.55);
+}
+
+/* Light theme overrides */
+html.light,
+body.light {
+  color-scheme: light;
+
+  --ac-gold:            #C88A12;
+  --ac-gold-bright:     #DF9B18;
+  --ac-gold-soft:       rgba(200, 138, 18, 0.14);
+  --ac-gold-text:       #FFFFFF;
+
+  --ac-bg-window:       #EFF2F7;
+  --ac-bg-sidebar:      #E7EBF2;
+  --ac-bg-canvas:       #F7F9FC;
+  --ac-bg-surface:      #FFFFFF;
+  --ac-bg-elevated:     #F0F3F9;
+  --ac-bg-code:         #F1F4F9;
+  --ac-bg-user-msg:     #E9EEF8;
+
+  --ac-text:            #161B26;
+  --ac-text-muted:      #4B5568;
+  --ac-text-dim:        #737E94;
+
+  --ac-border:          rgba(15, 23, 42, 0.10);
+  --ac-border-subtle:   rgba(15, 23, 42, 0.06);
+  --ac-border-glow:     rgba(200, 138, 18, 0.36);
+  --ac-surface-sheen:   inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --ac-composer-glow:   0 6px 24px rgba(15, 23, 42, 0.08), 0 0 0 1px rgba(200, 138, 18, 0.16);
+
+  --ac-success:         #15803D;
+  --ac-warning:         #B45309;
+  --ac-danger:          #BE123C;
+  --ac-danger-solid:    #E11D48;
+  --ac-danger-bg:       rgba(225, 29, 72, 0.08);
+  --ac-danger-border:   rgba(225, 29, 72, 0.32);
+
+  --ac-control:         rgba(15, 23, 42, 0.05);
+  --ac-control-hover:   rgba(15, 23, 42, 0.09);
+
+  --ac-shadow:          rgba(15, 23, 42, 0.12);
+}
+
+/* ---- Base ---- */
+@layer base {
+  *, ::before, ::after {
+    box-sizing: border-box;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html, body, #root {
+    height: 100%;
+    width: 100%;
+  }
+
+  body {
+    font-family: var(--ac-font-ui);
+    background-color: var(--ac-bg-window);
+    color: var(--ac-text);
+    overflow: hidden;
+    user-select: text;
+    -webkit-user-select: text;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  button, [role="button"], nav {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  input, textarea, pre, code {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  code, pre, kbd {
+    font-family: var(--ac-font-code);
+  }
+}
+
+/* ---- Slim scrollbars ---- */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--ac-control-hover);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--ac-text-dim); }
+
+/* ---- Utility classes ---- */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+.ac-gold-text { color: var(--ac-gold); }
+.ac-gold-bg   { background-color: var(--ac-gold); color: var(--ac-gold-text); }
+
+.ac-surface {
+  background-color: var(--ac-bg-surface);
+  border: 1px solid var(--ac-border);
+  box-shadow: var(--ac-surface-sheen);
+}
+
+.ac-elevated {
+  background-color: var(--ac-bg-elevated);
+  border: 1px solid var(--ac-border);
+  box-shadow: var(--ac-surface-sheen);
+}
+
+/* Gold focus glow ring */
+.gold-focus:focus,
+.gold-focus:focus-within {
+  outline: none;
+  border-color: var(--ac-border-glow);
+  box-shadow:
+    0 0 0 1px var(--ac-border-glow),
+    0 0 22px rgba(245, 196, 81, 0.14);
+}
+
+/* Fade in animation */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn 0.18s ease forwards; }
+
+/* Slide down */
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.slide-down { animation: slideDown 0.2s ease forwards; }
+
+/* Spinner */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 0.8s linear infinite; }
+
+/* Code block gold copy button pulse */
+@keyframes copyPulse {
+  0%   { opacity: 1; }
+  50%  { opacity: 0.35; }
+  100% { opacity: 1; }
+}
+
+/* Smooth typing indicator dots */
+@keyframes acBounceDot {
+  0%, 80%, 100% {
+    transform: translateY(0) scale(0.85);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-4px) scale(1.1);
+    opacity: 1;
+  }
+}
+.ac-typing-dot {
+  animation: acBounceDot 1.15s infinite ease-in-out;
+}

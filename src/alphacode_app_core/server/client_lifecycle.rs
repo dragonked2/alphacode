@@ -2901,6 +2901,7 @@ async fn start_processing_message(
     )
     .await;
 
+    let agent_ref = Arc::clone(agent);
     let agent = Arc::clone(agent);
     let members = Arc::clone(swarm.members);
     let fallback_tx = client_event_tx.clone();
@@ -2922,6 +2923,15 @@ async fn start_processing_message(
         } else {
             None
         };
+        let auto_title_input = if result.is_ok() {
+            super::auto_title::prepare_auto_title_input(
+                &agent,
+                &content,
+                completion_report.as_deref(),
+            )
+        } else {
+            None
+        };
         let (outcome, terminal_event) = turn_terminal_event(id, &result);
         crate::logging::info(&format!(
             "Finished generation {generation_id} session={session_id} request={id} outcome={outcome}"
@@ -2929,7 +2939,17 @@ async fn start_processing_message(
         // Keep the agent lock until the terminal event is enqueued for all
         // attachments. A replacement turn can only publish after this.
         relay.send(terminal_event).await;
+        drop(agent);
         let _ = done_tx.send((id, result, completion_report));
+        if let Some(title_input) = auto_title_input {
+            super::auto_title::spawn_background_auto_title(
+                agent_ref,
+                session_id,
+                members,
+                fallback_tx,
+                title_input,
+            );
+        }
     }));
 }
 

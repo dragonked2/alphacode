@@ -1,7 +1,7 @@
 use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 
 const GOOGLE_AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -10,6 +10,9 @@ pub const GEMINI_MANUAL_REDIRECT_URI: &str = "https://codeassist.google.com/auth
 pub const GEMINI_CLI_AUTH_SOURCE_ID: &str = "gemini_cli_oauth_creds";
 // OAuth credentials from Google's official Gemini CLI (@google/gemini-cli).
 // These are for a "Desktop app" OAuth type where the client secret is safe to embed.
+// Note: As of June 2026, Google retired individual consumer Gemini Code Assist
+// OAuth in favor of Antigravity (or paid Gemini Developer API keys). Workspace /
+// Enterprise Code Assist accounts with `GOOGLE_CLOUD_PROJECT` can still use OAuth.
 // See: https://developers.google.com/identity/protocols/oauth2#installed
 // gitleaks:allow - public desktop OAuth credentials, safe to embed
 const GEMINI_CLIENT_ID: &str =
@@ -366,6 +369,9 @@ async fn refresh_tokens_uncoordinated(tokens: &GeminiTokens) -> Result<GeminiTok
 }
 
 pub async fn login(no_browser: bool) -> Result<GeminiTokens> {
+    eprintln!(
+        "Note: Google retired individual Gemini Code Assist OAuth in favor of Antigravity (`alphacode login --provider antigravity`). Use this login for Workspace/Enterprise Code Assist accounts, or set GEMINI_API_KEY."
+    );
     let (verifier, challenge) = super::oauth::generate_pkce_public();
     let state = super::oauth::generate_state_public();
 
@@ -435,7 +441,7 @@ async fn manual_login(
     state: &str,
     no_browser: bool,
 ) -> Result<GeminiTokens> {
-    if !io::stdin().is_terminal() {
+    if !crate::alphacode_base::auth::interactive_stdin() {
         anyhow::bail!(
             "Gemini login needs an interactive terminal for manual code entry. Re-run in an interactive terminal."
         );
@@ -455,7 +461,8 @@ async fn manual_login(
         let _ = open::that(&auth_url);
     }
     eprintln!("After approving access, Google will show an authorization code. Paste it below.\n");
-    eprint!("Authorization code: ");
+    eprintln!("Authorization code:");
+    let _ = io::stderr().flush();
     io::stdout().flush()?;
     let code = crate::secret_input::read_secret_line()?;
     if code.trim().is_empty() {

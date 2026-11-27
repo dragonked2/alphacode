@@ -2,12 +2,114 @@ use crate::alphacode_tui_workspace::color_support::rgb;
 use ratatui::prelude::*;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+fn is_formatted_table_row(line: &Line<'static>) -> bool {
+    line.alignment == Some(Alignment::Left)
+        && line.spans.iter().any(|span| span.content.as_ref() == " │ ")
+}
+
+fn split_line_at_prefix_width(
+    line: &Line<'static>,
+    prefix_width: usize,
+) -> (Vec<Span<'static>>, Line<'static>) {
+    let mut prefix_spans = Vec::new();
+    let mut body_spans = Vec::new();
+    let mut remaining = prefix_width;
+
+    for span in &line.spans {
+        if remaining == 0 {
+            body_spans.push(span.clone());
+            continue;
+        }
+        let mut p_text = String::new();
+        let mut b_text = String::new();
+        for ch in span.content.chars() {
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if b_text.is_empty() && cw <= remaining {
+                p_text.push(ch);
+                remaining -= cw;
+            } else {
+                b_text.push(ch);
+            }
+        }
+        if !p_text.is_empty() {
+            prefix_spans.push(Span::styled(p_text, span.style));
+        }
+        if !b_text.is_empty() {
+            body_spans.push(Span::styled(b_text, span.style));
+        }
+    }
+
+    let mut body = Line::from(body_spans);
+    body.alignment = line.alignment;
+    (prefix_spans, body)
+}
+
+fn reorder_rtl_line_preserving_prefix(
+    line: Line<'static>,
+    base_level: Option<unicode_bidi::Level>,
+    repeated_gutter_prefix: impl Fn(&Line<'static>) -> Option<(Vec<Span<'static>>, usize)>,
+) -> Line<'static> {
+    let Some((_, prefix_width)) = repeated_gutter_prefix(&line) else {
+        return crate::alphacode_render_core::reorder_rtl_line_with_base(line, base_level);
+    };
+    if prefix_width == 0 {
+        return crate::alphacode_render_core::reorder_rtl_line_with_base(line, base_level);
+    }
+
+    let alignment = line.alignment;
+    let (mut prefix_spans, body) = split_line_at_prefix_width(&line, prefix_width);
+    let reordered_body = crate::alphacode_render_core::reorder_rtl_line_with_base(body, base_level);
+    prefix_spans.extend(reordered_body.spans);
+    let mut out = Line::from(prefix_spans);
+    if let Some(align) = alignment {
+        out = out.alignment(align);
+    }
+    out
+}
+
 pub fn wrap_line(
     line: Line<'static>,
     width: usize,
     repeated_gutter_prefix: impl Fn(&Line<'static>) -> Option<(Vec<Span<'static>>, usize)>,
 ) -> Vec<Line<'static>> {
+    // Table rows produced by `render_table_aligned` are already shaped/reordered
+    // per-cell and padded to exact column widths; skip whole-line RTL shaping and
+    // cross-column BiDi reordering so `│` borders stay aligned.
+    if is_formatted_table_row(&line) {
+        return vec![line];
+    }
+
+    let has_rtl = crate::alphacode_render_core::line_contains_rtl(&line);
+    let base_level = if has_rtl {
+        Some(crate::alphacode_render_core::detect_line_dominant_direction(&line))
+    } else {
+        None
+    };
+
+    // In modern terminals, preserve standard Arabic Unicode so the terminal's native
+    // OpenType/DirectWrite shaping connects cursive glyphs naturally without Presentation Forms gaps.
+    // In legacy mode, shape into Presentation Forms-B before measuring and wrapping.
+    let line = if has_rtl {
+        if crate::alphacode_render_core::is_native_shaping_active() {
+            crate::alphacode_render_core::normalize_rtl_line(line)
+        } else {
+            crate::alphacode_render_core::shape_rtl_line(line)
+        }
+    } else {
+        line
+    };
+
     if width == 0 {
+        if has_rtl {
+            if crate::alphacode_render_core::is_native_shaping_active() {
+                return vec![line];
+            }
+            return vec![reorder_rtl_line_preserving_prefix(
+                line,
+                base_level,
+                &repeated_gutter_prefix,
+            )];
+        }
         return vec![line];
     }
 
@@ -24,7 +126,8 @@ pub fn wrap_line(
     // Already-fitted printable ASCII needs no word splitting. Keep the
     // original styled spans instead of allocating a token and rebuilt spans
     // for every word in the transcript.
-    if repeated_prefix.is_none()
+    if !has_rtl
+        && repeated_prefix.is_none()
         && line.style == Style::default()
         && line
             .spans
@@ -57,6 +160,15 @@ pub fn wrap_line(
         };
 
     if let Some(balanced) = wrap_line_balanced(&line, width) {
+        if has_rtl {
+            if crate::alphacode_render_core::is_native_shaping_active() {
+                return balanced;
+            }
+            return balanced
+                .into_iter()
+                .map(|l| reorder_rtl_line_preserving_prefix(l, base_level, &repeated_gutter_prefix))
+                .collect();
+        }
         return balanced;
     }
 
@@ -240,7 +352,18 @@ pub fn wrap_line(
         result.push(empty_line);
     }
 
-    result
+    if has_rtl {
+        if crate::alphacode_render_core::is_native_shaping_active() {
+            result
+        } else {
+            result
+                .into_iter()
+                .map(|l| reorder_rtl_line_preserving_prefix(l, base_level, &repeated_gutter_prefix))
+                .collect()
+        }
+    } else {
+        result
+    }
 }
 
 #[derive(Clone)]

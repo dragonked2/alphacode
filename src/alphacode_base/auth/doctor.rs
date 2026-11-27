@@ -216,6 +216,7 @@ mod tests {
             state: AuthState::Available,
             readiness: crate::alphacode_base::auth::AuthReadinessLevel::RequestValid,
             method_detail: "OAuth".to_string(),
+            account_summary: None,
             credential_source: AuthCredentialSource::AlphacodeManagedFile,
             credential_source_detail: "~/.alphacode/auth.json".to_string(),
             expiry_confidence: AuthExpiryConfidence::Exact,

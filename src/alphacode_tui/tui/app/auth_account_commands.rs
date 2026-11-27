@@ -1125,6 +1125,9 @@ fn render_auth_doctor_markdown(provider_filter: Option<&str>) -> String {
             }
         ));
         lines.push(format!("  - Method: {}", assessment.method_detail));
+        if let Some(account) = assessment.account_summary.as_deref() {
+            lines.push(format!("  - Account: {account}"));
+        }
         lines.push(format!("  - Health: {}", assessment.health_summary()));
         lines.push(format!(
             "  - Credential source: {} ({})",

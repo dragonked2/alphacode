@@ -817,17 +817,80 @@ fn provider_supports_named_accounts(provider: LoginProviderDescriptor) -> bool {
     )
 }
 
+fn single_oauth_account_lines(provider_id: &str, empty_hint: &str) -> Vec<Line<'static>> {
+    let accounts: Vec<_> = crate::alphacode_base::auth::connected_oauth_accounts()
+        .into_iter()
+        .filter(|acc| acc.provider_id == provider_id)
+        .collect();
+    let mut lines = vec![Line::from(vec![Span::styled(
+        "Connected OAuth Account",
+        Style::default().fg(muted_dark()).bold(),
+    )])];
+    if accounts.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            empty_hint.to_string(),
+            Style::default().fg(muted_text()),
+        )]));
+        return lines;
+    }
+    for acc in accounts {
+        let mut spans = vec![
+            Span::styled("* ", Style::default().fg(Color::Rgb(111, 214, 181)).bold()),
+            Span::styled(
+                acc.primary_identity(),
+                Style::default().fg(Color::White).bold(),
+            ),
+        ];
+        if let Some(proj) = acc.project_id.as_deref().filter(|s| !s.is_empty()) {
+            spans.push(Span::styled(
+                format!(" · {proj}"),
+                Style::default().fg(muted_text()),
+            ));
+        } else if let Some(plan) = acc.subscription_type.as_deref().filter(|s| !s.is_empty()) {
+            spans.push(Span::styled(
+                format!(" · {plan}"),
+                Style::default().fg(muted_text()),
+            ));
+        }
+        spans.push(Span::styled(
+            if acc.valid { " [active]" } else { " [expired]" },
+            Style::default().fg(if acc.valid {
+                Color::Rgb(111, 214, 181)
+            } else {
+                Color::Rgb(240, 179, 90)
+            }),
+        ));
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
 fn account_detail_lines(provider: LoginProviderDescriptor) -> Vec<Line<'static>> {
     match provider.target {
         crate::provider_catalog::LoginProviderTarget::Claude => claude_account_lines(),
         crate::provider_catalog::LoginProviderTarget::OpenAi => openai_account_lines(),
+        crate::provider_catalog::LoginProviderTarget::Antigravity => {
+            single_oauth_account_lines("antigravity", "Not signed in to Antigravity OAuth yet.")
+        }
+        crate::provider_catalog::LoginProviderTarget::Gemini => {
+            single_oauth_account_lines("gemini", "Not signed in to Gemini OAuth yet.")
+        }
+        crate::provider_catalog::LoginProviderTarget::Copilot => {
+            single_oauth_account_lines("copilot", "Not signed in to GitHub Copilot yet.")
+        }
+        crate::provider_catalog::LoginProviderTarget::Google => {
+            single_oauth_account_lines("google", "Not signed in to Google/Gmail OAuth yet.")
+        }
+        crate::provider_catalog::LoginProviderTarget::Cursor => {
+            single_oauth_account_lines("cursor", "No Cursor session detected yet.")
+        }
         _ => vec![
             Line::from(vec![Span::styled(
                 "Accounts",
                 Style::default().fg(muted_dark()).bold(),
             )]),
             Line::from(vec![Span::styled(
-                "This provider is usually configured as a single credential or env-based login.",
+                "This provider uses an API key or local endpoint configuration.",
                 Style::default().fg(muted_text()),
             )]),
         ],

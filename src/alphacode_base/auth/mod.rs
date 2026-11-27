@@ -30,7 +30,7 @@ pub(crate) use commands::command_exists;
 
 pub use status_types::{
     AuthCredentialSource, AuthExpiryConfidence, AuthReadinessLevel, AuthRefreshSupport, AuthState,
-    AuthStatus, AuthValidationMethod, ProviderAuth, ProviderAuthAssessment,
+    AuthStatus, AuthValidationMethod, OAuthAccountSnapshot, ProviderAuth, ProviderAuthAssessment,
 };
 
 pub use active_method::{ActiveCredential, ResolvedProviderAuth, resolve_dual_credential_auth};
@@ -139,15 +139,22 @@ fn suppress_browser(
         || !interactive_stdin
 }
 
-/// True when a human is attached to this process's stdin.
+/// True when the GUI desktop host launched this login process over a managed
+/// bidirectional pipe (`ALPHACODE_GUI_BROWSER_LOGIN=1`).
+pub fn gui_browser_login_active() -> bool {
+    std::env::var("ALPHACODE_GUI_BROWSER_LOGIN").is_ok_and(|value| value.trim() == "1")
+}
+
+/// True when a human is attached to this process's stdin (either a terminal or
+/// the GUI desktop host's bidirectional sign-in pipe).
 ///
 /// The TUI runs in the attached terminal, so `/login` keeps its browser-open
 /// behavior. An `alphacode login …` spawned by an agent tool or a script has
-/// redirected stdin and is refused here — that is the whole point: browser
-/// windows must never open without a logged-in human behind them.
+/// redirected stdin without `ALPHACODE_GUI_BROWSER_LOGIN=1` and is refused here —
+/// browser windows must never open without an attached human behind them.
 pub fn interactive_stdin() -> bool {
     use std::io::IsTerminal;
-    std::io::stdin().is_terminal()
+    std::io::stdin().is_terminal() || gui_browser_login_active()
 }
 
 /// True when the current process is a Rust test binary (`cargo test` /
@@ -982,10 +989,13 @@ impl AuthStatus {
             _ => assessment_for_key(self, provider.auth_state_key, state),
         };
 
+        let account_summary = account_summary_for_provider(provider);
+
         ProviderAuthAssessment {
             state,
             readiness: auth_readiness_for_provider(provider, state, last_validation.as_ref()),
             method_detail,
+            account_summary,
             credential_source,
             credential_source_detail,
             expiry_confidence,
@@ -1587,6 +1597,241 @@ fn google_source() -> Option<(AuthCredentialSource, String)> {
     None
 }
 
+/// Collect all currently signed-in OAuth accounts across every supported provider.
+pub fn connected_oauth_accounts() -> Vec<OAuthAccountSnapshot> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut accounts = Vec::new();
+
+    let claude_active = claude::active_account_label();
+    let claude_list = claude::list_accounts().unwrap_or_default();
+    if !claude_list.is_empty() {
+        for account in claude_list {
+            let active = claude_active.as_deref() == Some(account.label.as_str());
+            accounts.push(OAuthAccountSnapshot {
+                provider_id: "claude",
+                provider_name: "Anthropic (Claude)",
+                label: account.label,
+                email: account.email,
+                username: None,
+                account_id: None,
+                project_id: None,
+                subscription_type: account.subscription_type,
+                expires_at_ms: Some(account.expires),
+                active,
+                valid: account.expires > now_ms,
+                switchable: true,
+            });
+        }
+    } else if let Ok(creds) = claude::load_credentials() {
+        accounts.push(OAuthAccountSnapshot {
+            provider_id: "claude",
+            provider_name: "Anthropic (Claude)",
+            label: "default".to_string(),
+            email: None,
+            username: None,
+            account_id: None,
+            project_id: None,
+            subscription_type: creds.subscription_type,
+            expires_at_ms: Some(creds.expires_at),
+            active: true,
+            valid: creds.expires_at > now_ms,
+            switchable: false,
+        });
+    }
+
+    let openai_active = codex::active_account_label();
+    let openai_list = codex::list_accounts().unwrap_or_default();
+    if !openai_list.is_empty() {
+        for account in openai_list {
+            let active = openai_active.as_deref() == Some(account.label.as_str());
+            accounts.push(OAuthAccountSnapshot {
+                provider_id: "openai",
+                provider_name: "OpenAI (ChatGPT)",
+                label: account.label,
+                email: account.email,
+                username: None,
+                account_id: account.account_id,
+                project_id: None,
+                subscription_type: None,
+                expires_at_ms: account.expires_at,
+                active,
+                valid: account.expires_at.is_none_or(|exp| exp > now_ms),
+                switchable: true,
+            });
+        }
+    } else if let Ok(creds) = codex::load_credentials() {
+        accounts.push(OAuthAccountSnapshot {
+            provider_id: "openai",
+            provider_name: "OpenAI (ChatGPT)",
+            label: "default".to_string(),
+            email: None,
+            username: None,
+            account_id: creds.account_id,
+            project_id: None,
+            subscription_type: None,
+            expires_at_ms: creds.expires_at,
+            active: true,
+            valid: creds.expires_at.is_none_or(|exp| exp > now_ms),
+            switchable: false,
+        });
+    }
+
+    if let Ok(tokens) = antigravity::load_tokens() {
+        accounts.push(OAuthAccountSnapshot {
+            provider_id: "antigravity",
+            provider_name: "Antigravity",
+            label: tokens
+                .email
+                .clone()
+                .unwrap_or_else(|| "antigravity-oauth".to_string()),
+            email: tokens.email.clone(),
+            username: None,
+            account_id: None,
+            project_id: tokens.project_id.clone(),
+            subscription_type: None,
+            expires_at_ms: Some(tokens.expires_at),
+            active: true,
+            valid: !tokens.is_expired(),
+            switchable: false,
+        });
+    }
+
+    if let Ok(tokens) = gemini::load_tokens() {
+        accounts.push(OAuthAccountSnapshot {
+            provider_id: "gemini",
+            provider_name: "Google Gemini",
+            label: tokens
+                .email
+                .clone()
+                .unwrap_or_else(|| "gemini-oauth".to_string()),
+            email: tokens.email.clone(),
+            username: None,
+            account_id: None,
+            project_id: None,
+            subscription_type: None,
+            expires_at_ms: Some(tokens.expires_at),
+            active: true,
+            valid: !tokens.is_expired(),
+            switchable: false,
+        });
+    }
+
+    if copilot::load_github_token().is_ok() {
+        let username = copilot::saved_github_username();
+        let label = username
+            .as_ref()
+            .map(|u| format!("@{u}"))
+            .unwrap_or_else(|| "github-oauth".to_string());
+        accounts.push(OAuthAccountSnapshot {
+            provider_id: "copilot",
+            provider_name: "GitHub Copilot",
+            label,
+            email: None,
+            username,
+            account_id: None,
+            project_id: None,
+            subscription_type: None,
+            expires_at_ms: None,
+            active: true,
+            valid: true,
+            switchable: false,
+        });
+    }
+
+    if let Ok(tokens) = google::load_tokens() {
+        accounts.push(OAuthAccountSnapshot {
+            provider_id: "google",
+            provider_name: "Google / Gmail",
+            label: tokens
+                .email
+                .clone()
+                .unwrap_or_else(|| "google-oauth".to_string()),
+            email: tokens.email.clone(),
+            username: None,
+            account_id: None,
+            project_id: None,
+            subscription_type: Some(format!("{:?}", tokens.tier).to_ascii_lowercase()),
+            expires_at_ms: Some(tokens.expires_at),
+            active: true,
+            valid: !tokens.is_expired(),
+            switchable: false,
+        });
+    }
+
+    if let Ok(tokens) = cursor::load_access_token_from_env_or_file() {
+        accounts.push(OAuthAccountSnapshot {
+            provider_id: "cursor",
+            provider_name: "Cursor",
+            label: tokens.source.to_string(),
+            email: None,
+            username: None,
+            account_id: None,
+            project_id: None,
+            subscription_type: None,
+            expires_at_ms: None,
+            active: true,
+            valid: true,
+            switchable: false,
+        });
+    }
+
+    accounts
+}
+
+/// Concise human-readable signed-in account summary for one provider descriptor.
+pub fn account_summary_for_provider(provider: LoginProviderDescriptor) -> Option<String> {
+    let provider_id = match provider.target {
+        crate::provider_catalog::LoginProviderTarget::Claude => "claude",
+        crate::provider_catalog::LoginProviderTarget::OpenAi => "openai",
+        crate::provider_catalog::LoginProviderTarget::Antigravity => "antigravity",
+        crate::provider_catalog::LoginProviderTarget::Gemini => "gemini",
+        crate::provider_catalog::LoginProviderTarget::Copilot => "copilot",
+        crate::provider_catalog::LoginProviderTarget::Google => "google",
+        crate::provider_catalog::LoginProviderTarget::Cursor => "cursor",
+        _ => return None,
+    };
+
+    let all = connected_oauth_accounts();
+    let matching: Vec<_> = all
+        .iter()
+        .filter(|acc| acc.provider_id == provider_id)
+        .collect();
+    if matching.is_empty() {
+        return None;
+    }
+    let active = matching
+        .iter()
+        .find(|acc| acc.active)
+        .copied()
+        .unwrap_or(matching[0]);
+    let mut text = active.primary_identity();
+    if active.label != text && !active.label.trim().is_empty() {
+        text = format!("{} ({text})", active.label);
+    }
+    if let Some(project) = active
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        text = format!("{text} · {project}");
+    } else if let Some(plan) = active
+        .subscription_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        text = format!("{text} · {plan}");
+    }
+    if !active.valid {
+        text = format!("{text} (expired)");
+    }
+    if matching.len() > 1 {
+        text = format!("{text} (+{} more)", matching.len() - 1);
+    }
+    Some(text)
+}
+
 fn cursor_source() -> Option<(AuthCredentialSource, String)> {
     if env_var_nonempty("CURSOR_ACCESS_TOKEN") || env_var_nonempty("CURSOR_API_KEY") {
         return Some((
@@ -1710,4 +1955,127 @@ fn config_file_contains_assignment(path: &Path, env_key: &str) -> bool {
 
 fn api_key_available(env_key: &str, file_name: &str) -> bool {
     crate::provider_catalog::load_api_key_from_env_or_config(env_key, file_name).is_some()
+}
+
+/// Sign out a configured provider or a specific saved multi-account label.
+pub fn logout_login_provider(
+    provider: crate::provider_catalog::LoginProviderDescriptor,
+    account_label: Option<&str>,
+) -> anyhow::Result<String> {
+    use crate::provider_catalog::{
+        LoginProviderTarget, OPENAI_COMPAT_LOCAL_ENABLED_ENV, resolve_openai_compatible_profile,
+        save_env_value_to_env_file,
+    };
+
+    let target_label = account_label
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let message = match provider.target {
+        LoginProviderTarget::Alphacode => {
+            crate::subscription_catalog::clear_account_credentials()?;
+            for env_key in [
+                crate::subscription_catalog::ALPHACODE_API_BASE_ENV,
+                crate::subscription_catalog::ALPHACODE_ACCOUNT_ID_ENV,
+                crate::subscription_catalog::ALPHACODE_ACCOUNT_EMAIL_ENV,
+                crate::subscription_catalog::ALPHACODE_TIER_ENV,
+            ] {
+                let _ = save_env_value_to_env_file(
+                    env_key,
+                    crate::subscription_catalog::ALPHACODE_ENV_FILE,
+                    None,
+                );
+            }
+            "Logged out of AlphaCode.".to_string()
+        }
+        LoginProviderTarget::Claude => {
+            if let Some(label) = target_label {
+                claude::remove_account(label)?;
+                format!("Logged out of Anthropic account `{label}`.")
+            } else {
+                let removed = claude::clear_accounts()?;
+                format!("Logged out of {removed} Anthropic account(s).")
+            }
+        }
+        LoginProviderTarget::ClaudeApiKey => {
+            save_env_value_to_env_file("ANTHROPIC_API_KEY", "anthropic.env", None)?;
+            "Logged out of Anthropic API key.".to_string()
+        }
+        LoginProviderTarget::AgentRouterAnthropic => {
+            save_env_value_to_env_file("AGENTROUTER_API_KEY", "agentrouter.env", None)?;
+            crate::alphacode_core::env::remove_var("ANTHROPIC_BASE_URL");
+            "Logged out of AgentRouter (Anthropic) API key.".to_string()
+        }
+        LoginProviderTarget::OpenAi => {
+            if let Some(label) = target_label {
+                codex::remove_account(label)?;
+                format!("Logged out of OpenAI account `{label}`.")
+            } else {
+                let removed = codex::clear_accounts()?;
+                format!("Logged out of {removed} OpenAI account(s).")
+            }
+        }
+        LoginProviderTarget::OpenAiApiKey => {
+            save_env_value_to_env_file("OPENAI_API_KEY", "openai.env", None)?;
+            "Logged out of OpenAI API key.".to_string()
+        }
+        LoginProviderTarget::OpenRouter => {
+            save_env_value_to_env_file("OPENROUTER_API_KEY", "openrouter.env", None)?;
+            "Logged out of OpenRouter API key.".to_string()
+        }
+        LoginProviderTarget::Bedrock => {
+            save_env_value_to_env_file(
+                crate::provider::bedrock::API_KEY_ENV,
+                crate::provider::bedrock::ENV_FILE,
+                None,
+            )?;
+            "Logged out of Bedrock API key.".to_string()
+        }
+        LoginProviderTarget::Azure => {
+            save_env_value_to_env_file(azure::API_KEY_ENV, azure::ENV_FILE, None)?;
+            save_env_value_to_env_file(azure::USE_ENTRA_ENV, azure::ENV_FILE, None)?;
+            "Logged out of Azure OpenAI API key / Entra configuration.".to_string()
+        }
+        LoginProviderTarget::OpenAiCompatible(profile) => {
+            let resolved = resolve_openai_compatible_profile(profile);
+            save_env_value_to_env_file(&resolved.api_key_env, &resolved.env_file, None)?;
+            save_env_value_to_env_file(OPENAI_COMPAT_LOCAL_ENABLED_ENV, &resolved.env_file, None)?;
+            if resolved.id == orcarouter::PROFILE_ID {
+                orcarouter::clear_needs_reauth();
+            }
+            format!("Logged out of {} API key.", resolved.display_name)
+        }
+        LoginProviderTarget::OrcaRouterOAuth => {
+            orcarouter::clear_key()?;
+            orcarouter::clear_needs_reauth();
+            "Logged out of OrcaRouter. The minted key was removed locally; revoke it on the server at https://www.orcarouter.ai/console/authorized-apps.".to_string()
+        }
+        LoginProviderTarget::Cursor => {
+            cursor::clear_api_key()?;
+            "Logged out of Cursor.".to_string()
+        }
+        LoginProviderTarget::Antigravity => {
+            antigravity::clear_tokens()?;
+            if antigravity::has_cached_auth() {
+                "Cleared AlphaCode's Antigravity token. An external Antigravity desktop session is still active on this machine.".to_string()
+            } else {
+                "Logged out of Antigravity.".to_string()
+            }
+        }
+        LoginProviderTarget::Gemini => {
+            gemini::clear_tokens()?;
+            "Logged out of Gemini.".to_string()
+        }
+        LoginProviderTarget::Google => {
+            google::clear_tokens()?;
+            "Logged out of Google / Gmail.".to_string()
+        }
+        LoginProviderTarget::Copilot => {
+            copilot::clear_tokens()?;
+            "Logged out of GitHub Copilot.".to_string()
+        }
+        LoginProviderTarget::AutoImport => "Auto-import is not a sign-in session.".to_string(),
+    };
+
+    AuthStatus::invalidate_cached_status();
+    Ok(message)
 }

@@ -150,6 +150,11 @@ fn strip_blockquote_gutter(text: &str) -> &str {
     }
 }
 
+fn cell_display_width(text: &str) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    text.graphemes(true).map(UnicodeWidthStr::width).sum()
+}
+
 /// Render a table as styled lines, honoring the delimiter row's
 /// per-column alignment.
 ///
@@ -164,14 +169,34 @@ pub(super) fn render_table_aligned(
         return vec![];
     }
 
-    // Calculate column widths
-    let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    // Calculate column widths on display-shaped cells so Lam-Alif ligatures
+    // (width 2 -> 1 in PresentationForms) or normalized pasted Forms-B
+    // (width 1 -> 2 in StandardUnicode) never misalign `│` column borders.
+    let native_shaping = crate::alphacode_render_core::is_native_shaping_active();
+    let shaped_rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| {
+                    if !crate::alphacode_render_core::contains_rtl(cell) {
+                        cell.clone()
+                    } else if native_shaping {
+                        crate::alphacode_render_core::normalize_rtl_text(cell).into_owned()
+                    } else {
+                        crate::alphacode_render_core::shape_rtl_text(cell)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    let num_cols = shaped_rows.iter().map(|r| r.len()).max().unwrap_or(0);
     let mut col_widths: Vec<usize> = vec![0; num_cols];
 
-    for row in rows {
+    for row in &shaped_rows {
         for (i, cell) in row.iter().enumerate() {
             if i < col_widths.len() {
-                col_widths[i] = col_widths[i].max(UnicodeWidthStr::width(cell.as_str()));
+                col_widths[i] = col_widths[i].max(cell_display_width(cell.as_str()));
             }
         }
     }
@@ -205,7 +230,7 @@ pub(super) fn render_table_aligned(
     }
 
     // Pre-allocate result lines
-    let estimated_lines = rows.len() + rows.len() / 2; // rough estimate including separators
+    let estimated_lines = shaped_rows.len() + shaped_rows.len() / 2; // rough estimate including separators
     let mut lines = Vec::with_capacity(estimated_lines);
     let separator_style = Style::default().fg(rgb(100, 120, 160));
     let header_style = Style::default()
@@ -214,7 +239,19 @@ pub(super) fn render_table_aligned(
     let cell_style = Style::default().fg(text_color());
     let sep_span_style = Style::default().fg(rgb(80, 95, 130));
 
-    for (row_idx, row) in rows.iter().enumerate() {
+    for (row_idx, row) in shaped_rows.iter().enumerate() {
+        let cell_base_dirs: Vec<Option<unicode_bidi::Level>> = row
+            .iter()
+            .map(|cell| {
+                if !native_shaping && crate::alphacode_render_core::contains_rtl(cell) {
+                    Some(crate::alphacode_render_core::detect_dominant_direction(
+                        cell,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
         let wrapped_cells: Vec<Vec<String>> = row
             .iter()
             .enumerate()
@@ -222,8 +259,26 @@ pub(super) fn render_table_aligned(
                 let col_width = col_widths
                     .get(i)
                     .copied()
-                    .unwrap_or_else(|| UnicodeWidthStr::width(cell.as_str()));
-                wrap_table_cell(cell, col_width)
+                    .unwrap_or_else(|| cell_display_width(cell.as_str()));
+                let wrapped = wrap_table_cell(cell, col_width);
+                if let Some(base) = cell_base_dirs.get(i).copied().flatten() {
+                    wrapped
+                        .into_iter()
+                        .map(|physical_line| {
+                            if crate::alphacode_render_core::contains_rtl(&physical_line) {
+                                crate::alphacode_render_core::prepare_rtl_text_presentation(
+                                    &physical_line,
+                                    Some(base),
+                                )
+                                .into_owned()
+                            } else {
+                                physical_line
+                            }
+                        })
+                        .collect()
+                } else {
+                    wrapped
+                }
             })
             .collect();
         let physical_rows = wrapped_cells
@@ -243,8 +298,8 @@ pub(super) fn render_table_aligned(
                 let col_width = col_widths
                     .get(i)
                     .copied()
-                    .unwrap_or_else(|| UnicodeWidthStr::width(display_text));
-                let text_width = UnicodeWidthStr::width(display_text);
+                    .unwrap_or_else(|| cell_display_width(display_text));
+                let text_width = cell_display_width(display_text);
                 let pad = col_width.saturating_sub(text_width);
 
                 // Build padded text with alignment — use pre-computed space strings
@@ -314,7 +369,7 @@ fn wrap_table_cell(cell: &str, width: usize) -> Vec<String> {
     let mut current_width = 0usize;
 
     for word in cell.split(' ') {
-        let word_width = UnicodeWidthStr::width(word);
+        let word_width = cell_display_width(word);
         let space_width = usize::from(!current.is_empty());
 
         if !current.is_empty() && current_width + space_width + word_width <= width {
@@ -334,11 +389,11 @@ fn wrap_table_cell(cell: &str, width: usize) -> Vec<String> {
             current_width = word_width;
         } else {
             for chunk in wrap_long_table_word(word, width) {
-                if UnicodeWidthStr::width(chunk.as_str()) == width {
+                if cell_display_width(chunk.as_str()) == width {
                     lines.push(chunk);
                 } else {
                     current = chunk;
-                    current_width = UnicodeWidthStr::width(current.as_str());
+                    current_width = cell_display_width(current.as_str());
                 }
             }
         }

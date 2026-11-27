@@ -4,7 +4,8 @@
 //! spine. The binary's composition root registers [`GeminiProvider`] with
 //! `crate::alphacode_base::provider::external` at startup.
 
-use crate::alphacode_base::auth::gemini as gemini_auth;
+use crate::alphacode_base::auth::{antigravity as antigravity_auth, gemini as gemini_auth};
+use crate::alphacode_base::provider::{antigravity as antigravity_provider_meta, external};
 use crate::alphacode_message_types::{ConnectionPhase, Message, StreamEvent, ToolDefinition};
 use crate::alphacode_provider_core::{EventStream, Provider};
 pub use crate::alphacode_provider_gemini::{
@@ -24,9 +25,12 @@ pub use crate::alphacode_provider_gemini::{
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
+use futures::StreamExt as _;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
@@ -44,6 +48,9 @@ pub struct GeminiProvider {
     model: Arc<RwLock<String>>,
     state: Arc<Mutex<Option<GeminiRuntimeState>>>,
     fetched_models: Arc<RwLock<Vec<String>>>,
+    code_assist_unsupported: Arc<AtomicBool>,
+    antigravity_fallback: Arc<Mutex<Option<Arc<dyn Provider>>>>,
+    antigravity_gemini_models: Arc<RwLock<Vec<String>>>,
 }
 
 /// How the Gemini provider authenticates to Google.
@@ -105,6 +112,9 @@ impl GeminiProvider {
             model: Arc::new(RwLock::new(model)),
             state: Arc::new(Mutex::new(None)),
             fetched_models: Arc::new(RwLock::new(Vec::new())),
+            code_assist_unsupported: Arc::new(AtomicBool::new(false)),
+            antigravity_fallback: Arc::new(Mutex::new(None)),
+            antigravity_gemini_models: Arc::new(RwLock::new(Vec::new())),
         };
         provider.seed_cached_catalog();
         provider
@@ -195,6 +205,10 @@ impl GeminiProvider {
                     cloudaicompanion_project: None,
                     paid_tier: None,
                 },
+                Err(err) if is_gemini_code_assist_unsupported_error(&err) => {
+                    self.code_assist_unsupported.store(true, Ordering::Relaxed);
+                    return Err(code_assist_retired_error(err));
+                }
                 Err(err) => {
                     return Err(err)
                         .context("Gemini Code Assist setup failed during loadCodeAssist");
@@ -269,6 +283,11 @@ impl GeminiProvider {
         if let GeminiAuthMode::ApiKey(api_key) = Self::auth_mode() {
             return self.refresh_available_models_api_key(&api_key).await;
         }
+        if self.code_assist_unsupported.load(Ordering::Relaxed)
+            && antigravity_auth::has_cached_auth()
+        {
+            return Ok(self.refresh_antigravity_gemini_models().await);
+        }
         let project_id_env = google_cloud_project_from_env();
         let load_req = load_code_assist_request(
             project_id_env.clone(),
@@ -278,14 +297,20 @@ impl GeminiProvider {
             Ok(response) => response,
             Err(err) if is_vpc_sc_error(&err) => Value::Null,
             Err(err) if is_gemini_code_assist_unsupported_error(&err) => {
+                self.code_assist_unsupported.store(true, Ordering::Relaxed);
                 if let Some(api_key) = gemini_auth::api_key() {
                     return self.refresh_available_models_api_key(&api_key).await;
                 }
-                return Err(err).context(
-                    "Gemini Code Assist is no longer supported for individual Google accounts. \
-                     Set GEMINI_API_KEY with a Gemini Developer API key (from https://aistudio.google.com/apikey) \
-                     or use the 'gemini-api' provider profile.",
-                );
+                if antigravity_auth::has_cached_auth() {
+                    let models = self.refresh_antigravity_gemini_models().await;
+                    crate::alphacode_base::logging::info(&format!(
+                        "Gemini Code Assist OAuth is retired for individual accounts; surfacing Antigravity Gemini models: {}",
+                        models.join(", ")
+                    ));
+                    crate::alphacode_base::bus::Bus::global().publish_models_updated();
+                    return Ok(models);
+                }
+                return Err(code_assist_retired_error(err));
             }
             Err(err) => {
                 return Err(err).context("Gemini model discovery failed during loadCodeAssist");
@@ -690,6 +715,7 @@ impl GeminiProvider {
             GeminiAuthMode::Oauth => match self.post_json("generateContent", &request).await {
                 Ok(response) => Ok(response),
                 Err(err) if is_gemini_code_assist_unsupported_error(&err) => {
+                    self.code_assist_unsupported.store(true, Ordering::Relaxed);
                     if let Some(api_key) = gemini_auth::api_key() {
                         crate::alphacode_base::logging::warn(
                             "Gemini Code Assist is no longer supported for this account; \
@@ -711,17 +737,86 @@ impl GeminiProvider {
                             response: Some(response),
                         })
                     } else {
-                        Err(err).context(
-                            "Gemini Code Assist is no longer supported for individual \
-                                 Google accounts. Set GEMINI_API_KEY with a Gemini Developer \
-                                 API key (from https://aistudio.google.com/apikey) or use \
-                                 the 'gemini-api' provider profile.",
-                        )
+                        Err(code_assist_retired_error(err))
                     }
                 }
                 Err(err) => Err(err).context("Gemini generateContent failed"),
             },
         }
+    }
+
+    async fn refresh_antigravity_gemini_models(&self) -> Vec<String> {
+        let discovered = match antigravity_provider_meta::fetch_catalog_snapshot(&self.client).await
+        {
+            Ok(snapshot) if !snapshot.models.is_empty() => {
+                antigravity_provider_meta::persist_catalog(&snapshot);
+                filter_antigravity_gemini_models(
+                    snapshot
+                        .models
+                        .into_iter()
+                        .filter(|model| model.available)
+                        .map(|model| model.id),
+                )
+            }
+            _ => cached_antigravity_gemini_models(),
+        };
+        let models = if discovered.is_empty() {
+            cached_antigravity_gemini_models()
+        } else {
+            discovered
+        };
+        if !models.is_empty()
+            && let Ok(mut guard) = self.antigravity_gemini_models.write()
+        {
+            *guard = models.clone();
+        }
+        models
+    }
+
+    async fn get_or_init_antigravity_fallback(&self) -> Option<Arc<dyn Provider>> {
+        if !antigravity_auth::has_cached_auth() {
+            return None;
+        }
+        let mut guard = self.antigravity_fallback.lock().await;
+        if let Some(existing) = guard.as_ref() {
+            return Some(Arc::clone(existing));
+        }
+        let provider = external::instantiate_external_provider(external::ANTIGRAVITY_RUNTIME)?;
+        if antigravity_provider_meta::load_persisted_catalog().is_none() {
+            let _ = provider.prefetch_models().await;
+        }
+        *guard = Some(Arc::clone(&provider));
+        Some(provider)
+    }
+
+    async fn try_antigravity_fallback_complete(
+        &self,
+        requested_model: &str,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<Option<EventStream>> {
+        let Some(antigravity) = self.get_or_init_antigravity_fallback().await else {
+            return Ok(None);
+        };
+        let available = antigravity.available_models_display();
+        let mapped_model = map_gemini_model_for_antigravity(requested_model, &available);
+        antigravity.set_model(&mapped_model)?;
+        let discovered_gemini = filter_antigravity_gemini_models(available);
+        if !discovered_gemini.is_empty()
+            && let Ok(mut guard) = self.antigravity_gemini_models.write()
+        {
+            *guard = discovered_gemini;
+        }
+        crate::alphacode_base::logging::warn(&format!(
+            "Gemini Code Assist OAuth is retired for individual accounts; routing '{}' via Antigravity OAuth as '{}'",
+            requested_model, mapped_model
+        ));
+        let stream = antigravity
+            .complete(messages, tools, system, resume_session_id)
+            .await?;
+        Ok(Some(stream))
     }
 }
 
@@ -741,11 +836,51 @@ impl Provider for GeminiProvider {
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
         let model = self.model();
+        if matches!(Self::auth_mode(), GeminiAuthMode::Oauth)
+            && self.code_assist_unsupported.load(Ordering::Relaxed)
+        {
+            if let Some(stream) = self
+                .try_antigravity_fallback_complete(
+                    &model,
+                    messages,
+                    tools,
+                    system,
+                    resume_session_id,
+                )
+                .await?
+            {
+                return Ok(stream);
+            }
+            return Err(code_assist_retired_error(anyhow::anyhow!(
+                "This client is no longer supported for Gemini Code Assist for individuals"
+            )));
+        }
+
+        let state = match self.ensure_state().await {
+            Ok(state) => state,
+            Err(err) if is_gemini_code_assist_unsupported_error(&err) => {
+                self.code_assist_unsupported.store(true, Ordering::Relaxed);
+                if let Some(stream) = self
+                    .try_antigravity_fallback_complete(
+                        &model,
+                        messages,
+                        tools,
+                        system,
+                        resume_session_id,
+                    )
+                    .await?
+                {
+                    return Ok(stream);
+                }
+                return Err(code_assist_retired_error(err));
+            }
+            Err(err) => return Err(err),
+        };
+
         let messages = messages.to_vec();
         let tools = tools.to_vec();
         let system = system.to_string();
         let resume_session_id = resume_session_id.map(|value| value.to_string());
-        let state_cache = self.state.clone();
         let provider = self.clone();
         let (tx, rx) = mpsc::channel::<Result<StreamEvent>>(100);
 
@@ -760,22 +895,6 @@ impl Provider for GeminiProvider {
                     phase: ConnectionPhase::Authenticating,
                 }))
                 .await;
-
-            let state = {
-                let provider = GeminiProvider {
-                    client: provider.client.clone(),
-                    model: provider.model.clone(),
-                    state: state_cache.clone(),
-                    fetched_models: provider.fetched_models.clone(),
-                };
-                match provider.ensure_state().await {
-                    Ok(state) => state,
-                    Err(err) => {
-                        let _ = tx.send(Err(err)).await;
-                        return;
-                    }
-                }
-            };
 
             let _ = tx
                 .send(Ok(StreamEvent::SessionId(
@@ -807,6 +926,38 @@ impl Provider for GeminiProvider {
                 .await
             {
                 Ok(response) => response,
+                Err(err) if is_gemini_code_assist_unsupported_error(&err) => {
+                    provider
+                        .code_assist_unsupported
+                        .store(true, Ordering::Relaxed);
+                    match provider
+                        .try_antigravity_fallback_complete(
+                            &model,
+                            &messages,
+                            &tools,
+                            &system,
+                            resume_session_id.as_deref(),
+                        )
+                        .await
+                    {
+                        Ok(Some(mut stream)) => {
+                            while let Some(event) = stream.next().await {
+                                if tx.send(event).await.is_err() {
+                                    break;
+                                }
+                            }
+                            return;
+                        }
+                        Ok(None) => {
+                            let _ = tx.send(Err(code_assist_retired_error(err))).await;
+                            return;
+                        }
+                        Err(fallback_err) => {
+                            let _ = tx.send(Err(fallback_err)).await;
+                            return;
+                        }
+                    }
+                }
                 Err(err) if is_gemini_model_not_found_error(&err) => {
                     let mut fallback_response = None;
                     let mut last_err = err;
@@ -1082,6 +1233,23 @@ impl Provider for GeminiProvider {
     }
 
     fn available_models_display(&self) -> Vec<String> {
+        if matches!(Self::auth_mode(), GeminiAuthMode::Oauth)
+            && self.code_assist_unsupported.load(Ordering::Relaxed)
+            && antigravity_auth::has_cached_auth()
+        {
+            let mut antigravity_models = self
+                .antigravity_gemini_models
+                .read()
+                .map(|guard| guard.clone())
+                .unwrap_or_default();
+            if antigravity_models.is_empty() {
+                antigravity_models = cached_antigravity_gemini_models();
+            }
+            if !antigravity_models.is_empty() {
+                return antigravity_models;
+            }
+        }
+
         let discovered = self
             .fetched_models
             .read()
@@ -1104,9 +1272,24 @@ impl Provider for GeminiProvider {
     }
 
     fn model_routes(&self) -> Vec<crate::alphacode_provider_core::ModelRoute> {
-        let api_method = match Self::auth_mode() {
-            GeminiAuthMode::ApiKey(_) => "gemini-api-key",
-            GeminiAuthMode::Oauth => "code-assist-oauth",
+        let oauth_mode = matches!(Self::auth_mode(), GeminiAuthMode::Oauth);
+        let retired = oauth_mode && self.code_assist_unsupported.load(Ordering::Relaxed);
+        let (api_method, available, detail) = if !oauth_mode {
+            ("gemini-api-key", true, String::new())
+        } else if retired && antigravity_auth::has_cached_auth() {
+            (
+                "antigravity-oauth",
+                true,
+                "via Antigravity OAuth (Code Assist retired for individuals)".to_string(),
+            )
+        } else if retired {
+            (
+                "code-assist-oauth",
+                false,
+                "Code Assist OAuth retired; run `alphacode login --provider antigravity` or set GEMINI_API_KEY".to_string(),
+            )
+        } else {
+            ("code-assist-oauth", true, String::new())
         };
         self.available_models_display()
             .into_iter()
@@ -1114,8 +1297,8 @@ impl Provider for GeminiProvider {
                 model,
                 provider: "Gemini".to_string(),
                 api_method: api_method.to_string(),
-                available: true,
-                detail: String::new(),
+                available,
+                detail: detail.clone(),
                 cheapness: None,
             })
             .collect()
@@ -1136,12 +1319,20 @@ impl Provider for GeminiProvider {
             model: Arc::new(RwLock::new(self.model())),
             state: self.state.clone(),
             fetched_models: self.fetched_models.clone(),
+            code_assist_unsupported: self.code_assist_unsupported.clone(),
+            antigravity_fallback: self.antigravity_fallback.clone(),
+            antigravity_gemini_models: self.antigravity_gemini_models.clone(),
         })
     }
 
     async fn invalidate_credentials(&self) {
         let mut guard = self.state.lock().await;
         *guard = None;
+        self.code_assist_unsupported.store(false, Ordering::Relaxed);
+        *self.antigravity_fallback.lock().await = None;
+        if let Ok(mut models) = self.antigravity_gemini_models.write() {
+            models.clear();
+        }
     }
 }
 
@@ -1152,6 +1343,9 @@ impl Clone for GeminiProvider {
             model: self.model.clone(),
             state: self.state.clone(),
             fetched_models: self.fetched_models.clone(),
+            code_assist_unsupported: self.code_assist_unsupported.clone(),
+            antigravity_fallback: self.antigravity_fallback.clone(),
+            antigravity_gemini_models: self.antigravity_gemini_models.clone(),
         }
     }
 }
@@ -1209,12 +1403,162 @@ fn is_gemini_model_not_found_error(err: &anyhow::Error) -> bool {
 
 /// Detect Google's "no longer supported for Gemini Code Assist for
 /// individuals" error. When this fires, the Code Assist OAuth path is
-/// dead for the account and the user should either configure a Gemini
-/// Developer API key (`GEMINI_API_KEY`) or switch to the `gemini-api`
-/// provider profile.
+/// retired for individual accounts and the user should migrate to Antigravity
+/// OAuth or configure a Gemini Developer API key (`GEMINI_API_KEY`).
 fn is_gemini_code_assist_unsupported_error(err: &anyhow::Error) -> bool {
     let lower = format!("{err:#}").to_ascii_lowercase();
-    lower.contains("no longer supported") && lower.contains("gemini code assist")
+    (lower.contains("no longer supported")
+        && (lower.contains("gemini code assist") || lower.contains("antigravity.google")))
+        || (lower.contains("migrate to the antigravity") && lower.contains("gemini"))
+}
+
+/// Build an actionable, failover-classifiable error when Google rejects
+/// individual Gemini Code Assist OAuth (`"provider unavailable"` triggers
+/// `FailoverDecision::RetryAndMarkUnavailable`).
+fn code_assist_retired_error(err: anyhow::Error) -> anyhow::Error {
+    if antigravity_auth::has_cached_auth() {
+        err.context(
+            "Gemini Code Assist OAuth provider unavailable: Google retired individual Gemini Code Assist OAuth. Switch to Antigravity (`/model antigravity:gemini-3-flash`) or set GEMINI_API_KEY (from https://aistudio.google.com/apikey) for the Gemini Developer API.",
+        )
+    } else {
+        err.context(
+            "Gemini Code Assist OAuth provider unavailable: Google retired individual Gemini Code Assist OAuth in favor of Antigravity. Run `alphacode login --provider antigravity` to use Gemini via Antigravity (including gemini-3.1-pro and gemini-3-flash), or set GEMINI_API_KEY (from https://aistudio.google.com/apikey) for the Gemini Developer API.",
+        )
+    }
+}
+
+const ANTIGRAVITY_GEMINI_PREFERRED_ORDER: &[&str] = &[
+    "gemini-3.1-pro-high",
+    "gemini-3.1-pro-low",
+    "gemini-pro-agent",
+    "gemini-3-flash",
+    "gemini-3-flash-agent",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash-thinking",
+];
+
+fn filter_antigravity_gemini_models(models: impl IntoIterator<Item = String>) -> Vec<String> {
+    let raw: Vec<String> = models
+        .into_iter()
+        .map(|model| model.trim().to_string())
+        .filter(|model| is_gemini_model_id(model))
+        .collect();
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    for preferred in ANTIGRAVITY_GEMINI_PREFERRED_ORDER {
+        if raw.iter().any(|model| model == preferred) && seen.insert((*preferred).to_string()) {
+            ordered.push((*preferred).to_string());
+        }
+    }
+    let mut extras: Vec<String> = raw
+        .into_iter()
+        .filter(|model| seen.insert(model.clone()))
+        .collect();
+    extras.sort();
+    ordered.extend(extras);
+    ordered
+}
+
+fn cached_antigravity_gemini_models() -> Vec<String> {
+    if let Some(catalog) = antigravity_provider_meta::load_persisted_catalog() {
+        let models = filter_antigravity_gemini_models(
+            catalog
+                .models
+                .into_iter()
+                .filter(|model| model.available)
+                .map(|model| model.id),
+        );
+        if !models.is_empty() {
+            return models;
+        }
+    }
+    filter_antigravity_gemini_models(
+        antigravity_provider_meta::AVAILABLE_MODELS
+            .iter()
+            .map(|model| (*model).to_string()),
+    )
+}
+
+fn map_gemini_model_for_antigravity(requested: &str, antigravity_models: &[String]) -> String {
+    let pool = {
+        let filtered = filter_antigravity_gemini_models(antigravity_models.iter().cloned());
+        if filtered.is_empty() {
+            filter_antigravity_gemini_models(
+                antigravity_provider_meta::AVAILABLE_MODELS
+                    .iter()
+                    .map(|model| (*model).to_string()),
+            )
+        } else {
+            filtered
+        }
+    };
+
+    let trimmed = requested.trim();
+    if let Some(exact) = pool
+        .iter()
+        .find(|candidate| candidate.eq_ignore_ascii_case(trimmed))
+    {
+        return exact.clone();
+    }
+
+    let without_preview = trimmed.strip_suffix("-preview").unwrap_or(trimmed);
+    if let Some(exact) = pool
+        .iter()
+        .find(|candidate| candidate.eq_ignore_ascii_case(without_preview))
+    {
+        return exact.clone();
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let preferences: &[&str] = if lower.contains("3.1-pro")
+        || lower.contains("3-pro")
+        || lower.contains("1.5-pro")
+        || lower.ends_with("-pro")
+        || lower.contains("-pro-")
+    {
+        &[
+            "gemini-3.1-pro-high",
+            "gemini-3.1-pro-low",
+            "gemini-pro-agent",
+            "gemini-2.5-pro",
+            "gemini-3-flash",
+        ]
+    } else if lower.contains("flash-lite") || lower.contains("lite") {
+        &[
+            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
+            "gemini-2.5-flash-lite",
+            "gemini-3-flash",
+            "gemini-2.5-flash",
+        ]
+    } else if lower.contains("flash") {
+        &[
+            "gemini-3-flash",
+            "gemini-3-flash-agent",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-flash",
+        ]
+    } else {
+        &[]
+    };
+
+    for preferred in preferences {
+        if let Some(found) = pool
+            .iter()
+            .find(|candidate| candidate.eq_ignore_ascii_case(preferred))
+        {
+            return found.clone();
+        }
+    }
+
+    pool.into_iter()
+        .next()
+        .unwrap_or_else(|| antigravity_provider_meta::DEFAULT_FALLBACK_MODEL.to_string())
 }
 
 #[cfg(test)]
@@ -1237,6 +1581,9 @@ mod request_pressure_tests {
             model: Arc::new(RwLock::new("lab".into())),
             state: Arc::new(Mutex::new(None)),
             fetched_models: Arc::new(RwLock::new(Vec::new())),
+            code_assist_unsupported: Arc::new(AtomicBool::new(false)),
+            antigravity_fallback: Arc::new(Mutex::new(None)),
+            antigravity_gemini_models: Arc::new(RwLock::new(Vec::new())),
         };
         let error = tokio::time::timeout(
             Duration::from_secs(2),
@@ -1250,5 +1597,74 @@ mod request_pressure_tests {
             crate::alphacode_provider_core::retry_after::retry_after_from_error(&error).unwrap();
         assert!(hint >= Duration::from_secs(25));
         server.await.unwrap();
+    }
+
+    #[test]
+    fn detects_google_code_assist_individual_retirement_errors() {
+        let err = anyhow::anyhow!(
+            "HTTP 400 Bad Request: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google"
+        );
+        assert!(is_gemini_code_assist_unsupported_error(&err));
+
+        let retired = code_assist_retired_error(err);
+        assert!(is_gemini_code_assist_unsupported_error(&retired));
+        assert_eq!(
+            crate::alphacode_provider_core::classify_failover_error_message(&retired.to_string()),
+            crate::alphacode_provider_core::FailoverDecision::RetryAndMarkUnavailable
+        );
+        assert!(
+            retired
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("antigravity")
+        );
+    }
+
+    #[test]
+    fn maps_retired_gemini_models_to_antigravity_equivalents() {
+        let catalog = vec![
+            "claude-sonnet-4-6".to_string(),
+            "gemini-3.1-pro-high".to_string(),
+            "gemini-3.1-pro-low".to_string(),
+            "gemini-3-flash".to_string(),
+            "gemini-2.5-pro".to_string(),
+        ];
+
+        assert_eq!(
+            map_gemini_model_for_antigravity("gemini-2.5-pro", &catalog),
+            "gemini-2.5-pro"
+        );
+        assert_eq!(
+            map_gemini_model_for_antigravity("gemini-3.1-pro-preview", &catalog),
+            "gemini-3.1-pro-high"
+        );
+        assert_eq!(
+            map_gemini_model_for_antigravity("gemini-3-flash-preview", &catalog),
+            "gemini-3-flash"
+        );
+        assert_eq!(
+            map_gemini_model_for_antigravity("gemini-2.0-flash", &catalog),
+            "gemini-3-flash"
+        );
+    }
+
+    #[test]
+    fn filters_antigravity_catalog_to_gemini_models_in_preferred_order() {
+        let filtered = filter_antigravity_gemini_models(vec![
+            "claude-opus-4-6-thinking".to_string(),
+            "gpt-oss-120b-medium".to_string(),
+            "chat_20706".to_string(),
+            "gemini-2.5-pro".to_string(),
+            "gemini-3-flash".to_string(),
+            "gemini-3.1-pro-high".to_string(),
+        ]);
+        assert_eq!(
+            filtered,
+            vec![
+                "gemini-3.1-pro-high".to_string(),
+                "gemini-3-flash".to_string(),
+                "gemini-2.5-pro".to_string(),
+            ]
+        );
     }
 }

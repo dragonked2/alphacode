@@ -12,10 +12,10 @@ const MAX_RETRIES: u32 = crate::alphacode_provider_core::retry::MAX_ATTEMPTS;
 use crate::alphacode_base::auth::antigravity as antigravity_auth;
 use crate::alphacode_message_types::{ConnectionPhase, Message, StreamEvent, ToolDefinition};
 use crate::alphacode_provider_antigravity::{
-    AVAILABLE_MODELS, CatalogModel, CatalogSnapshot, DEFAULT_FALLBACK_MODEL,
-    GENERATE_CONTENT_API_URL, PersistedCatalog, X_GOOG_API_CLIENT, antigravity_compatible_schema,
-    antigravity_user_agent, catalog_is_stale, catalog_model_detail, client_metadata_header,
-    is_retryable_empty_turn, merge_antigravity_model_ids, remap_unsupported_model,
+    ANTIGRAVITY_API_BASES, AVAILABLE_MODELS, CatalogModel, CatalogSnapshot, DEFAULT_FALLBACK_MODEL,
+    PersistedCatalog, X_GOOG_API_CLIENT, antigravity_compatible_schema, antigravity_user_agent,
+    catalog_is_stale, catalog_model_detail, client_metadata_header, is_retryable_empty_turn,
+    merge_antigravity_model_ids, remap_unsupported_model,
 };
 use crate::alphacode_provider_core::request_audit::AuditedSend as _;
 use crate::alphacode_provider_core::{EventStream, Provider};
@@ -53,6 +53,9 @@ impl Clone for AntigravityProvider {
     }
 }
 
+static STARTUP_CATALOG_REFRESH_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 impl AntigravityProvider {
     fn load_persisted_catalog() -> Option<PersistedCatalog> {
         crate::alphacode_base::provider::antigravity::load_persisted_catalog()
@@ -62,23 +65,67 @@ impl AntigravityProvider {
         crate::alphacode_base::provider::antigravity::persist_catalog(snapshot);
     }
 
-    fn seed_cached_catalog(&self) {
-        if let Some(catalog) = Self::load_persisted_catalog() {
-            if catalog_is_stale(&catalog.fetched_at_rfc3339) {
-                crate::alphacode_base::logging::info(
-                    "Loaded stale persisted Antigravity model catalog; a refresh will update it on next prefetch",
-                );
-            }
-            if let Some(default_model_id) = catalog.default_model_id.clone() {
-                *self
-                    .backend_default_model
-                    .write()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(default_model_id);
-            }
-            if let Ok(mut models) = self.fetched_catalog.write() {
-                *models = catalog.models;
-            }
+    /// Seed the in-memory catalog from disk and return whether a background
+    /// refresh should be started (cache missing, empty, or stale).
+    fn seed_cached_catalog(&self) -> bool {
+        let Some(catalog) = Self::load_persisted_catalog() else {
+            return true;
+        };
+        let is_stale = catalog_is_stale(&catalog.fetched_at_rfc3339);
+        if is_stale {
+            crate::alphacode_base::logging::info(
+                "Loaded stale persisted Antigravity model catalog; a refresh will update it on next prefetch",
+            );
         }
+        if let Some(default_model_id) = catalog.default_model_id.clone() {
+            *self
+                .backend_default_model
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(default_model_id);
+        }
+        if let Ok(mut models) = self.fetched_catalog.write() {
+            *models = catalog.models;
+        }
+        is_stale
+    }
+
+    /// Populate `fetched_catalog` in the background on daemon startup when
+    /// Antigravity OAuth credentials already exist on disk and the local cache
+    /// was missing or stale.
+    fn spawn_startup_catalog_refresh_if_needed(&self) {
+        if cfg!(test) || !antigravity_auth::has_cached_auth() {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if STARTUP_CATALOG_REFRESH_ACTIVE
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return;
+        }
+
+        let provider = self.clone();
+        handle.spawn(async move {
+            struct Guard;
+            impl Drop for Guard {
+                fn drop(&mut self) {
+                    STARTUP_CATALOG_REFRESH_ACTIVE
+                        .store(false, std::sync::atomic::Ordering::Release);
+                }
+            }
+            let _guard = Guard;
+
+            if provider.prefetch_models().await.is_ok() && !provider.fetched_catalog().is_empty() {
+                crate::alphacode_base::bus::Bus::global().publish_models_updated();
+            }
+        });
     }
 
     pub fn new() -> Self {
@@ -91,7 +138,9 @@ impl AntigravityProvider {
             fetched_catalog: Arc::new(RwLock::new(Vec::new())),
             backend_default_model: Arc::new(RwLock::new(None)),
         };
-        provider.seed_cached_catalog();
+        if provider.seed_cached_catalog() {
+            provider.spawn_startup_catalog_refresh_if_needed();
+        }
         provider
     }
 
@@ -197,7 +246,7 @@ impl AntigravityProvider {
             .map(|id| id.trim().to_string())
             .filter(|id| !id.is_empty() && id != DEFAULT_MODEL)
         {
-            return backend_default;
+            return remap_unsupported_model(&backend_default).to_string();
         }
 
         // No backend-advertised default: pick a usable catalog model. Prefer a
@@ -234,6 +283,73 @@ impl AntigravityProvider {
 
     #[expect(
         clippy::too_many_arguments,
+        reason = "builds the complete Code Assist payload cleanly for both live calls and serialization tests"
+    )]
+    fn build_generate_content_request(
+        &self,
+        model: &str,
+        project: String,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+        resume_session_id: Option<&str>,
+        force_function_call: bool,
+        signature_policy: crate::alphacode_provider_gemini::SignaturePolicy,
+    ) -> CodeAssistGenerateRequest {
+        let resolved_model = self.resolve_model_for_request(model);
+        let tools_is_empty = tools.is_empty();
+        let mut built_tools = crate::alphacode_provider_gemini::build_tools(tools);
+        // Normalize each tool's JSON schema for the specific Antigravity backend
+        // path the resolved model uses. The Cloud Code backend forwards each
+        // model family to a different upstream (Gemini-native, Gemini->Anthropic,
+        // or an OpenAI-compatible bridge), and each upstream rejects a different
+        // construct. See `gemini_compatible_schema` and `antigravity_compatible_schema`.
+        if let Some(tools) = built_tools.as_mut() {
+            for tool in tools.iter_mut() {
+                for decl in tool.function_declarations.iter_mut() {
+                    decl.parameters =
+                        antigravity_compatible_schema(&decl.parameters, &resolved_model);
+                }
+            }
+        }
+        CodeAssistGenerateRequest {
+            model: resolved_model,
+            project,
+            user_prompt_id: Uuid::new_v4().to_string(),
+            request: VertexGenerateContentRequest {
+                contents: crate::alphacode_provider_gemini::build_contents_with_signature_policy(
+                    messages,
+                    signature_policy,
+                ),
+                system_instruction:
+                    crate::alphacode_provider_gemini::build_system_instruction_with_tool_guard(
+                        system,
+                        !tools_is_empty,
+                    ),
+                tools: built_tools,
+                tool_config: if tools_is_empty {
+                    None
+                } else {
+                    // On a transparent retry after a MALFORMED_FUNCTION_CALL, force
+                    // function-calling mode `ANY` so the model must emit a real
+                    // functionCall instead of the Python-style pseudo-code that
+                    // triggered the malformed turn (the proven recovery for this
+                    // failure mode). Normal turns use `AUTO`.
+                    Some(GeminiToolConfig {
+                        function_calling_config: GeminiFunctionCallingConfig {
+                            mode: if force_function_call { "ANY" } else { "AUTO" },
+                        },
+                    })
+                },
+                session_id: resume_session_id
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_string),
+            },
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
         reason = "the Code Assist call threads explicit per-request settings, including the signature policy, without hidden state"
     )]
     async fn generate_content(
@@ -260,57 +376,16 @@ impl AntigravityProvider {
                 project_id
             }
         };
-        let resolved_model = self.resolve_model_for_request(model);
-        let tools_is_empty = tools.is_empty();
-        let mut tools = crate::alphacode_provider_gemini::build_tools(tools);
-        // Normalize each tool's JSON schema for the specific Antigravity backend
-        // path the resolved model uses. The Cloud Code backend forwards each
-        // model family to a different upstream (Gemini-native, Gemini->Anthropic,
-        // or an OpenAI-compatible bridge), and each upstream rejects a different
-        // construct. Gemini-native accepts everything alphacode emits, so Gemini
-        // models pass through unchanged. See `antigravity_compatible_schema`.
-        if let Some(tools) = tools.as_mut() {
-            for tool in tools.iter_mut() {
-                for decl in tool.function_declarations.iter_mut() {
-                    decl.parameters =
-                        antigravity_compatible_schema(&decl.parameters, &resolved_model);
-                }
-            }
-        }
-        let request = CodeAssistGenerateRequest {
-            model: resolved_model,
+        let request = self.build_generate_content_request(
+            model,
             project,
-            user_prompt_id: Uuid::new_v4().to_string(),
-            request: VertexGenerateContentRequest {
-                contents: crate::alphacode_provider_gemini::build_contents_with_signature_policy(
-                    messages,
-                    signature_policy,
-                ),
-                system_instruction:
-                    crate::alphacode_provider_gemini::build_system_instruction_with_tool_guard(
-                        system,
-                        !tools_is_empty,
-                    ),
-                tools,
-                tool_config: if tools_is_empty {
-                    None
-                } else {
-                    // On a transparent retry after a MALFORMED_FUNCTION_CALL, force
-                    // function-calling mode `ANY` so the model must emit a real
-                    // functionCall instead of the Python-style pseudo-code that
-                    // triggered the malformed turn (the proven recovery for this
-                    // failure mode). Normal turns use `AUTO`.
-                    Some(GeminiToolConfig {
-                        function_calling_config: GeminiFunctionCallingConfig {
-                            mode: if force_function_call { "ANY" } else { "AUTO" },
-                        },
-                    })
-                },
-                session_id: resume_session_id
-                    .filter(|value| !value.trim().is_empty())
-                    .map(str::to_string),
-            },
-        };
+            messages,
+            tools,
+            system,
+            resume_session_id,
+            force_function_call,
+            signature_policy,
+        );
 
         if crate::alphacode_provider_core::fingerprint::fingerprint_enabled() {
             let contents_value =
@@ -352,34 +427,56 @@ impl AntigravityProvider {
             );
         }
 
-        let response = self
-            .client
-            .post(GENERATE_CONTENT_API_URL)
-            .bearer_auth(&tokens.access_token)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header(reqwest::header::USER_AGENT, antigravity_user_agent())
-            .header("x-goog-api-client", X_GOOG_API_CLIENT)
-            .header(
-                "x-goog-request-params",
-                format!("project={}", request.project),
-            )
-            .header("x-goog-client-metadata", client_metadata_header())
-            .json(&request)
-            .audited_send()
-            .await
-            .context("Failed to send Antigravity generateContent request")?;
+        let send_request = |url: String| {
+            let client = self.client.clone();
+            let access_token = tokens.access_token.clone();
+            let project = request.project.clone();
+            let payload = &request;
+            async move {
+                client
+                    .post(&url)
+                    .bearer_auth(&access_token)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .header(reqwest::header::USER_AGENT, antigravity_user_agent())
+                    .header("x-goog-api-client", X_GOOG_API_CLIENT)
+                    .header("x-goog-request-params", format!("project={}", project))
+                    .header("x-goog-client-metadata", client_metadata_header())
+                    .json(payload)
+                    .audited_send()
+                    .await
+                    .context("Failed to send Antigravity generateContent request")
+            }
+        };
 
-        // Retry-After aware loop for 429 / RESOURCE_EXHAUSTED. We only retry
-        // transient quota failures (the upstream's free-tier daily cap or a
-        // burst-rate cooldown). Any other HTTP error is a hard failure and
-        // is surfaced immediately so the user sees a real diagnosis. When
-        // the upstream sends a `Retry-After` header, that hint replaces the
-        // jittered exponential backoff so we honour the server's own pacing
-        // rather than guessing.
+        // Try each Antigravity backend endpoint (`daily-cloudcode-pa.sandbox` first,
+        // then `cloudcode-pa` and `autopush`). When one endpoint is rate-limited
+        // (`429` / `RESOURCE_EXHAUSTED`) or unreachable, fail over immediately to
+        // the remaining endpoints before paying the exponential backoff delay.
         let mut attempt: u32 = 0;
-        let mut response = response;
         loop {
-            if !response.status().is_success() {
+            let mut last_quota_error: Option<(
+                String,
+                Option<crate::alphacode_provider_core::retry_after::RetryAfter>,
+            )> = None;
+            let mut last_network_error: Option<anyhow::Error> = None;
+
+            for base_url in ANTIGRAVITY_API_BASES {
+                let endpoint_url = format!("{base_url}/v1internal:generateContent");
+                let response = match send_request(endpoint_url).await {
+                    Ok(resp) => resp,
+                    Err(err) => {
+                        last_network_error = Some(err);
+                        continue;
+                    }
+                };
+
+                if response.status().is_success() {
+                    return response
+                        .json()
+                        .await
+                        .context("Failed to decode Antigravity generateContent response");
+                }
+
                 let status = response.status();
                 let headers = response.headers().clone();
                 let body =
@@ -387,69 +484,61 @@ impl AntigravityProvider {
                 let body_trimmed = body.trim().to_string();
                 let is_quota =
                     status.as_u16() == 429 || body_trimmed.contains("RESOURCE_EXHAUSTED");
-                let long_cooldown = crate::alphacode_provider_core::retry_after::retry_after(
-                    &headers,
-                )
-                .is_some_and(|hint| {
-                    hint.remaining()
-                        > crate::alphacode_provider_core::retry_after::MAX_AUTOMATIC_WAIT
-                });
-                if !is_quota || attempt + 1 >= MAX_RETRIES || long_cooldown {
+                let hint = crate::alphacode_provider_core::retry_after::retry_after(&headers);
+
+                if !is_quota {
                     return Err(
                         crate::alphacode_provider_core::retry_after::error_with_retry_after(
                             format!(
                                 "Antigravity generateContent failed (HTTP {}): {}",
                                 status, body_trimmed
                             ),
-                            crate::alphacode_provider_core::retry_after::retry_after(&headers),
+                            hint,
                         ),
                     );
                 }
-                let server_hint =
-                    crate::alphacode_provider_core::retry_after::retry_after(&headers)
-                        .map(|hint| hint.remaining());
-                // Use the unified retry policy: prefer the server hint, otherwise
-                // back off with the rate-limit base (5s, doubled per attempt with
-                // +/-20% jitter, capped at 180s).
+
+                last_quota_error = Some((
+                    format!(
+                        "Antigravity generateContent failed (HTTP {}): {}",
+                        status, body_trimmed
+                    ),
+                    hint,
+                ));
+            }
+
+            if let Some((err_msg, hint)) = last_quota_error {
+                let long_cooldown = hint.as_ref().is_some_and(|h| {
+                    h.remaining() > crate::alphacode_provider_core::retry_after::MAX_AUTOMATIC_WAIT
+                });
+                if attempt + 1 >= MAX_RETRIES || long_cooldown {
+                    return Err(
+                        crate::alphacode_provider_core::retry_after::error_with_retry_after(
+                            err_msg, hint,
+                        ),
+                    );
+                }
+                let server_hint = hint.as_ref().map(|h| h.remaining());
                 let delay = crate::alphacode_provider_core::retry::backoff_for(
                     crate::alphacode_provider_core::retry::RetryReason::RateLimited,
                     attempt,
                     server_hint,
                 );
                 crate::alphacode_base::logging::info(&format!(
-                    "Antigravity quota exhausted (HTTP {}); retrying in {:?} (attempt {}/{}))",
-                    status,
+                    "Antigravity quota exhausted across endpoints; retrying in {:?} (attempt {}/{})",
                     delay,
                     attempt + 2,
                     MAX_RETRIES,
                 ));
                 tokio::time::sleep(delay).await;
                 attempt += 1;
-                response = self
-                    .client
-                    .post(GENERATE_CONTENT_API_URL)
-                    .bearer_auth(&tokens.access_token)
-                    .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .header(reqwest::header::USER_AGENT, antigravity_user_agent())
-                    .header("x-goog-api-client", X_GOOG_API_CLIENT)
-                    .header(
-                        "x-goog-request-params",
-                        format!("project={}", request.project),
-                    )
-                    .header("x-goog-client-metadata", client_metadata_header())
-                    .json(&request)
-                    .audited_send()
-                    .await
-                    .context("Failed to send Antigravity generateContent request")?;
                 continue;
             }
-            break;
-        }
 
-        response
-            .json()
-            .await
-            .context("Failed to decode Antigravity generateContent response")
+            return Err(last_network_error.unwrap_or_else(|| {
+                anyhow::anyhow!("Failed to send Antigravity generateContent request")
+            }));
+        }
     }
 }
 
@@ -761,12 +850,37 @@ impl Provider for AntigravityProvider {
 
     fn available_models_display(&self) -> Vec<String> {
         let catalog = self.fetched_catalog();
-        merge_antigravity_model_ids(
+        let current_model = self.model();
+        let custom_model = Some(current_model.trim())
+            .filter(|model| !model.is_empty() && *model != DEFAULT_MODEL)
+            .map(str::to_string);
+
+        if catalog.is_empty() {
+            return merge_antigravity_model_ids(
+                AVAILABLE_MODELS
+                    .iter()
+                    .copied()
+                    .map(str::to_string)
+                    .chain(custom_model),
+            );
+        }
+
+        let merged = merge_antigravity_model_ids(
             catalog
                 .into_iter()
                 .map(|model| model.id)
-                .chain(std::iter::once(self.model())),
-        )
+                .chain(custom_model.clone()),
+        );
+        if merged.is_empty() {
+            return merge_antigravity_model_ids(
+                AVAILABLE_MODELS
+                    .iter()
+                    .copied()
+                    .map(str::to_string)
+                    .chain(custom_model),
+            );
+        }
+        merged
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
@@ -776,8 +890,12 @@ impl Provider for AntigravityProvider {
     fn model_routes(&self) -> Vec<crate::alphacode_provider_core::ModelRoute> {
         let catalog = self.fetched_catalog();
         if !catalog.is_empty() {
-            return catalog
+            let routes: Vec<crate::alphacode_provider_core::ModelRoute> = catalog
                 .into_iter()
+                .filter(|model| {
+                    let trimmed = model.id.trim();
+                    !trimmed.is_empty() && trimmed != DEFAULT_MODEL
+                })
                 .map(|model| crate::alphacode_provider_core::ModelRoute {
                     model: model.id.clone(),
                     provider: "Antigravity".to_string(),
@@ -787,6 +905,9 @@ impl Provider for AntigravityProvider {
                     cheapness: None,
                 })
                 .collect();
+            if !routes.is_empty() {
+                return routes;
+            }
         }
 
         self.available_models_display()
@@ -867,5 +988,274 @@ impl Provider for AntigravityProvider {
             fetched_catalog: self.fetched_catalog.clone(),
             backend_default_model: self.backend_default_model.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::alphacode_message_types::{ContentBlock, Role};
+    use std::collections::HashSet;
+
+    fn empty_antigravity_provider() -> AntigravityProvider {
+        AntigravityProvider {
+            client: crate::alphacode_provider_core::shared_http_client(),
+            model: Arc::new(RwLock::new(DEFAULT_MODEL.to_string())),
+            fetched_catalog: Arc::new(RwLock::new(Vec::new())),
+            backend_default_model: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    fn assert_proto_safe_schema(value: &Value, path: &str) {
+        const FORBIDDEN_KEYS: &[&str] = &[
+            "additionalProperties",
+            "patternProperties",
+            "unevaluatedProperties",
+            "propertyNames",
+            "dependentRequired",
+            "dependentSchemas",
+            "contains",
+            "minContains",
+            "maxContains",
+            "exclusiveMinimum",
+            "exclusiveMaximum",
+            "multipleOf",
+            "examples",
+            "if",
+            "then",
+            "else",
+            "readOnly",
+            "writeOnly",
+            "deprecated",
+            "contentMediaType",
+            "contentEncoding",
+            "$schema",
+            "$id",
+            "$ref",
+            "$defs",
+            "$anchor",
+            "$dynamicRef",
+            "$dynamicAnchor",
+            "$vocabulary",
+            "definitions",
+            "$comment",
+        ];
+
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    assert!(
+                        !FORBIDDEN_KEYS.contains(&key.as_str()),
+                        "forbidden schema keyword `{key}` at {path}"
+                    );
+                    let child_path = format!("{path}.{key}");
+                    if key == "type" && !child.is_object() {
+                        let ty = child.as_str().unwrap_or_else(|| {
+                            panic!(
+                                "non-string schema `type` at {child_path}: {child} (Cloud Code rejects arrays with Unknown name \"type\")"
+                            )
+                        });
+                        assert!(
+                            matches!(
+                                ty,
+                                "string" | "number" | "integer" | "boolean" | "array" | "object"
+                            ),
+                            "invalid OpenAPI schema `type` `{ty}` at {child_path}"
+                        );
+                    }
+                    if key == "enum"
+                        && let Some(items) = child.as_array()
+                    {
+                        for item in items {
+                            assert!(!item.is_null(), "null entry inside `enum` at {child_path}");
+                        }
+                    }
+                    assert_proto_safe_schema(child, &child_path);
+                }
+            }
+            Value::Array(items) => {
+                for (idx, item) in items.iter().enumerate() {
+                    assert_proto_safe_schema(item, &format!("{path}[{idx}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn empty_catalog_exposes_fallback_models_and_never_collapses_to_default() {
+        let provider = empty_antigravity_provider();
+
+        let display = provider.available_models_display();
+        assert_eq!(
+            display,
+            AVAILABLE_MODELS
+                .iter()
+                .map(|m| (*m).to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !display.iter().any(|m| m == "default"),
+            "fallback display models must not advertise raw `default`: {display:?}"
+        );
+
+        let routes = provider.model_routes();
+        assert_eq!(routes.len(), AVAILABLE_MODELS.len());
+        assert!(routes.iter().all(|r| r.model != "default" && r.available));
+        assert_eq!(
+            provider.resolve_model_for_request("default"),
+            DEFAULT_FALLBACK_MODEL
+        );
+    }
+
+    #[test]
+    fn populated_catalog_exposes_live_models_without_default_sentinel() {
+        let provider = empty_antigravity_provider();
+        *provider.backend_default_model.write().unwrap() = Some("claude-sonnet-4-6".to_string());
+        *provider.fetched_catalog.write().unwrap() = vec![
+            CatalogModel {
+                id: "claude-sonnet-4-6".to_string(),
+                display_name: Some("Claude Sonnet 4.6".to_string()),
+                reset_time: None,
+                tag_title: None,
+                model_provider: Some("MODEL_PROVIDER_ANTHROPIC".to_string()),
+                max_tokens: Some(250_000),
+                max_output_tokens: Some(64_000),
+                recommended: true,
+                available: true,
+                remaining_fraction_milli: Some(1000),
+            },
+            CatalogModel {
+                id: "gemini-3-flash".to_string(),
+                display_name: Some("Gemini 3 Flash".to_string()),
+                reset_time: None,
+                tag_title: None,
+                model_provider: Some("MODEL_PROVIDER_GOOGLE".to_string()),
+                max_tokens: Some(1_048_576),
+                max_output_tokens: Some(65_536),
+                recommended: true,
+                available: true,
+                remaining_fraction_milli: Some(1000),
+            },
+        ];
+
+        let display = provider.available_models_display();
+        assert_eq!(display, vec!["claude-sonnet-4-6", "gemini-3-flash"]);
+        assert!(!display.iter().any(|m| m == "default"));
+
+        let routes = provider.model_routes();
+        assert_eq!(routes.len(), 2);
+        assert!(routes.iter().all(|r| r.model != "default"));
+        assert_eq!(
+            provider.resolve_model_for_request("default"),
+            "claude-sonnet-4-6"
+        );
+    }
+
+    #[tokio::test]
+    async fn serialized_generate_content_with_actual_advertised_tools_is_proto_safe() {
+        let provider = empty_antigravity_provider();
+        let registry =
+            crate::alphacode_app_core::tool::Registry::new(Arc::new(provider.clone())).await;
+        let mut tools = registry
+            .definitions_filtered(None, |name| {
+                crate::alphacode_app_core::tool::disclosure::tier_for(name)
+                    == crate::alphacode_app_core::tool::disclosure::ToolTier::Core
+            })
+            .await;
+        // Include the `mcp` management tool so the full 14-tool GUI payload is exercised.
+        let mcp_tool = crate::alphacode_app_core::tool::mcp::McpManagementTool::new(Arc::new(
+            tokio::sync::RwLock::new(crate::alphacode_app_core::mcp::McpManager::new()),
+        ));
+        tools.push(crate::alphacode_tool_core::Tool::to_definition(&mcp_tool));
+        assert_eq!(
+            tools.len(),
+            14,
+            "expected the 14 default advertised tools (13 core + mcp)"
+        );
+
+        let tool_names: HashSet<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(tool_names.contains("bash"));
+        assert!(tool_names.contains("todo"));
+        assert!(tool_names.contains("alphagrep"));
+        assert!(tool_names.contains("mcp"));
+
+        let messages = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "Hello".to_string(),
+                cache_control: None,
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        }];
+
+        for requested_model in [
+            "default",
+            "gemini-3-flash",
+            "claude-sonnet-4-6",
+            "gpt-oss-120b-medium",
+        ] {
+            let req = provider.build_generate_content_request(
+                requested_model,
+                "test-project".to_string(),
+                &messages,
+                &tools,
+                "You are helpful.",
+                None,
+                false,
+                crate::alphacode_provider_gemini::SignaturePolicy::ReplayCarriedForward,
+            );
+            let serialized = serde_json::to_value(&req).expect("serialize generateContent");
+            let decls = serialized["request"]["tools"][0]["functionDeclarations"]
+                .as_array()
+                .expect("functionDeclarations array");
+            assert_eq!(decls.len(), 14);
+
+            for decl in decls {
+                let name = decl["name"].as_str().unwrap_or("<unnamed>");
+                assert_proto_safe_schema(&decl["parameters"], &format!("{requested_model}.{name}"));
+            }
+
+            // Spot-check `bash` nullable array types became scalar + `nullable: true`.
+            let bash_decl = decls
+                .iter()
+                .find(|d| d["name"] == "bash")
+                .expect("bash decl");
+            assert_eq!(
+                bash_decl["parameters"]["properties"]["timeout"]["type"],
+                "integer"
+            );
+            assert_eq!(
+                bash_decl["parameters"]["properties"]["timeout"]["nullable"],
+                true
+            );
+
+            // Spot-check `todo` nested `items.properties.confidence` became scalar + `nullable: true`.
+            let todo_decl = decls
+                .iter()
+                .find(|d| d["name"] == "todo")
+                .expect("todo decl");
+            assert_eq!(
+                todo_decl["parameters"]["properties"]["todos"]["items"]["properties"]["confidence"]
+                    ["type"],
+                "integer"
+            );
+            assert_eq!(
+                todo_decl["parameters"]["properties"]["todos"]["items"]["properties"]["confidence"]
+                    ["nullable"],
+                true
+            );
+
+            // Spot-check `alphagrep` keeps its property named `type`.
+            let alphagrep_decl = decls
+                .iter()
+                .find(|d| d["name"] == "alphagrep")
+                .expect("alphagrep decl");
+            assert_eq!(
+                alphagrep_decl["parameters"]["properties"]["type"]["type"],
+                "string"
+            );
+        }
     }
 }

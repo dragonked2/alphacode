@@ -78,7 +78,7 @@ alphacode doctor   # check your setup
 alphacode          # launch the terminal UI in your project folder
 ```
 
-On Windows, `alphacode --gui` opens the desktop interface.
+Run `alphacode --gui` to open the native desktop workbench on Windows and macOS, or `alphacode gui --web` on any platform (including Linux). Release binaries ship with the GUI pre-built and require no Node.js installation (`alphacode gui --legacy` launches the legacy Windows WPF host).
 
 > [!TIP]
 > Want to read the script first, pin a version, or build from source? See [Installation options](#installation-options).
@@ -866,6 +866,14 @@ cargo build --release
 ```
 
 The project pins Rust edition 2024 in [`rust-toolchain.toml`](rust-toolchain.toml), and a C toolchain for your platform is also required.
+
+Pre-built release binaries ship with the desktop/web GUI already embedded (no Node.js required). When building from source with the embedded GUI, build the frontend assets first (requires Node.js 22+):
+
+```bash
+cd src/cli/gui/ui && npm ci && npm run build
+```
+
+On Windows contributors can also run `scripts/build-gui.ps1` to build both the frontend and the Rust binary in one step.
 
 The default build omits some heavier optional stacks. Enable them when you need them:
 

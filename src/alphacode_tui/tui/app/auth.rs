@@ -228,9 +228,10 @@ impl App {
             crate::alphacode_base::auth::AuthState::NotConfigured => "not configured",
         };
         let providers = crate::provider_catalog::auth_status_login_providers();
-        let mut rows: Vec<[String; 5]> = vec![[
+        let mut rows: Vec<[String; 6]> = vec![[
             "Provider".to_string(),
             "Status".to_string(),
+            "Account".to_string(),
             "Method".to_string(),
             "Health".to_string(),
             "Validation".to_string(),
@@ -240,6 +241,11 @@ impl App {
             rows.push([
                 provider.display_name.to_string(),
                 icon(assessment.state).to_string(),
+                assessment
+                    .account_summary
+                    .as_deref()
+                    .unwrap_or("-")
+                    .to_string(),
                 assessment.method_detail.to_string(),
                 assessment.health_summary(),
                 validation
@@ -248,7 +254,7 @@ impl App {
                     .unwrap_or_else(|| "not validated".to_string()),
             ]);
         }
-        let mut widths = [0usize; 5];
+        let mut widths = [0usize; 6];
         for row in &rows {
             for (i, cell) in row.iter().enumerate() {
                 widths[i] = widths[i].max(cell.chars().count());
@@ -264,6 +270,31 @@ impl App {
                 .join("  ");
             message.push_str(line.trim_end());
             message.push('\n');
+        }
+        let oauth_accounts = crate::alphacode_base::auth::connected_oauth_accounts();
+        if !oauth_accounts.is_empty() {
+            message.push_str("\nSigned-in OAuth accounts:\n");
+            for acc in oauth_accounts {
+                let status_badge = match (acc.active, acc.valid) {
+                    (true, true) => "active",
+                    (true, false) => "active, expired",
+                    (false, true) => "saved",
+                    (false, false) => "saved, expired",
+                };
+                let extra = acc
+                    .project_id
+                    .as_deref()
+                    .or(acc.subscription_type.as_deref())
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                message.push_str(&format!(
+                    "  - {}: {}{} [{}]\n",
+                    acc.provider_name,
+                    acc.primary_identity(),
+                    extra,
+                    status_badge
+                ));
+            }
         }
         message.push_str(
             "\nUse /login <provider> to authenticate. /login alphacode is for curated alphacode subscription access; /account opens the provider/account management center, /account <provider> settings shows provider-specific controls, and /auth doctor or /account <provider> doctor shows recovery steps.",
@@ -293,90 +324,7 @@ impl App {
             return;
         }
 
-        let result: anyhow::Result<String> = (|| match provider.target {
-            LoginProviderTarget::Alphacode => {
-                Err(anyhow::anyhow!("Alphacode logout handled above"))
-            }
-            LoginProviderTarget::Claude => {
-                let removed = crate::alphacode_base::auth::claude::clear_accounts()?;
-                Ok(format!("Logged out of {} Anthropic account(s).", removed))
-            }
-            LoginProviderTarget::ClaudeApiKey => {
-                Self::clear_api_key_login("ANTHROPIC_API_KEY", "anthropic.env")?;
-                Ok("Logged out of Anthropic API key.".to_string())
-            }
-            LoginProviderTarget::AgentRouterAnthropic => {
-                Self::clear_api_key_login("AGENTROUTER_API_KEY", "agentrouter.env")?;
-                crate::alphacode_core::env::remove_var("ANTHROPIC_BASE_URL");
-                Ok("Logged out of AgentRouter (Anthropic) API key.".to_string())
-            }
-            LoginProviderTarget::OpenAi => {
-                let removed = crate::alphacode_base::auth::codex::clear_accounts()?;
-                Ok(format!("Logged out of {} OpenAI account(s).", removed))
-            }
-            LoginProviderTarget::OpenAiApiKey => {
-                Self::clear_api_key_login("OPENAI_API_KEY", "openai.env")?;
-                Ok("Logged out of OpenAI API key.".to_string())
-            }
-            LoginProviderTarget::OpenRouter => {
-                Self::clear_api_key_login("OPENROUTER_API_KEY", "openrouter.env")?;
-                Ok("Logged out of OpenRouter API key.".to_string())
-            }
-            LoginProviderTarget::Bedrock => {
-                Self::clear_api_key_login(
-                    crate::provider::bedrock::API_KEY_ENV,
-                    crate::provider::bedrock::ENV_FILE,
-                )?;
-                Ok("Logged out of Bedrock API key.".to_string())
-            }
-            LoginProviderTarget::Azure => {
-                Self::clear_api_key_login(
-                    crate::alphacode_base::auth::azure::API_KEY_ENV,
-                    crate::alphacode_base::auth::azure::ENV_FILE,
-                )?;
-                crate::provider_catalog::save_env_value_to_env_file(
-                    crate::alphacode_base::auth::azure::USE_ENTRA_ENV,
-                    crate::alphacode_base::auth::azure::ENV_FILE,
-                    None,
-                )?;
-                Ok("Logged out of Azure OpenAI API key / Entra configuration.".to_string())
-            }
-            LoginProviderTarget::OpenAiCompatible(profile) => {
-                let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
-                Self::clear_api_key_login(&resolved.api_key_env, &resolved.env_file)?;
-                crate::provider_catalog::save_env_value_to_env_file(
-                    crate::provider_catalog::OPENAI_COMPAT_LOCAL_ENABLED_ENV,
-                    &resolved.env_file,
-                    None,
-                )?;
-                if resolved.id == crate::alphacode_base::auth::orcarouter::PROFILE_ID {
-                    crate::alphacode_base::auth::orcarouter::clear_needs_reauth();
-                }
-                Ok(format!("Logged out of {} API key.", resolved.display_name))
-            }
-            LoginProviderTarget::OrcaRouterOAuth => {
-                crate::alphacode_base::auth::orcarouter::clear_key()?;
-                crate::alphacode_base::auth::orcarouter::clear_needs_reauth();
-                Ok(
-                    "Logged out of OrcaRouter. The minted key was removed locally; revoke it on the server at https://www.orcarouter.ai/console/authorized-apps."
-                        .to_string(),
-                )
-            }
-            LoginProviderTarget::Cursor => {
-                crate::alphacode_base::auth::cursor::clear_api_key()?;
-                Ok("Logged out of Cursor API key.".to_string())
-            }
-            LoginProviderTarget::Gemini => {
-                crate::alphacode_base::auth::gemini::clear_tokens()?;
-                Ok("Logged out of Gemini.".to_string())
-            }
-            _ => Ok(format!(
-                "Logout for {} is not automated yet. Remove its saved API key or external CLI session from /account {} settings.",
-                provider.display_name, provider.id
-            )),
-        })();
-
-        match result {
+        match crate::alphacode_base::auth::logout_login_provider(provider, None) {
             Ok(message) => {
                 crate::alphacode_base::auth::AuthStatus::invalidate_cache();
                 self.push_display_message(DisplayMessage::system(message));
@@ -497,8 +445,36 @@ impl App {
             Ok(()) => {}
             Err(err) => errors.push(format!("Cursor API key: {}", err)),
         }
+        let antigravity_configured = crate::alphacode_base::auth::antigravity::tokens_path()
+            .map(|p| p.exists())
+            .unwrap_or(false);
+        match crate::alphacode_base::auth::antigravity::clear_tokens() {
+            Ok(()) if antigravity_configured => summary.push("Antigravity".to_string()),
+            Ok(()) => {}
+            Err(err) => errors.push(format!("Antigravity: {}", err)),
+        }
+        let google_configured = crate::alphacode_base::auth::google::tokens_path()
+            .map(|p| p.exists())
+            .unwrap_or(false);
+        match crate::alphacode_base::auth::google::clear_tokens() {
+            Ok(()) if google_configured => summary.push("Google / Gmail".to_string()),
+            Ok(()) => {}
+            Err(err) => errors.push(format!("Google / Gmail: {}", err)),
+        }
+        let copilot_hosts =
+            crate::alphacode_base::auth::copilot::ExternalCopilotAuthSource::HostsJson.path();
+        let copilot_configured = copilot_hosts.exists();
+        match crate::alphacode_base::auth::copilot::clear_tokens() {
+            Ok(()) if copilot_configured => summary.push("GitHub Copilot".to_string()),
+            Ok(()) => {}
+            Err(err) => errors.push(format!("GitHub Copilot: {}", err)),
+        }
+        let gemini_configured = crate::alphacode_base::auth::gemini::tokens_path()
+            .map(|p| p.exists())
+            .unwrap_or(false);
         match crate::alphacode_base::auth::gemini::clear_tokens() {
-            Ok(()) => summary.push("Gemini".to_string()),
+            Ok(()) if gemini_configured => summary.push("Gemini".to_string()),
+            Ok(()) => {}
             Err(err) => errors.push(format!("Gemini: {}", err)),
         }
 

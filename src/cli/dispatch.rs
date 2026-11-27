@@ -124,14 +124,9 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         crate::config::invalidate_config_cache();
     }
 
-    if args.gui {
-        return super::gui::run(
-            false,
-            false,
-            false,
-            args.no_update || args.quiet || !args.auto_update,
-        )
-        .await;
+    if args.gui && !matches!(args.command, Some(Command::Gui { .. })) {
+        return super::gui::web::run(args.no_update || args.quiet || !args.auto_update, false)
+            .await;
     }
 
     match args.command {
@@ -139,14 +134,21 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             once,
             preview,
             bridge,
+            web,
+            legacy,
         }) => {
-            super::gui::run(
-                once,
-                preview,
-                bridge,
-                args.no_update || args.quiet || !args.auto_update,
-            )
-            .await?;
+            if once || preview || bridge || legacy {
+                super::gui::run(
+                    once,
+                    preview,
+                    bridge,
+                    args.no_update || args.quiet || !args.auto_update,
+                )
+                .await?;
+            } else {
+                super::gui::web::run(args.no_update || args.quiet || !args.auto_update, web)
+                    .await?;
+            }
         }
         Some(Command::Serve {
             temporary_server,

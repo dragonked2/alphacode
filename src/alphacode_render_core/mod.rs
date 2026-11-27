@@ -19,6 +19,7 @@
 //! (`alphacode-tui-markdown`); that renderer remains authoritative until this core
 //! reaches parity, after which front-ends migrate onto it.
 
+pub mod bidi;
 pub mod markdown;
 pub mod math;
 pub mod model;
@@ -26,6 +27,17 @@ pub mod preprocess;
 pub mod reasoning;
 pub mod wrap;
 
+pub use bidi::{
+    ArabicShapingMode, contains_rtl, decompose_presentation_form, detect_base_direction,
+    detect_dominant_direction, detect_line_base_direction, detect_line_dominant_direction,
+    get_shaping_mode, is_arabic_char, is_arabic_transparent, is_native_shaping_active, is_rtl_char,
+    line_contains_rtl, normalize_rtl_line, normalize_rtl_text, prepare_rtl_line,
+    prepare_rtl_line_presentation, prepare_rtl_line_unicode, prepare_rtl_line_with_base,
+    prepare_rtl_lines, prepare_rtl_text, prepare_rtl_text_presentation, prepare_rtl_text_unicode,
+    prepare_rtl_text_with_base, reorder_rtl_line_with_base, reorder_rtl_lines_with_base,
+    set_shaping_mode_override, set_thread_shaping_mode, shape_arabic_chars, shape_rtl_line,
+    shape_rtl_text, terminal_supports_native_shaping, with_arabic_shaping_mode,
+};
 pub use markdown::parse_markdown;
 pub use math::{render_display_latex, render_inline_latex};
 pub use model::{

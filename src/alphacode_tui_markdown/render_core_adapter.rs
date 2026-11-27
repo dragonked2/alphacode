@@ -80,6 +80,14 @@ fn push_math_display(lines: &mut Vec<Line<'static>>, block: &crate::alphacode_re
 /// Convert one neutral [`StyledLine`] to a ratatui [`Line`], given the block it
 /// belongs to (used to pick heading-level color).
 pub fn styled_line_to_line(sl: &StyledLine, kind: &BlockKind) -> Line<'static> {
+    styled_line_to_line_inner(sl, kind, true)
+}
+
+fn styled_line_to_line_inner(
+    sl: &StyledLine,
+    kind: &BlockKind,
+    prepare_rtl: bool,
+) -> Line<'static> {
     let spans: Vec<Span<'static>> = sl
         .spans
         .iter()
@@ -91,7 +99,11 @@ pub fn styled_line_to_line(sl: &StyledLine, kind: &BlockKind) -> Line<'static> {
         CoreAlignment::Center => Alignment::Center,
         CoreAlignment::Right => Alignment::Right,
     });
-    line
+    if prepare_rtl && crate::alphacode_render_core::line_contains_rtl(&line) {
+        crate::alphacode_render_core::prepare_rtl_line(line)
+    } else {
+        line
+    }
 }
 
 fn styled_span_to_span(span: &StyledSpan, kind: &BlockKind) -> Span<'static> {
@@ -154,6 +166,14 @@ pub fn render_markdown_via_core(text: &str) -> Vec<Line<'static>> {
 /// reflowed here; callers wrap separately (mirroring how the legacy
 /// `render_markdown_with_width` + `wrap_lines` pipeline is structured).
 pub fn document_to_lines_with_width(doc: &Document, width: Option<usize>) -> Vec<Line<'static>> {
+    document_to_lines_with_width_inner(doc, width, true)
+}
+
+fn document_to_lines_with_width_inner(
+    doc: &Document,
+    width: Option<usize>,
+    prepare_rtl: bool,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (idx, block) in doc.blocks.iter().enumerate() {
         if idx > 0 {
@@ -185,12 +205,12 @@ pub fn document_to_lines_with_width(doc: &Document, width: Option<usize>) -> Vec
                 // The quote gutter (`│ ` per nesting level) is baked into the
                 // stored lines by the parser, so render spans verbatim.
                 for sl in &block.lines {
-                    lines.push(styled_line_to_line(sl, &block.kind));
+                    lines.push(styled_line_to_line_inner(sl, &block.kind, prepare_rtl));
                 }
             }
             _ => {
                 for sl in &block.lines {
-                    lines.push(styled_line_to_line(sl, &block.kind));
+                    lines.push(styled_line_to_line_inner(sl, &block.kind, prepare_rtl));
                 }
             }
         }
@@ -216,6 +236,9 @@ fn rule_width(width: Option<usize>) -> usize {
 /// across span boundaries and repeats code/quote gutters).
 pub fn render_markdown_via_core_wrapped(text: &str, width: usize) -> Vec<Line<'static>> {
     let doc = crate::alphacode_render_core::parse_markdown(text);
-    let lines = document_to_lines_with_width(&doc, Some(width));
+    // Pass `prepare_rtl = false` here because `wrap_lines` performs the single
+    // shaping + BiDi pass; preparing before wrapping would double-reverse RTL
+    // lines in PresentationForms mode.
+    let lines = document_to_lines_with_width_inner(&doc, Some(width), false);
     crate::alphacode_tui_markdown::wrap_lines(lines, width)
 }

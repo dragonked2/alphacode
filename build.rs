@@ -127,6 +127,7 @@ fn main() {
     emit_build_environment(&info);
     configure_mmdr();
     configure_bundled_skills(&repo_root);
+    configure_gui_assets(&repo_root, &info);
     configure_windows_desktop(&repo_root, &info);
 }
 
@@ -588,6 +589,72 @@ fn configure_mmdr() {
 }
 
 // -----------------------------------------------------------------------------
+// GUI static assets
+// -----------------------------------------------------------------------------
+
+const ENV_REQUIRE_GUI_ASSETS: &str = "ALPHACODE_REQUIRE_GUI_ASSETS";
+
+/// Compress built frontend assets (`src/cli/gui/ui/dist`) with deterministic
+/// gzip and generate `OUT_DIR/gui_embedded_assets.rs`.
+///
+/// On release builds (`ALPHACODE_RELEASE_BUILD=1`) or when
+/// `ALPHACODE_REQUIRE_GUI_ASSETS=1` is set, missing or incomplete frontend
+/// assets are a hard build error so a release can never ship an empty GUI.
+/// Local developer builds without `ui/dist` still compile cleanly with an
+/// empty asset table.
+fn configure_gui_assets(root: &Path, info: &BuildInfo) {
+    let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let packer = root.join("scripts").join("gui_assets_pack.py");
+    let dist_dir = root
+        .join("src")
+        .join("cli")
+        .join("gui")
+        .join("ui")
+        .join("dist");
+
+    println!("cargo:rerun-if-env-changed={ENV_REQUIRE_GUI_ASSETS}");
+    println!("cargo:rerun-if-changed={}", packer.display());
+    println!("cargo:rerun-if-changed={}", dist_dir.display());
+    if dist_dir.is_dir() {
+        watch_gui_dist_files(&dist_dir);
+    }
+
+    let require_assets = info.release
+        || env::var(ENV_REQUIRE_GUI_ASSETS)
+            .ok()
+            .is_some_and(|value| parse_bool(&value));
+
+    let mut cmd = Command::new(python_interpreter());
+    cmd.arg(&packer).arg(&dist_dir).arg(&out);
+    if require_assets {
+        cmd.arg("--require");
+    }
+    let output = cmd.output().expect("run GUI asset packer");
+    assert!(
+        output.status.success(),
+        "GUI asset packer failed ({}): {} {}",
+        packer.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn watch_gui_dist_files(dir: &Path) {
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let Ok(read_dir) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            watch_gui_dist_files(&path);
+        } else if path.is_file() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Cargo rerun rules
 // -----------------------------------------------------------------------------
 
@@ -704,9 +771,12 @@ fn configure_windows_desktop(root: &Path, info: &BuildInfo) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let host = out.join("AlphaCode.Desktop.exe");
+    let legacy_host = out.join("AlphaCode.Legacy.exe");
     if !cfg!(windows) {
         // Cross-builds cannot use Windows PowerShell's .NET Framework host.
-        fs::write(&host, []).expect("write unavailable GUI host marker");
+        for path in [&host, &legacy_host] {
+            fs::write(path, []).expect("write unavailable GUI host marker");
+        }
         println!("cargo:warning=Windows GUI host requires a native Windows build");
     } else {
         let windir = PathBuf::from(env::var_os("WINDIR").expect("WINDIR"));
@@ -729,64 +799,47 @@ fn configure_windows_desktop(root: &Path, info: &BuildInfo) {
             "could not find Windows PowerShell assembly"
         );
         let assembly = String::from_utf8(automation.stdout).expect("PowerShell assembly path");
-        let metadata_source = out.join("GuiBuildInfo.cs");
         let identity = format!(
             "{} ({}{})",
             info.build_version,
             info.git_hash,
             if info.git_dirty { ", dirty" } else { "" }
         );
-        let literal = |value: &str| value.replace('"', "\"\"");
-        // csc.exe synthesises the whole VERSIONINFO resource from these assembly
-        // attributes and links it into `.rsrc`, which is where the loader and
-        // Explorer read it. The earlier approach compiled a `.res` with rc.exe
-        // and appended the raw bytes after the last section; that left the host
-        // with a PE *overlay* (VirusTotal tags such a file `overlay`) and, since
-        // the appended block is not referenced by the resource directory,
-        // Windows reported ProductName/CompanyName/LegalCopyright as empty on
-        // the 1.1.21 `AlphaCode.Desktop.exe`. Declaring the attributes here
-        // removes the overlay and populates every product field at once.
         let (major, minor, patch) = release_version_triplet();
-        fs::write(
-            &metadata_source,
-            format!(
-                "[assembly: System.Reflection.AssemblyTitle(\"AlphaCode Desktop\")]\n\
-                 [assembly: System.Reflection.AssemblyProduct(\"AlphaCode\")]\n\
-                 [assembly: System.Reflection.AssemblyCompany(\"AlphaCode\")]\n\
-                 [assembly: System.Reflection.AssemblyCopyright(\"Copyright (c) Ali Essam\")]\n\
-                 [assembly: System.Reflection.AssemblyFileVersion(\"{major}.{minor}.{patch}.0\")]\n\
-                 [assembly: System.Reflection.AssemblyVersion(\"{major}.{minor}.{patch}.0\")]\n\
-                 [assembly: System.Reflection.AssemblyInformationalVersion(@\"{}\")]\n",
-                literal(&identity)
+        let host_specs = [
+            (
+                "AlphaCode.Desktop.exe",
+                "AlphaCode Desktop",
+                "GuiBuildInfo.cs",
+                false,
             ),
-        )
-        .expect("write GUI build identity");
-        let result = Command::new(compiler)
-            .args(["/nologo", "/target:winexe"])
-            .arg(format!("/out:{}", host.display()))
-            .arg(format!("/reference:{}", assembly.trim()))
-            .arg("/reference:System.Web.Extensions.dll")
-            .arg("/reference:System.Core.dll")
-            .arg(format!("/resource:{},AlphaCode.UI", ui.display()))
-            .arg(format!("/win32icon:{}", icon.display()))
-            .arg(format!("/win32manifest:{}", manifest.display()))
-            .arg(host_source)
-            .arg(diagnostics)
-            .arg(metadata_source)
-            .output()
-            .expect("start desktop host compiler");
-        assert!(
-            result.status.success(),
-            "desktop host build failed: {} {}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
-        // Metadata now comes from the assembly attributes in `GuiBuildInfo.cs`
-        // above, so no post-build byte patching is needed. The previous
-        // `append_version_resource` appended a compiled `.res` after the last
-        // section: that produced a PE *overlay* and, because the appended block
-        // is not registered in the resource directory, left the host reading as
-        // an unattributed dropper to reputation scanners.
+            (
+                "AlphaCode.Legacy.exe",
+                "AlphaCode Legacy GUI",
+                "GuiLegacyBuildInfo.cs",
+                true,
+            ),
+        ];
+        for (exe_name, title, meta_file, legacy_default) in host_specs {
+            let output_exe = out.join(exe_name);
+            compile_windows_gui_host(
+                &compiler,
+                assembly.trim(),
+                &out,
+                &output_exe,
+                &icon,
+                &manifest,
+                &host_source,
+                &diagnostics,
+                &ui,
+                &identity,
+                (major, minor, patch),
+                exe_name,
+                title,
+                meta_file,
+                legacy_default,
+            );
+        }
     }
     println!(
         "cargo:rustc-env=ALPHACODE_DESKTOP_HOST_BYTES={}",
@@ -819,16 +872,21 @@ fn configure_windows_desktop(root: &Path, info: &BuildInfo) {
     if cfg!(windows)
         && let Some(profile_dir) = out.ancestors().nth(3)
     {
-        let sibling = profile_dir.join("AlphaCode.Desktop.exe");
-        let current = std::fs::read(&sibling).ok();
-        let built = std::fs::read(&host).ok();
-        if current.as_deref() != built.as_deref()
-            && let Err(error) = std::fs::copy(&host, &sibling)
-        {
-            println!(
-                "cargo:warning=could not stage {}: {error}",
-                sibling.display()
-            );
+        for (src_host, exe_name) in [
+            (&host, "AlphaCode.Desktop.exe"),
+            (&legacy_host, "AlphaCode.Legacy.exe"),
+        ] {
+            let sibling = profile_dir.join(exe_name);
+            let current = std::fs::read(&sibling).ok();
+            let built = std::fs::read(src_host).ok();
+            if current.as_deref() != built.as_deref()
+                && let Err(error) = std::fs::copy(src_host, &sibling)
+            {
+                println!(
+                    "cargo:warning=could not stage {}: {error}",
+                    sibling.display()
+                );
+            }
         }
     }
     if target.contains("msvc") {
@@ -888,6 +946,74 @@ fn configure_windows_desktop(root: &Path, info: &BuildInfo) {
             ),
         }
     }
+}
+
+/// Compile one Windows GUI host executable (.NET Framework `csc.exe`) with embedded WPF script,
+/// icon, manifest, and `.rsrc` VERSIONINFO metadata (declared via C# assembly attributes so no PE
+/// overlay is appended).
+#[allow(clippy::too_many_arguments)]
+fn compile_windows_gui_host(
+    compiler: &Path,
+    automation_assembly: &str,
+    out: &Path,
+    output_exe: &Path,
+    icon: &Path,
+    manifest: &Path,
+    host_source: &Path,
+    diagnostics: &Path,
+    ui: &Path,
+    identity: &str,
+    version: (u64, u64, u64),
+    exe_name: &str,
+    title: &str,
+    meta_file: &str,
+    legacy_default: bool,
+) {
+    let (major, minor, patch) = version;
+    let literal = |value: &str| value.replace('"', "\"\"");
+    let metadata_source = out.join(meta_file);
+    // csc.exe synthesises the whole VERSIONINFO resource from these assembly
+    // attributes and links it into `.rsrc`, avoiding a PE overlay and ensuring
+    // Windows reports ProductName/CompanyName/LegalCopyright cleanly.
+    fs::write(
+        &metadata_source,
+        format!(
+            "[assembly: System.Reflection.AssemblyTitle(\"{}\")]\n\
+             [assembly: System.Reflection.AssemblyProduct(\"AlphaCode\")]\n\
+             [assembly: System.Reflection.AssemblyCompany(\"AlphaCode\")]\n\
+             [assembly: System.Reflection.AssemblyCopyright(\"Copyright (c) Ali Essam\")]\n\
+             [assembly: System.Reflection.AssemblyFileVersion(\"{major}.{minor}.{patch}.0\")]\n\
+             [assembly: System.Reflection.AssemblyVersion(\"{major}.{minor}.{patch}.0\")]\n\
+             [assembly: System.Reflection.AssemblyInformationalVersion(@\"{}\")]\n",
+            literal(title),
+            literal(identity)
+        ),
+    )
+    .expect("write GUI build identity");
+    let mut cmd = Command::new(compiler);
+    cmd.args(["/nologo", "/target:winexe"])
+        .arg(format!("/out:{}", output_exe.display()))
+        .arg(format!("/reference:{automation_assembly}"))
+        .arg("/reference:System.Web.Extensions.dll")
+        .arg("/reference:System.Core.dll")
+        .arg(format!("/resource:{},AlphaCode.UI", ui.display()))
+        .arg(format!("/win32icon:{}", icon.display()))
+        .arg(format!("/win32manifest:{}", manifest.display()));
+    if legacy_default {
+        cmd.arg("/define:LEGACY_DEFAULT");
+    }
+    let result = cmd
+        .arg(host_source)
+        .arg(diagnostics)
+        .arg(&metadata_source)
+        .output()
+        .expect("start desktop host compiler");
+    assert!(
+        result.status.success(),
+        "{exe_name} build failed: {} {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 /// Cargo can find MSVC without vcvars being loaded; find an installed SDK's

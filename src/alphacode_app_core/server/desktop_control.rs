@@ -58,6 +58,22 @@ fn desktop_model_choices(
         .collect()
 }
 
+fn desktop_state_payload(agent: &crate::alphacode_app_core::agent::Agent) -> Value {
+    let (saved, label) = agent.session_bookmark();
+    let catalog = agent.model_catalog_snapshot();
+    let choices = desktop_model_choices(&catalog);
+    json!({
+        "model": agent.provider_model(),
+        "provider": agent.provider_name(),
+        "models": desktop_model_options(catalog),
+        "model_options": choices,
+        "effort": agent.current_reasoning_effort(),
+        "title": agent.session_display_title(),
+        "saved": saved,
+        "save_label": label,
+    })
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "desktop control shares existing server state"
@@ -250,7 +266,8 @@ pub(super) async fn execute(
             }
             Ok(json!({"cancelled": true}))
         }
-        "history" | "state" | "model" | "effort" | "rename" | "save" | "unsave" | "tools" => {
+        "history" | "state" | "refresh_auth" | "model" | "effort" | "rename" | "save"
+        | "unsave" | "tools" => {
             let mut agent = agent
                 .try_lock()
                 .map_err(|_| anyhow::anyhow!("Chat is working; try again when it is ready"))?;
@@ -273,13 +290,10 @@ pub(super) async fn execute(
                         .collect();
                     Ok(json!({"message_count": count, "messages": recent}))
                 }
-                "state" => {
-                    let (saved, label) = agent.session_bookmark();
-                    let catalog = agent.model_catalog_snapshot();
-                    let choices = desktop_model_choices(&catalog);
-                    Ok(
-                        json!({"model": agent.provider_model(), "provider": agent.provider_name(), "models": desktop_model_options(catalog), "model_options": choices, "effort": agent.current_reasoning_effort(), "title": agent.session_display_title(), "saved": saved, "save_label": label}),
-                    )
+                "state" => Ok(desktop_state_payload(&agent)),
+                "refresh_auth" => {
+                    agent.refresh_provider_auth();
+                    Ok(desktop_state_payload(&agent))
                 }
                 "tools" => Ok(json!(agent.tool_names().await)),
                 "model" => {

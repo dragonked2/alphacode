@@ -126,10 +126,14 @@ impl App {
                 auth_state,
                 crate::alphacode_base::auth::AuthState::NotConfigured
             ) {
+                let entry_title = match assessment.account_summary.as_deref() {
+                    Some(acct) => format!("Signed in: {acct}"),
+                    None => "Saved auth entry".to_string(),
+                };
                 items.push(AccountPickerItem::action(
                     provider.id,
                     provider.display_name,
-                    "Saved auth entry",
+                    entry_title,
                     format!(
                         "{} - {} - {}",
                         state_label, method_detail, validation_detail

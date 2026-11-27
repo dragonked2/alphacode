@@ -18,10 +18,15 @@ pub const AVAILABLE_MODELS: &[&str] = &[
     "gemini-3.5-flash-low",
     "gpt-oss-120b-medium",
 ];
+pub const ANTIGRAVITY_API_BASES: &[&str] = &[
+    "https://daily-cloudcode-pa.sandbox.googleapis.com",
+    "https://cloudcode-pa.googleapis.com",
+    "https://autopush-cloudcode-pa.sandbox.googleapis.com",
+];
 pub const FETCH_MODELS_API_URL: &str =
-    "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
+    "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels";
 pub const GENERATE_CONTENT_API_URL: &str =
-    "https://cloudcode-pa.googleapis.com/v1internal:generateContent";
+    "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:generateContent";
 const VERSION_ENV: &str = "ALPHACODE_ANTIGRAVITY_VERSION";
 pub const ANTIGRAVITY_VERSION: &str = "1.18.3";
 pub const X_GOOG_API_CLIENT: &str = "google-cloud-sdk vscode_cloudshelleditor/0.1";
@@ -165,6 +170,7 @@ pub fn merge_antigravity_model_ids(models: impl IntoIterator<Item = String>) -> 
         .map(|model| model.trim().to_string())
         .filter(|model| !model.is_empty())
         .collect();
+    let has_real_model = models.iter().any(|model| model != "default");
 
     let mut seen = HashSet::new();
     let mut preferred = Vec::new();
@@ -177,7 +183,7 @@ pub fn merge_antigravity_model_ids(models: impl IntoIterator<Item = String>) -> 
 
     let mut extras: Vec<String> = models
         .into_iter()
-        .filter(|model| seen.insert(model.clone()))
+        .filter(|model| (!has_real_model || model != "default") && seen.insert(model.clone()))
         .collect();
     extras.sort();
     preferred.extend(extras);
@@ -201,14 +207,20 @@ pub fn parse_fetch_available_models_response(
 
     let mut preferred_ids = Vec::new();
     if let Some(default_agent_model_id) = response.default_agent_model_id.as_deref() {
-        preferred_ids.push(default_agent_model_id.trim().to_string());
+        let trimmed = default_agent_model_id.trim();
+        if !trimmed.is_empty() && (trimmed != "default" || response.models.contains_key("default"))
+        {
+            preferred_ids.push(trimmed.to_string());
+        }
     }
     preferred_ids.extend(
         response
             .command_model_ids
             .iter()
             .map(|id| id.trim().to_string())
-            .filter(|id| !id.is_empty()),
+            .filter(|id| {
+                !id.is_empty() && (id != "default" || response.models.contains_key("default"))
+            }),
     );
     preferred_ids.extend(response.models.keys().map(|id| id.trim().to_string()));
 
@@ -509,6 +521,17 @@ pub fn strip_numeric_schema_bounds(schema: &Value) -> Value {
                 if NUMERIC_SCHEMA_BOUND_KEYS.contains(&key.as_str()) {
                     continue;
                 }
+                if key == "properties"
+                    && let Some(props_map) = value.as_object()
+                {
+                    let mut normalized_props = serde_json::Map::new();
+                    for (prop_name, prop_schema) in props_map {
+                        normalized_props
+                            .insert(prop_name.clone(), strip_numeric_schema_bounds(prop_schema));
+                    }
+                    out.insert("properties".to_string(), Value::Object(normalized_props));
+                    continue;
+                }
                 out.insert(key.clone(), strip_numeric_schema_bounds(value));
             }
             Value::Object(out)
@@ -561,5 +584,81 @@ pub fn flatten_schema_combiners(schema: &Value) -> Value {
         }
         Value::Array(items) => Value::Array(items.iter().map(flatten_schema_combiners).collect()),
         _ => schema.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn merge_antigravity_model_ids_orders_known_then_sorted_extras_and_drops_default_sentinel() {
+        let merged = merge_antigravity_model_ids(vec![
+            "default".to_string(),
+            "gemini-2.5-pro".to_string(),
+            "gemini-3-flash".to_string(),
+            "claude-sonnet-4-6".to_string(),
+            "chat_20706".to_string(),
+        ]);
+
+        assert_eq!(
+            merged,
+            vec![
+                "claude-sonnet-4-6",
+                "gemini-3-flash",
+                "chat_20706",
+                "gemini-2.5-pro",
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_fetch_available_models_response_keeps_empty_catalog_empty() {
+        let parsed: FetchAvailableModelsResponse = serde_json::from_value(json!({
+            "models": {},
+            "defaultAgentModelId": "default"
+        }))
+        .unwrap();
+
+        let snapshot = parse_fetch_available_models_response(&parsed);
+        assert!(snapshot.models.is_empty());
+        assert_eq!(snapshot.default_model_id.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn antigravity_compatible_schema_flattens_combiners_for_claude_and_bounds_for_gpt_oss() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "status_filter": {
+                    "anyOf": [
+                        { "type": "string" },
+                        { "type": "array", "items": { "type": "string" } }
+                    ],
+                    "description": "Filter"
+                },
+                "label": {
+                    "type": "string",
+                    "minLength": 1
+                }
+            }
+        });
+
+        let gemini = antigravity_compatible_schema(&schema, "gemini-3-flash");
+        assert_eq!(gemini, schema);
+
+        let claude = antigravity_compatible_schema(&schema, "claude-sonnet-4-6");
+        assert!(claude["properties"]["status_filter"].get("anyOf").is_none());
+        assert_eq!(claude["properties"]["status_filter"]["type"], "string");
+        assert_eq!(claude["properties"]["label"]["minLength"], 1);
+
+        let gpt_oss = antigravity_compatible_schema(&schema, "gpt-oss-120b-medium");
+        assert!(
+            gpt_oss["properties"]["status_filter"]
+                .get("anyOf")
+                .is_none()
+        );
+        assert!(gpt_oss["properties"]["label"].get("minLength").is_none());
     }
 }

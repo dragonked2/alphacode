@@ -5,13 +5,26 @@ use clap::ValueEnum;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use crate::provider_catalog::{
     LoginProviderAuthKind, LoginProviderDescriptor, LoginProviderTarget,
 };
+
+static AUTH_COMPLETED_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+pub(super) fn auth_completed_epoch() -> u64 {
+    AUTH_COMPLETED_EPOCH.load(Ordering::Acquire)
+}
+
+pub(super) fn bump_auth_completed_epoch() {
+    AUTH_COMPLETED_EPOCH.fetch_add(1, Ordering::Release);
+}
 
 #[derive(Clone, Default, Serialize)]
 pub(super) struct ConnectionStatus {
@@ -154,7 +167,9 @@ impl ProviderConnections {
             .map(|provider| {
                 let assessment = status.assessment_for_provider(provider);
                 json!({"id": provider.id, "name": provider.display_name,
-                    "configured": assessment.is_configured(), "detail": assessment.health_summary(),
+                    "configured": assessment.is_configured(),
+                    "account": assessment.account_summary,
+                    "detail": assessment.health_summary(),
                     "oauth": supports_browser(provider), "api_key": supports_key(provider),
                     "local": provider.auth_kind == LoginProviderAuthKind::Local,
                     "endpoint": matches!(provider.target, LoginProviderTarget::OpenAiCompatible(_) | LoginProviderTarget::Azure),
@@ -263,6 +278,9 @@ impl ProviderConnections {
             let _ = out.await;
             let _ = err.await;
             crate::alphacode_base::auth::AuthStatus::invalidate_cached_status();
+            if phase == "completed" {
+                bump_auth_completed_epoch();
+            }
             let mut status = status.lock().unwrap_or_else(|e| e.into_inner());
             status.phase = phase.into();
             if phase == "completed" || phase == "cancelled" {
@@ -293,6 +311,96 @@ impl ProviderConnections {
         if let Some(cancel) = &self.cancel {
             let _ = cancel.send(()).await;
         }
+    }
+
+    pub fn accounts(&self) -> Value {
+        let snapshots = crate::alphacode_base::auth::connected_oauth_accounts();
+        let mut active_map = serde_json::Map::new();
+        let accounts: Vec<Value> = snapshots
+            .into_iter()
+            .map(|acc| {
+                let identity = acc.primary_identity();
+                if acc.active && !active_map.contains_key(acc.provider_id) {
+                    active_map.insert(acc.provider_id.to_string(), json!(identity));
+                }
+                json!({
+                    "provider": acc.provider_id,
+                    "provider_name": acc.provider_name,
+                    "label": acc.label,
+                    "email": acc.email,
+                    "username": acc.username,
+                    "account_id": acc.account_id,
+                    "project_id": acc.project_id,
+                    "subscription_type": acc.subscription_type,
+                    "expires_at": acc.expires_at_ms.map(|ts| ts.to_string()),
+                    "active": acc.active,
+                    "valid": acc.valid,
+                    "switchable": acc.switchable,
+                })
+            })
+            .collect();
+        let alphacode_configured = crate::subscription_catalog::configured_api_key().is_some();
+
+        json!({
+            "ok": true,
+            "action": "account_list",
+            "accounts": accounts,
+            "active": active_map,
+            "alphacode_configured": alphacode_configured,
+        })
+    }
+
+    pub fn switch_account(&self, provider: &str, label: &str) -> Result<(String, Value)> {
+        let label = label.trim();
+        if label.is_empty() {
+            bail!("Account label is required");
+        }
+        let canonical = match provider.trim().to_ascii_lowercase().as_str() {
+            "claude" | "anthropic" => {
+                crate::alphacode_base::auth::claude::set_active_account(label)?;
+                "claude".to_string()
+            }
+            "openai" | "codex" => {
+                crate::alphacode_base::auth::codex::set_active_account(label)?;
+                "openai".to_string()
+            }
+            other => bail!("Multi-account switching is not supported for provider `{other}`"),
+        };
+        crate::alphacode_base::auth::AuthStatus::invalidate_cached_status();
+        Ok((
+            canonical.clone(),
+            json!({
+                "ok": true,
+                "action": "account_switch",
+                "provider": canonical,
+                "label": label,
+            }),
+        ))
+    }
+
+    pub fn logout(&mut self, id: &str, label: Option<&str>) -> Result<Value> {
+        if self.status().phase == "connecting" && self.status().provider == id {
+            bail!("Cancel the active sign-in before signing out");
+        }
+        let provider = provider_for_id(id.trim()).context("Unknown provider")?;
+        let message = crate::alphacode_base::auth::logout_login_provider(provider, label)?;
+        bump_auth_completed_epoch();
+        {
+            let mut status = self
+                .status
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if status.provider == provider.id {
+                *status = ConnectionStatus::default();
+            }
+        }
+        Ok(json!({
+            "ok": true,
+            "action": "provider_logout",
+            "provider": provider.id,
+            "label": label.map(str::trim).filter(|value| !value.is_empty()),
+            "message": message,
+        }))
     }
 }
 
@@ -365,5 +473,36 @@ mod tests {
         let args = login_arguments(provider, "api_key", None).unwrap();
         assert_eq!(args, ["--no-update", "--no-selfdev", "login", "openai-api"]);
         assert!(!args.iter().any(|arg| arg.contains("api-key")));
+    }
+
+    #[test]
+    fn logout_clears_saved_antigravity_tokens_and_rejects_unknown_provider() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().unwrap();
+        let prev = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path());
+
+        let path = crate::alphacode_base::auth::antigravity::tokens_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"access_token":"at","refresh_token":"rt","expires_at":9999999999999,"email":"user@example.com","project_id":"proj-1"}"#,
+        )
+        .unwrap();
+        assert!(path.exists());
+
+        let mut conns = ProviderConnections::default();
+        assert!(conns.logout("unknown;provider", None).is_err());
+
+        let res = conns.logout("antigravity", None).unwrap();
+        assert_eq!(res["ok"], json!(true));
+        assert_eq!(res["action"], json!("provider_logout"));
+        assert!(!path.exists());
+
+        if let Some(prev) = prev {
+            crate::alphacode_core::env::set_var("ALPHACODE_HOME", prev);
+        } else {
+            crate::alphacode_core::env::remove_var("ALPHACODE_HOME");
+        }
     }
 }

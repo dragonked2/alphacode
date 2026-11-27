@@ -67,6 +67,54 @@ pub struct ProviderAuth {
     pub has_api_key: bool,
 }
 
+/// Signed-in OAuth account identity for one provider (used across CLI, TUI, and GUI).
+#[derive(Debug, Clone, Serialize)]
+pub struct OAuthAccountSnapshot {
+    pub provider_id: &'static str,
+    pub provider_name: &'static str,
+    pub label: String,
+    pub email: Option<String>,
+    pub username: Option<String>,
+    pub account_id: Option<String>,
+    pub project_id: Option<String>,
+    pub subscription_type: Option<String>,
+    pub expires_at_ms: Option<i64>,
+    pub active: bool,
+    pub valid: bool,
+    pub switchable: bool,
+}
+
+impl OAuthAccountSnapshot {
+    /// Human-readable primary identity (email, `@username`, or account label).
+    pub fn primary_identity(&self) -> String {
+        if let Some(email) = self
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return email.to_string();
+        }
+        if let Some(user) = self
+            .username
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return format!("@{user}");
+        }
+        if let Some(account_id) = self
+            .account_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return account_id.to_string();
+        }
+        self.label.clone()
+    }
+}
+
 /// Canonical auth contract for one login provider.
 ///
 /// This is the single structured answer that UI, CLI reports, diagnostics, and
@@ -78,6 +126,7 @@ pub struct ProviderAuthAssessment {
     pub state: AuthState,
     pub readiness: AuthReadinessLevel,
     pub method_detail: String,
+    pub account_summary: Option<String>,
     pub credential_source: AuthCredentialSource,
     pub credential_source_detail: String,
     pub expiry_confidence: AuthExpiryConfidence,
@@ -97,13 +146,22 @@ impl ProviderAuthAssessment {
     }
 
     pub fn health_summary(&self) -> String {
-        let mut parts = vec![
+        let mut parts = Vec::new();
+        if let Some(account) = self
+            .account_summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(format!("account: {account}"));
+        }
+        parts.extend([
             format!("readiness: {}", self.readiness.label()),
             format!("source: {}", self.credential_source_detail),
             format!("expiry: {}", self.expiry_confidence.label()),
             format!("refresh: {}", self.refresh_support.label()),
             format!("probe: {}", self.validation_method.label()),
-        ];
+        ]);
 
         if let Some(record) = self.last_refresh.as_ref() {
             parts.push(format!(

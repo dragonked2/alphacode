@@ -452,17 +452,48 @@ pub fn build_tools(tools: &[ToolDefinition]) -> Option<Vec<GeminiTool>> {
 /// rejects outright (HTTP 400 "Unknown name ... Cannot find field"). Gemini
 /// accepts only an OpenAPI 3.0 subset for `function_declarations.parameters`,
 /// so these draft-style keywords must be stripped before sending.
+/// JSON Schema keywords the Gemini Code Assist / Cloud Code `generateContent`
+/// endpoint rejects outright (HTTP 400 "Unknown name ... Cannot find field").
+/// Gemini accepts only an OpenAPI 3.0 subset for
+/// `function_declarations.parameters`, so these draft-style keywords must be
+/// stripped before sending.
 const GEMINI_UNSUPPORTED_SCHEMA_KEYS: &[&str] = &[
     "additionalProperties",
+    "patternProperties",
+    "unevaluatedProperties",
+    "propertyNames",
+    "dependentRequired",
+    "dependentSchemas",
+    "contains",
+    "minContains",
+    "maxContains",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "examples",
+    "if",
+    "then",
+    "else",
+    "readOnly",
+    "writeOnly",
+    "deprecated",
+    "contentMediaType",
+    "contentEncoding",
     "$schema",
     "$id",
     "$ref",
     "$defs",
+    "$anchor",
+    "$dynamicRef",
+    "$dynamicAnchor",
+    "$vocabulary",
     "definitions",
     "$comment",
 ];
 
-fn gemini_compatible_schema(schema: &Value) -> Value {
+/// Normalize a JSON Schema value into the OpenAPI 3.0 / Vertex `Schema` subset
+/// accepted by Gemini Code Assist and Antigravity Cloud Code `generateContent`.
+pub fn gemini_compatible_schema(schema: &Value) -> Value {
     match schema {
         Value::Object(map) => {
             let mut out = serde_json::Map::new();
@@ -472,13 +503,49 @@ fn gemini_compatible_schema(schema: &Value) -> Value {
                 if GEMINI_UNSUPPORTED_SCHEMA_KEYS.contains(&key.as_str()) {
                     continue;
                 }
-                if key == "const" {
-                    out.insert(
-                        "enum".to_string(),
-                        Value::Array(vec![gemini_compatible_schema(value)]),
-                    );
-                } else {
-                    out.insert(key.clone(), gemini_compatible_schema(value));
+                match key.as_str() {
+                    "type" => normalize_gemini_schema_type(value, map, &mut out),
+                    "properties" => {
+                        if value.is_object() {
+                            out.insert(
+                                "properties".to_string(),
+                                normalize_gemini_properties(value),
+                            );
+                        }
+                    }
+                    "const" => {
+                        if value.is_null() {
+                            out.entry("nullable".to_string())
+                                .or_insert(Value::Bool(true));
+                        } else {
+                            out.insert(
+                                "enum".to_string(),
+                                Value::Array(vec![gemini_compatible_schema(value)]),
+                            );
+                        }
+                    }
+                    "enum" => normalize_gemini_schema_enum(value, &mut out),
+                    _ => {
+                        // When a multi-type `type: ["string", "array"]` array was
+                        // lowered into `anyOf`, `items`/`properties`/`required`
+                        // were already moved onto the matching branch.
+                        if out.contains_key("anyOf")
+                            && matches!(key.as_str(), "items" | "properties" | "required")
+                            && map
+                                .get("type")
+                                .and_then(Value::as_array)
+                                .is_some_and(|arr| {
+                                    arr.iter()
+                                        .filter_map(Value::as_str)
+                                        .filter(|t| !t.eq_ignore_ascii_case("null"))
+                                        .count()
+                                        > 1
+                                })
+                        {
+                            continue;
+                        }
+                        out.insert(key.clone(), gemini_compatible_schema(value));
+                    }
                 }
             }
             prune_dangling_required(&mut out);
@@ -486,6 +553,125 @@ fn gemini_compatible_schema(schema: &Value) -> Value {
         }
         Value::Array(items) => Value::Array(items.iter().map(gemini_compatible_schema).collect()),
         _ => schema.clone(),
+    }
+}
+
+/// Normalize JSON Schema `type` values for Google's `Schema` protobuf.
+///
+/// `Schema.type` is a non-repeating enum field (`STRING`, `NUMBER`, `INTEGER`,
+/// `BOOLEAN`, `ARRAY`, `OBJECT`). JSON Schema type arrays such as
+/// `["integer", "null"]` fail Cloud Code's protobuf JSON parser with
+/// `Unknown name "type" ...: Proto field is not repeating, cannot start list`.
+fn normalize_gemini_schema_type(
+    value: &Value,
+    source_map: &serde_json::Map<String, Value>,
+    out: &mut serde_json::Map<String, Value>,
+) {
+    match value {
+        Value::String(ty) => {
+            let trimmed = ty.trim();
+            if trimmed.eq_ignore_ascii_case("null") {
+                out.entry("nullable".to_string())
+                    .or_insert(Value::Bool(true));
+            } else if !trimmed.is_empty() {
+                out.insert("type".to_string(), Value::String(trimmed.to_string()));
+            }
+        }
+        Value::Array(types) => {
+            let mut has_null = false;
+            let mut non_null: Vec<String> = Vec::new();
+            for item in types {
+                let Some(raw) = item.as_str() else {
+                    continue;
+                };
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed.eq_ignore_ascii_case("null") {
+                    has_null = true;
+                } else if !non_null.iter().any(|existing| existing == trimmed) {
+                    non_null.push(trimmed.to_string());
+                }
+            }
+
+            if has_null {
+                out.entry("nullable".to_string())
+                    .or_insert(Value::Bool(true));
+            }
+
+            if non_null.len() == 1 {
+                out.insert(
+                    "type".to_string(),
+                    Value::String(non_null.into_iter().next().unwrap_or_default()),
+                );
+            } else if non_null.len() > 1 && !source_map.contains_key("anyOf") {
+                // Multi-type unions (e.g. `["string", "array"]`) map onto
+                // `anyOf`, moving type-specific children (`items`, `properties`,
+                // `required`) into the corresponding branch so sibling types stay
+                // valid when flattened by downstream adapters.
+                out.remove("items");
+                out.remove("properties");
+                out.remove("required");
+                let branches: Vec<Value> = non_null
+                    .into_iter()
+                    .map(|ty| {
+                        let mut branch = serde_json::Map::new();
+                        branch.insert("type".to_string(), Value::String(ty.clone()));
+                        if ty == "array"
+                            && let Some(items) = source_map.get("items")
+                        {
+                            branch.insert("items".to_string(), gemini_compatible_schema(items));
+                        }
+                        if ty == "object" {
+                            if let Some(props) = source_map.get("properties") {
+                                branch.insert(
+                                    "properties".to_string(),
+                                    normalize_gemini_properties(props),
+                                );
+                            }
+                            if let Some(req) = source_map.get("required") {
+                                branch.insert("required".to_string(), req.clone());
+                            }
+                            prune_dangling_required(&mut branch);
+                        }
+                        Value::Object(branch)
+                    })
+                    .collect();
+                out.insert("anyOf".to_string(), Value::Array(branches));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_gemini_properties(value: &Value) -> Value {
+    let Some(props_map) = value.as_object() else {
+        return gemini_compatible_schema(value);
+    };
+    let mut normalized_props = serde_json::Map::new();
+    for (prop_name, prop_schema) in props_map {
+        normalized_props.insert(prop_name.clone(), gemini_compatible_schema(prop_schema));
+    }
+    Value::Object(normalized_props)
+}
+
+fn normalize_gemini_schema_enum(value: &Value, out: &mut serde_json::Map<String, Value>) {
+    let Some(items) = value.as_array() else {
+        out.insert("enum".to_string(), gemini_compatible_schema(value));
+        return;
+    };
+    let mut filtered = Vec::with_capacity(items.len());
+    for item in items {
+        if item.is_null() {
+            out.entry("nullable".to_string())
+                .or_insert(Value::Bool(true));
+        } else {
+            filtered.push(gemini_compatible_schema(item));
+        }
+    }
+    if !filtered.is_empty() {
+        out.insert("enum".to_string(), Value::Array(filtered));
     }
 }
 
@@ -830,5 +1016,137 @@ mod tests {
             .unwrap();
         assert!(content.role.is_empty());
         assert!(content.parts.is_empty());
+    }
+
+    #[test]
+    fn gemini_compatible_schema_normalizes_nullable_array_types() {
+        let raw = json!({
+            "type": "object",
+            "required": ["command"],
+            "properties": {
+                "command": { "type": "string" },
+                "timeout": { "type": ["integer", "null"], "description": "ms" },
+                "notify": { "type": ["boolean", "null"] },
+                "justification": { "type": ["string", "null"] },
+                "only_null": { "type": ["null"] },
+                "scalar_null": { "type": "null" }
+            }
+        });
+
+        let normalized = gemini_compatible_schema(&raw);
+        let props = &normalized["properties"];
+        assert_eq!(props["timeout"]["type"], "integer");
+        assert_eq!(props["timeout"]["nullable"], true);
+        assert_eq!(props["timeout"]["description"], "ms");
+
+        assert_eq!(props["notify"]["type"], "boolean");
+        assert_eq!(props["notify"]["nullable"], true);
+
+        assert_eq!(props["justification"]["type"], "string");
+        assert_eq!(props["justification"]["nullable"], true);
+
+        assert!(props["only_null"].get("type").is_none());
+        assert_eq!(props["only_null"]["nullable"], true);
+
+        assert!(props["scalar_null"].get("type").is_none());
+        assert_eq!(props["scalar_null"]["nullable"], true);
+    }
+
+    #[test]
+    fn gemini_compatible_schema_normalizes_multi_type_array_to_any_of() {
+        let raw = json!({
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": ["string", "array"],
+                    "items": { "type": "string" },
+                    "description": "String or array"
+                }
+            }
+        });
+
+        let normalized = gemini_compatible_schema(&raw);
+        let payload = &normalized["properties"]["payload"];
+        assert!(payload.get("type").is_none());
+        assert!(payload.get("items").is_none());
+        assert_eq!(payload["description"], "String or array");
+        let branches = payload["anyOf"].as_array().expect("anyOf branches");
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0], json!({ "type": "string" }));
+        assert_eq!(
+            branches[1],
+            json!({ "type": "array", "items": { "type": "string" } })
+        );
+    }
+
+    #[test]
+    fn gemini_compatible_schema_strips_unsupported_draft_keywords_and_null_enums() {
+        let raw = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": { "^x-": { "type": "string" } },
+            "unevaluatedProperties": false,
+            "propertyNames": { "type": "string" },
+            "if": { "required": ["a"] },
+            "then": { "required": ["b"] },
+            "else": { "required": ["c"] },
+            "properties": {
+                "count": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "exclusiveMaximum": 100,
+                    "multipleOf": 2,
+                    "examples": [2, 4],
+                    "readOnly": true,
+                    "writeOnly": false,
+                    "deprecated": true
+                },
+                "cause": {
+                    "type": ["string", "null"],
+                    "enum": ["ok", "other", null]
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Property literally named `type`"
+                }
+            }
+        });
+
+        let normalized = gemini_compatible_schema(&raw);
+        for forbidden in [
+            "$schema",
+            "additionalProperties",
+            "patternProperties",
+            "unevaluatedProperties",
+            "propertyNames",
+            "if",
+            "then",
+            "else",
+        ] {
+            assert!(normalized.get(forbidden).is_none(), "kept {forbidden}");
+        }
+
+        let count = &normalized["properties"]["count"];
+        for forbidden in [
+            "exclusiveMinimum",
+            "exclusiveMaximum",
+            "multipleOf",
+            "examples",
+            "readOnly",
+            "writeOnly",
+            "deprecated",
+        ] {
+            assert!(count.get(forbidden).is_none(), "kept {forbidden}");
+        }
+        assert_eq!(count["type"], "integer");
+
+        let cause = &normalized["properties"]["cause"];
+        assert_eq!(cause["type"], "string");
+        assert_eq!(cause["nullable"], true);
+        assert_eq!(cause["enum"], json!(["ok", "other"]));
+
+        // A property named `type` inside `properties` must remain intact.
+        assert_eq!(normalized["properties"]["type"]["type"], "string");
     }
 }

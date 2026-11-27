@@ -2459,6 +2459,71 @@ mod tests {
     }
 
     #[test]
+    fn arabic_input_cursor_width_wrapping_and_click_mapping_stay_aligned() {
+        use crate::alphacode_render_core::{ArabicShapingMode, with_arabic_shaping_mode};
+
+        // 1. StandardUnicode (modern terminals): progressive typing, tashkeel, mixed text, wrapping
+        with_arabic_shaping_mode(ArabicShapingMode::StandardUnicode, || {
+            let text = "مَرْحَبًا src/main.rs بك";
+            let segments = wrap_input_segments(text, 12);
+            assert!(segments.len() >= 2, "expected wrapped Arabic segments");
+
+            // Every grapheme boundary's cursor column must match rendered prefix width
+            for (byte_idx, _) in text.char_indices() {
+                if !text.is_char_boundary(byte_idx) {
+                    continue;
+                }
+                let (line_idx, _) = input_cursor_location(text, byte_idx, &segments);
+                let seg = &segments[line_idx];
+                let col = rendered_input_cursor_col(seg, byte_idx);
+                let rendered_w = rendered_segment_display_width(seg);
+                assert!(
+                    col <= rendered_w,
+                    "cursor col {col} exceeded rendered width {rendered_w} at byte {byte_idx}"
+                );
+            }
+
+            // End of text cursor sits at rendered width of the last wrapped row
+            let (last_line, _) = input_cursor_location(text, text.len(), &segments);
+            let last_seg = &segments[last_line];
+            assert_eq!(
+                rendered_input_cursor_col(last_seg, text.len()),
+                rendered_segment_display_width(last_seg)
+            );
+
+            // Pasted Presentation Forms-B Lam-Alif (\u{FEFB}) expands to "لا" (width 2) in StandardUnicode
+            let pasted = "\u{FEFB}";
+            let pasted_segs = wrap_input_segments(pasted, 20);
+            assert_eq!(rendered_segment_display_width(&pasted_segs[0]), 2);
+            assert_eq!(rendered_input_cursor_col(&pasted_segs[0], pasted.len()), 2);
+        });
+
+        // 2. PresentationForms (legacy terminals): visual RTL cursor, Lam-Alif, mixed click hit-testing
+        with_arabic_shaping_mode(ArabicShapingMode::PresentationForms, || {
+            let arabic = "مرحبا";
+            let segs = wrap_input_segments(arabic, 20);
+            // Rendered visually reversed: "ﺎﺒﺣﺮﻣ" (width 5).
+            // Start of RTL string (byte 0) is at the right (col 5); end (byte 10) is at the left (col 0).
+            assert_eq!(rendered_segment_display_width(&segs[0]), 5);
+            assert_eq!(rendered_input_cursor_col(&segs[0], 0), 5);
+            assert_eq!(rendered_input_cursor_col(&segs[0], arabic.len()), 0);
+
+            // Lam-Alif ("لا") collapses from 2 codepoints to 1 cell in PresentationForms
+            let lam_alif = "سلام";
+            let la_segs = wrap_input_segments(lam_alif, 20);
+            assert_eq!(rendered_segment_display_width(&la_segs[0]), 3);
+            assert_eq!(rendered_input_cursor_col(&la_segs[0], lam_alif.len()), 0);
+            assert_eq!(rendered_input_cursor_col(&la_segs[0], 0), 3);
+
+            // Clicking past the right edge of an RTL line lands at logical byte 0
+            assert_eq!(byte_offset_for_rendered_col(&segs[0], 10), 0);
+            // Clicking at column 0 of an RTL line lands near the logical end
+            let click_left = byte_offset_for_rendered_col(&segs[0], 0);
+            assert!(click_left >= arabic.len() - 2);
+        });
+    }
+
+    #[test]
     fn session_fact_blank_exemption_uses_the_resolved_surface_only() {
         for background in [
             Color::Rgb(18, 20, 28),
@@ -4442,8 +4507,11 @@ pub(super) fn draw_input(
     // and for the copy-selection snapshot — so they are computed once here.
     let wrapped_segments = wrap_input_segments(input_text, line_width);
 
-    let (cursor_line, cursor_col) =
+    let (cursor_line, _logical_cursor_col) =
         input_cursor_location(input_text, cursor_pos, &wrapped_segments);
+    let cursor_col = wrapped_segments
+        .get(cursor_line)
+        .map_or(0, |segment| rendered_input_cursor_col(segment, cursor_pos));
 
     let mut lines: Vec<Line> = Vec::new();
     let mut hint_line: Option<String> = None;
@@ -4529,7 +4597,7 @@ pub(super) fn draw_input(
                 let abs = scroll_offset + rel;
                 let text_width = wrapped_segments
                     .get(abs)
-                    .map(|segment| segment.display_width)
+                    .map(rendered_segment_display_width)
                     .unwrap_or(0);
                 let mut margin = prompt_len;
                 if centered {
@@ -4610,21 +4678,14 @@ pub(super) fn draw_input(
                     continue;
                 };
                 // Resolve only the visible row using its cached byte offset.
-                let row_start = segment.start_grapheme
-                    + crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
-                        &segment.text,
-                        sel_start.saturating_sub(segment.start_byte),
-                    );
-                let row_end = segment.start_grapheme
-                    + crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
-                        &segment.text,
-                        sel_end.saturating_sub(segment.start_byte),
-                    );
-                if row_start >= row_end {
+                if sel_end <= segment.start_byte || sel_start >= segment.end_byte {
                     continue;
                 }
-                let start_col = cursor_col_for_segment(segment, row_start);
-                let end_col = cursor_col_for_segment(segment, row_end);
+                let Some((start_col, end_col)) =
+                    rendered_input_selection_cols(segment, sel_start, sel_end)
+                else {
+                    continue;
+                };
                 let Some(line) = lines.get_mut(suggestions_offset + rel) else {
                     continue;
                 };
@@ -4639,10 +4700,14 @@ pub(super) fn draw_input(
 
     // Preview is painted separately from the draft after selection painting,
     // so it is never copied, selected, or included in centering geometry.
+    let cursor_row_rendered_width = wrapped_segments
+        .get(cursor_line)
+        .map_or(0, rendered_segment_display_width);
     let history_preview = if !has_suggestions
         && !mode.is_shell()
         && !app.is_processing()
         && cursor_pos == input_text.len()
+        && cursor_col == cursor_row_rendered_width
         && app.copy_selection_range().is_none()
         && app.input_selection_range().is_none()
         && lines
@@ -4705,10 +4770,14 @@ pub(super) fn draw_input(
     let cursor_y = area.y + (cursor_screen_line as u16).min(area.height.saturating_sub(1));
 
     let cursor_offset = if centered {
-        let actual_line_width = lines
-            .get(cursor_screen_line)
-            .map(|l| l.width())
-            .unwrap_or(prompt_len);
+        let actual_line_width = if lines.get(cursor_screen_line).is_some() {
+            prompt_len
+                + wrapped_segments
+                    .get(cursor_line)
+                    .map_or(0, rendered_segment_display_width)
+        } else {
+            prompt_len
+        };
         let center_offset = usize::from(centered_line_offset(
             area.width,
             actual_line_width.min(usize::from(u16::MAX)) as u16,
@@ -5071,6 +5140,90 @@ fn grapheme_offset_for_clicked_column(
     graphemes_before
 }
 
+fn rendered_segment_display_width(segment: &WrappedInputSegment) -> usize {
+    if !crate::alphacode_render_core::contains_rtl(&segment.text) {
+        return segment.display_width;
+    }
+    let rendered = crate::alphacode_render_core::prepare_rtl_text(&segment.text);
+    rendered
+        .as_ref()
+        .graphemes(true)
+        .map(unicode_width::UnicodeWidthStr::width)
+        .sum()
+}
+
+fn rendered_input_cursor_col(segment: &WrappedInputSegment, cursor_pos: usize) -> usize {
+    let local_byte = cursor_pos
+        .saturating_sub(segment.start_byte)
+        .min(segment.text.len());
+    if !crate::alphacode_render_core::contains_rtl(&segment.text) {
+        let local_grapheme = crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
+            &segment.text,
+            local_byte,
+        );
+        return cursor_col_for_segment(segment, segment.start_grapheme + local_grapheme);
+    }
+    crate::alphacode_render_core::bidi::visual_cursor_col_for_text(&segment.text, local_byte)
+}
+
+fn rendered_input_selection_cols(
+    segment: &WrappedInputSegment,
+    sel_start: usize,
+    sel_end: usize,
+) -> Option<(usize, usize)> {
+    let local_start = sel_start
+        .saturating_sub(segment.start_byte)
+        .min(segment.text.len());
+    let local_end = sel_end
+        .saturating_sub(segment.start_byte)
+        .min(segment.text.len());
+    if local_start >= local_end {
+        return None;
+    }
+    if !crate::alphacode_render_core::contains_rtl(&segment.text) {
+        let row_start = segment.start_grapheme
+            + crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
+                &segment.text,
+                local_start,
+            );
+        let row_end = segment.start_grapheme
+            + crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
+                &segment.text,
+                local_end,
+            );
+        if row_start >= row_end {
+            return None;
+        }
+        return Some((
+            cursor_col_for_segment(segment, row_start),
+            cursor_col_for_segment(segment, row_end),
+        ));
+    }
+    let c1 =
+        crate::alphacode_render_core::bidi::visual_cursor_col_for_text(&segment.text, local_start);
+    let c2 =
+        crate::alphacode_render_core::bidi::visual_cursor_col_for_text(&segment.text, local_end);
+    let (start_col, end_col) = (c1.min(c2), c1.max(c2));
+    (start_col < end_col).then_some((start_col, end_col))
+}
+
+fn byte_offset_for_rendered_col(segment: &WrappedInputSegment, target_col: usize) -> usize {
+    if !crate::alphacode_render_core::contains_rtl(&segment.text) {
+        let grapheme_offset =
+            grapheme_offset_for_clicked_column(&segment.text, target_col, segment.display_width);
+        return segment.start_byte
+            + crate::alphacode_tui::tui::core::grapheme_index_to_byte_offset(
+                &segment.text,
+                grapheme_offset,
+            );
+    }
+    segment.start_byte
+        + crate::alphacode_render_core::bidi::byte_offset_for_visual_col_in_text(
+            &segment.text,
+            target_col,
+        )
+}
+
 pub(crate) fn input_cursor_pos_from_screen(
     app: &dyn TuiState,
     area: Rect,
@@ -5128,7 +5281,7 @@ pub(crate) fn input_cursor_pos_from_screen(
     .min(wrapped_lines.len().saturating_sub(1));
     let segment = &wrapped_lines[line_index];
 
-    let actual_line_width = prompt_len + segment.display_width;
+    let actual_line_width = prompt_len + rendered_segment_display_width(segment);
     let text_start_x = if app.centered_mode() {
         let center_offset = usize::from(centered_line_offset(
             area.width,
@@ -5139,15 +5292,7 @@ pub(crate) fn input_cursor_pos_from_screen(
         area.x as usize + prompt_len
     };
     let target_col = column.saturating_sub(text_start_x as u16) as usize;
-    let grapheme_offset =
-        grapheme_offset_for_clicked_column(&segment.text, target_col, segment.display_width);
-    Some(
-        segment.start_byte
-            + crate::alphacode_tui::tui::core::grapheme_index_to_byte_offset(
-                &segment.text,
-                grapheme_offset,
-            ),
-    )
+    Some(byte_offset_for_rendered_col(segment, target_col))
 }
 
 #[cfg(test)]
@@ -5245,14 +5390,21 @@ fn input_segment_line(
                     .add_modifier(Modifier::ITALIC),
             ));
         } else {
-            spans.push(Span::raw(segment.text.clone()));
+            let text = if crate::alphacode_render_core::contains_rtl(&segment.text) {
+                crate::alphacode_render_core::prepare_rtl_text(&segment.text).into_owned()
+            } else {
+                segment.text.clone()
+            };
+            spans.push(Span::raw(text));
         }
         Line::from(spans)
     } else {
-        Line::from(vec![
-            Span::raw(" ".repeat(prompt_len)),
-            Span::raw(segment.text.clone()),
-        ])
+        let text = if crate::alphacode_render_core::contains_rtl(&segment.text) {
+            crate::alphacode_render_core::prepare_rtl_text(&segment.text).into_owned()
+        } else {
+            segment.text.clone()
+        };
+        Line::from(vec![Span::raw(" ".repeat(prompt_len)), Span::raw(text)])
     }
 }
 
