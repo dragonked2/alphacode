@@ -129,11 +129,13 @@ jobs:
           cache: "npm"
           cache-dependency-path: src/cli/gui/ui/package-lock.json
 
+      - name: Install GUI frontend dependencies
+        working-directory: src/cli/gui/ui
+        run: npm ci
+
       - name: Build GUI frontend assets
         working-directory: src/cli/gui/ui
-        run: |
-          npm ci
-          npm run build
+        run: npm run build
 
       - name: Build Windows binaries
         shell: bash

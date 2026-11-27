@@ -175,11 +175,13 @@ jobs:
           cache: "npm"
           cache-dependency-path: src/cli/gui/ui/package-lock.json
 
+      - name: Install GUI frontend dependencies
+        working-directory: src/cli/gui/ui
+        run: npm ci
+
       - name: Build GUI frontend assets
         working-directory: src/cli/gui/ui
-        run: |
-          npm ci
-          npm run build
+        run: npm run build
 
       # Extract the release version from the git tag and expose it as
       # ALPHACODE_BUILD_SEMVER so the build script embeds the *exact* tag
