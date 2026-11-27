@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
@@ -31,18 +32,60 @@ internal static class GuiHost
         catch { }
     }
 
+    private static bool TryLaunchModernGui()
+    {
+        try
+        {
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            var siblingExe = Path.Combine(baseDir, "alphacode.exe");
+            var targetExe = File.Exists(siblingExe) ? siblingExe : "alphacode.exe";
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = targetExe,
+                Arguments = "--gui",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            };
+            var process = Process.Start(startInfo);
+            return process != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     [STAThread]
     private static int Main(string[] args)
     {
         ApplyAppUserModelId();
-        var executable = Environment.GetEnvironmentVariable("ALPHACODE_DESKTOP_EXECUTABLE") ?? "alphacode.exe";
+        var envExecutable = Environment.GetEnvironmentVariable("ALPHACODE_DESKTOP_EXECUTABLE");
+        var siblingExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "alphacode.exe");
+        var defaultExe = File.Exists(siblingExe) ? siblingExe : "alphacode.exe";
+        var executable = !string.IsNullOrEmpty(envExecutable) ? envExecutable : defaultExe;
+        var executableExplicit = !string.IsNullOrEmpty(envExecutable);
+#if LEGACY_DEFAULT
+        var legacy = true;
+#else
+        var legacy = false;
+#endif
         var preview = false;
         string collectDiagnostics = null;
         for (var i = 0; i < args.Length; i++)
         {
-            if (args[i].Equals("-Executable", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) executable = args[++i];
+            if (args[i].Equals("-Executable", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            {
+                executable = args[++i];
+                executableExplicit = true;
+            }
+            if (args[i].Equals("-Legacy", StringComparison.OrdinalIgnoreCase)) legacy = true;
             if (args[i].Equals("-Preview", StringComparison.OrdinalIgnoreCase)) preview = true;
             if (args[i].Equals("-CollectDiagnostics", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) collectDiagnostics = args[++i];
+        }
+        if (!legacy && !preview && collectDiagnostics == null && !executableExplicit && TryLaunchModernGui())
+        {
+            return 0;
         }
         using (var resource = Assembly.GetExecutingAssembly().GetManifestResourceStream("AlphaCode.UI"))
         {

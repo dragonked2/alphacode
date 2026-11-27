@@ -144,7 +144,7 @@ pub(crate) struct Args {
     #[arg(long, global = true, value_name = "TOKENS")]
     pub(crate) mcp_tools_token_threshold: Option<usize>,
 
-    /// Open the Windows desktop interface.
+    /// Open the desktop GUI.
     #[arg(long)]
     pub(crate) gui: bool,
 
@@ -154,7 +154,7 @@ pub(crate) struct Args {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
-    /// Open the Windows desktop interface.
+    /// Open the desktop GUI.
     Gui {
         /// Open a preview without connecting to a server.
         #[arg(long)]
@@ -165,6 +165,12 @@ pub(crate) enum Command {
         /// Internal desktop transport.
         #[arg(long, hide = true, conflicts_with_all = ["once", "preview"])]
         bridge: bool,
+        /// Open the web GUI in the default browser (served on localhost).
+        #[arg(long, conflicts_with_all = ["once", "preview", "bridge"])]
+        web: bool,
+        /// Launch the legacy WPF host interface.
+        #[arg(long, conflicts_with_all = ["once", "preview", "bridge", "web"])]
+        legacy: bool,
     },
     /// Start the agent server (background daemon)
     Serve {

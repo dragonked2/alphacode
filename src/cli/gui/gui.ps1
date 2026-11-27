@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Executable, [switch]$Preview)
+﻿param([Parameter(Mandatory=$true)][string]$Executable, [switch]$Preview)
 $ErrorActionPreference = 'Stop'
 
 # The compiled host already contains this type. Direct script launches (tests
@@ -125,6 +125,20 @@ $script:sidebarWidth = 272
 $script:allSessions = @()
 $script:liveSessions = @()
 $script:storedSessions = @()
+$script:workspaces = @()
+$script:pinnedWorkspaces = @()
+$script:collapsedWorkspaces = @()
+$script:pinnedChats = @()
+$script:activeWorkspace = ''
+$script:filterByActiveWorkspace = $true
+$script:guiStateNeeded = $true
+$script:guiStateLoaded = $false
+$script:pendingGuiStateSet = $null
+$script:loadingSessionId = ''
+$script:resumingSessionId = ''
+$script:immediateTranscriptSessionId = ''
+$script:lastOwnedTitle = ''
+$script:lastOwnedBusy = $false
 $script:lastStoredPoll = [DateTime]::MinValue
 $script:lastStoredCount = -1
 $script:projectsListSignature = $null
@@ -166,6 +180,12 @@ $script:compactLayout = $false
 $script:workflowVisible = $false
 $script:workflowWidth = 340
 $script:renderedBlocks = @()
+$script:lastRenderStateKey = ''
+$script:lastLayoutKey = ''
+$script:lastModelPayloadSignature = ''
+$script:lastWorkflowSignature = ''
+$script:lastStatusHeaderSignature = ''
+$script:sessionIndex = @{}
 $script:searchHits = @()
 $script:searchHitIndex = -1
 $script:renderedQuery = ''
@@ -178,7 +198,7 @@ try {
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="AlphaCode"
- Width="1280" Height="820" MinWidth="640" MinHeight="540" WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterScreen" TextOptions.TextFormattingMode="Display"
+ Width="1280" Height="820" MinWidth="420" MinHeight="380" WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterScreen" TextOptions.TextFormattingMode="Display"
  AllowsTransparency="False" Background="{DynamicResource WindowBg}" Topmost="False" ShowInTaskbar="True"
  FontFamily="Segoe UI Variable Text, Segoe UI" Foreground="{DynamicResource Text}" FontSize="13" UseLayoutRounding="True" SnapsToDevicePixels="True">
  <WindowChrome.WindowChrome>
@@ -340,10 +360,10 @@ try {
    <Grid.RowDefinitions><RowDefinition Height="52"/><RowDefinition Height="*"/></Grid.RowDefinitions>
   <Border x:Name="TitleBar" Grid.Row="0" Background="{DynamicResource WindowBg}">
    <Grid>
-    <Grid.ColumnDefinitions><ColumnDefinition Width="250"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-    <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center" WindowChrome.IsHitTestVisibleInChrome="True">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <StackPanel x:Name="TitleBarBrand" Grid.Column="0" Orientation="Horizontal" Margin="16,0,8,0" VerticalAlignment="Center" WindowChrome.IsHitTestVisibleInChrome="True">
      <Border Width="28" Height="28" CornerRadius="8" Background="{DynamicResource AccentSoft}" Margin="0,0,10,0"><Path Data="M 2 18 L 10 2 L 18 18 M 6 12 L 14 12" Width="16" Height="16" Stretch="Uniform" Stroke="{DynamicResource Accent}" StrokeThickness="2" StrokeLineJoin="Round" VerticalAlignment="Center" HorizontalAlignment="Center"/></Border>
-     <TextBlock Text="AlphaCode" Foreground="{DynamicResource Text}" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,18,0"/>
+     <TextBlock x:Name="TitleBrandLabel" Text="AlphaCode" Foreground="{DynamicResource Text}" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,16,0"/>
      <Button x:Name="Back" Style="{StaticResource IconButton}" Width="30" Height="30" MinHeight="30" ToolTip="Back" AutomationProperties.Name="Back"><Path Style="{StaticResource Icon}" Width="14" Data="M 16 10 L 2 10 M 7 4 L 1 10 L 7 16"/></Button>
      <Button x:Name="Forward" Style="{StaticResource IconButton}" Width="30" Height="30" MinHeight="30" ToolTip="Forward" AutomationProperties.Name="Forward"><Path Style="{StaticResource Icon}" Width="14" Data="M 2 10 L 16 10 M 11 4 L 17 10 L 11 16"/></Button>
     </StackPanel>
@@ -356,7 +376,7 @@ try {
    </Grid>
   </Border>
   <Grid x:Name="Panel" Grid.Row="1" Visibility="Visible">
-   <Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition Width="1"/><ColumnDefinition x:Name="SidebarColumn" Width="272"/><ColumnDefinition Width="1"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+   <Grid.ColumnDefinitions><ColumnDefinition x:Name="RailColumn" Width="68"/><ColumnDefinition Width="1"/><ColumnDefinition x:Name="SidebarColumn" Width="272"/><ColumnDefinition Width="1"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
    <Border Grid.Column="0" Background="{DynamicResource RailBg}">
     <Grid>
      <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -388,9 +408,16 @@ try {
      <StackPanel Grid.Row="2" Margin="0,0,0,9">
       <Border Background="{DynamicResource WindowBg}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="10,0" Margin="0,0,0,10"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="⌕" Foreground="{DynamicResource Muted}" FontSize="19" VerticalAlignment="Center" Margin="0,0,7,0"/><TextBox x:Name="SessionSearch" Grid.Column="1" Height="34" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource Text}" Padding="0" VerticalContentAlignment="Center" ToolTip="Find a chat · Enter to open · Down to select" AutomationProperties.Name="Search chats"/><TextBlock x:Name="SearchPlaceholder" Grid.Column="1" Text="Find a chat…" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" IsHitTestVisible="False"/><Button x:Name="ClearChatSearch" Grid.Column="2" Content="×" Padding="4,0" Visibility="Collapsed" ToolTip="Clear chat search" AutomationProperties.Name="Clear chat search"/></Grid></Border>
       <Border Background="{DynamicResource Surface}" CornerRadius="10" Padding="3" Margin="0,0,0,20"><UniformGrid Rows="1" Columns="3"><Button x:Name="FilterAll" Content="All" Padding="6,4" MinHeight="28" FontSize="12" Margin="0,0,3,0" ToolTip="All chats"/><Button x:Name="FilterLive" Content="Live" Padding="6,4" MinHeight="28" FontSize="12" Margin="0,0,3,0" ToolTip="Connected chats"/><Button x:Name="FilterSaved" Content="Saved" Padding="6,4" MinHeight="28" FontSize="12" ToolTip="Saved chats"/></UniformGrid></Border>
-      <TextBlock Text="Workspaces" Foreground="{DynamicResource Muted}" FontWeight="SemiBold" FontSize="11" Margin="0,0,0,7"/>
-      <StackPanel x:Name="ProjectsList"/>
-      <TextBlock x:Name="ChatsHeading" Text="Chats" Foreground="{DynamicResource Dim}" FontWeight="SemiBold" FontSize="11" Margin="0,17,0,7"/>
+      <Grid Margin="0,0,0,7">
+       <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+       <TextBlock Text="Workspaces" Foreground="{DynamicResource Muted}" FontWeight="SemiBold" FontSize="11" VerticalAlignment="Center"/>
+       <Button x:Name="ShowAllWorkspaces" Grid.Column="1" Content="All" Padding="6,2" MinHeight="22" FontSize="10" Foreground="{DynamicResource Muted}" Margin="0,0,4,0" Visibility="Collapsed" ToolTip="Show chats from all workspaces" AutomationProperties.Name="Show all workspaces"/>
+       <Button x:Name="OpenWorkspaceFolder" Grid.Column="2" Content="+ Open" Padding="8,2" MinHeight="22" FontSize="11" Foreground="{DynamicResource Accent}" Background="{DynamicResource AccentSoft}" ToolTip="Open a project folder" AutomationProperties.Name="Open workspace folder"/>
+      </Grid>
+      <ScrollViewer MaxHeight="168" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+       <StackPanel x:Name="ProjectsList"/>
+      </ScrollViewer>
+      <TextBlock x:Name="ChatsHeading" Text="Chats" Foreground="{DynamicResource Dim}" FontWeight="SemiBold" FontSize="11" Margin="0,14,0,7"/>
      </StackPanel>
      <ListBox x:Name="Sessions" Grid.Row="3" SelectedValuePath="id" AutomationProperties.Name="Recent chats">
       <ListBox.ItemTemplate><DataTemplate><Grid ToolTip="{Binding row_tooltip}"><Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock x:Name="ChatIcon" Text="{Binding row_icon}" Foreground="{DynamicResource Muted}" VerticalAlignment="Top" FontSize="13" Margin="0,1,6,0"/><StackPanel Grid.Column="1"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{Binding title}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><StackPanel Grid.Column="1" Orientation="Horizontal" Margin="7,0,0,0"><TextBlock Text="{Binding saved_marker}" Foreground="{DynamicResource Accent}" FontSize="10" Margin="0,0,4,0"/><TextBlock x:Name="ChatStatus" Text="{Binding status_label}" Foreground="{DynamicResource Muted}" FontSize="10"/></StackPanel></Grid><TextBlock x:Name="ChatSubtitle" Text="{Binding row_subtitle}" Foreground="{DynamicResource Dim}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0"/></StackPanel></Grid><DataTemplate.Triggers><DataTrigger Binding="{Binding state}" Value="working"><Setter TargetName="ChatStatus" Property="Foreground" Value="{DynamicResource Accent}"/><Setter TargetName="ChatIcon" Property="Foreground" Value="{DynamicResource Accent}"/></DataTrigger><DataTrigger Binding="{Binding state}" Value="attention"><Setter TargetName="ChatStatus" Property="Foreground" Value="{DynamicResource Warning}"/><Setter TargetName="ChatIcon" Property="Foreground" Value="{DynamicResource Warning}"/></DataTrigger><DataTrigger Binding="{Binding state}" Value="offline"><Setter TargetName="ChatStatus" Property="Foreground" Value="{DynamicResource Danger}"/></DataTrigger><DataTrigger Binding="{Binding row_subtitle}" Value=""><Setter TargetName="ChatSubtitle" Property="Visibility" Value="Collapsed"/></DataTrigger></DataTemplate.Triggers></DataTemplate></ListBox.ItemTemplate>
@@ -404,7 +431,7 @@ try {
    </Border>
    <Border Grid.Column="3" Background="{DynamicResource Border}"/>
    <Grid x:Name="ChatSurface" Grid.Column="4" Background="{DynamicResource Canvas}">
-    <Grid.RowDefinitions><RowDefinition Height="Auto" MinHeight="104"/><RowDefinition Height="Auto"/><RowDefinition Height="*" MinHeight="80"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="28"/></Grid.RowDefinitions>
+    <Grid.RowDefinitions><RowDefinition x:Name="ChatHeaderRow" Height="Auto" MinHeight="68"/><RowDefinition Height="Auto"/><RowDefinition Height="*" MinHeight="80"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="28"/></Grid.RowDefinitions>
     <Grid x:Name="ChatHeader" Grid.Row="0" Margin="28,20,28,12">
      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
      <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -429,21 +456,33 @@ try {
     <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition x:Name="ConversationColumn" Width="*"/><ColumnDefinition x:Name="WorkDividerColumn" Width="0"/><ColumnDefinition x:Name="WorkColumn" Width="0"/></Grid.ColumnDefinitions><Grid Grid.Column="0">
      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
      <Border x:Name="ReplySearchBar" Grid.Row="0" Visibility="Collapsed" Margin="28,8,28,0" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,3"><DockPanel LastChildFill="True"><Button x:Name="CloseReplySearch" DockPanel.Dock="Right" Content="×" Padding="8,0" ToolTip="Close conversation search (Esc)" AutomationProperties.Name="Close conversation search"/><TextBlock x:Name="ReplySearchCount" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="11" Margin="8,0" VerticalAlignment="Center"/><TextBox x:Name="ReplySearch" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0" VerticalContentAlignment="Center" ToolTip="Find in conversation · Enter / Shift+Enter for next / previous section" AutomationProperties.Name="Find in conversation"/></DockPanel></Border>
-    <Grid Grid.Row="1" x:Name="EmptyState" VerticalAlignment="Center" HorizontalAlignment="Center">
-     <StackPanel HorizontalAlignment="Center" MaxWidth="700" Margin="24,8">
+    <Grid Grid.Row="1" x:Name="EmptyState" VerticalAlignment="Center" HorizontalAlignment="Stretch">
+     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" VerticalAlignment="Center">
+     <StackPanel HorizontalAlignment="Center" MaxWidth="760" Margin="20,8">
       <Border x:Name="WelcomeMark" Width="56" Height="56" CornerRadius="18" Background="{DynamicResource AccentSoft}" HorizontalAlignment="Center" Margin="0,0,0,20"><Path Data="M 12 1 L 15 9 L 23 12 L 15 15 L 12 23 L 9 15 L 1 12 L 9 9 Z" Stroke="{DynamicResource Accent}" StrokeThickness="1.6" StrokeLineJoin="Round" Width="26" Height="26" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
       <TextBlock x:Name="Activity" Text="What will you build today?" Foreground="{DynamicResource Text}" FontFamily="Segoe UI Variable Display, Segoe UI" FontSize="30" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" FontWeight="SemiBold"/>
       <TextBlock x:Name="Detail" Text="A thinking partner for your code, ideas, and next big change." Foreground="{DynamicResource Muted}" FontSize="14" HorizontalAlignment="Center" Margin="0,12,0,0" MaxWidth="500" TextAlignment="Center" TextWrapping="Wrap"/>
       <TextBlock x:Name="Timeline" Text="" Foreground="{DynamicResource Dim}" FontSize="11" HorizontalAlignment="Center" Margin="0,10,0,0" TextAlignment="Center" TextWrapping="Wrap"/>
+      <Button x:Name="EmptyOpenFolder" Style="{StaticResource PrimaryButton}" Content="Open Folder…" Padding="18,9" Margin="0,20,0,0" HorizontalAlignment="Center" Visibility="Collapsed" ToolTip="Open a project folder first to start chatting" AutomationProperties.Name="Open a project folder first to start chatting"/>
       <WrapPanel x:Name="ExamplesPanel" HorizontalAlignment="Center" Margin="0,28,0,0">
        <Button x:Name="ExampleExplore" Style="{StaticResource SecondaryButton}" Width="190" HorizontalContentAlignment="Left" Padding="16" Margin="5" ToolTip="Start with a workspace overview"><StackPanel><Path Style="{StaticResource Icon}" Width="20" Height="20" HorizontalAlignment="Left" Stroke="{DynamicResource Accent}" Data="M 1 5 L 8 5 L 10 8 L 19 8 L 19 18 L 1 18 Z M 1 8 L 1 3 L 7 3 L 9 5 L 17 5 L 17 8" Margin="0,0,0,16"/><TextBlock Text="Explore workspace" FontWeight="SemiBold"/><TextBlock Text="Find your way through the code." FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Button>
        <Button x:Name="ExampleReview" Style="{StaticResource SecondaryButton}" Width="190" HorizontalContentAlignment="Left" Padding="16" Margin="5" ToolTip="Ask AlphaCode to review local changes"><StackPanel><Path Style="{StaticResource Icon}" Width="20" Height="20" HorizontalAlignment="Left" Stroke="{DynamicResource Accent}" Data="M 5 1 L 17 1 L 17 19 L 3 19 L 3 1 Z M 7 6 L 13 6 M 7 10 L 13 10 M 7 14 L 11 14" Margin="0,0,0,16"/><TextBlock Text="Review changes" FontWeight="SemiBold"/><TextBlock Text="Spot issues before they ship." FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Button>
        <Button x:Name="ExampleTest" Style="{StaticResource SecondaryButton}" Width="190" HorizontalContentAlignment="Left" Padding="16" Margin="5" ToolTip="Ask AlphaCode to check the project"><StackPanel><Path Style="{StaticResource Icon}" Width="20" Height="20" HorizontalAlignment="Left" Stroke="{DynamicResource Accent}" Data="M 2 10 L 7 15 L 18 4 M 18 10 L 18 18 L 2 18 L 2 2 L 12 2" Margin="0,0,0,16"/><TextBlock Text="Check the project" FontWeight="SemiBold"/><TextBlock Text="Test, investigate, and improve." FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Button>
       </WrapPanel>
      </StackPanel>
+     </ScrollViewer>
+    </Grid>
+    <Grid Grid.Row="1" x:Name="ChatLoadingPanel" Visibility="Collapsed" VerticalAlignment="Center" HorizontalAlignment="Stretch">
+     <StackPanel HorizontalAlignment="Center" MaxWidth="460" Margin="20">
+      <Border Width="52" Height="52" CornerRadius="16" Background="{DynamicResource AccentSoft}" HorizontalAlignment="Center" Margin="0,0,0,16">
+       <Path Data="M 12 2 A 10 10 0 1 1 4 18" Stroke="{DynamicResource Accent}" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Width="22" Height="22" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      </Border>
+      <TextBlock x:Name="ChatLoadingTitle" Text="Loading conversation messages…" Foreground="{DynamicResource Text}" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"/>
+      <TextBlock x:Name="ChatLoadingDetail" Text="Fetching saved messages from history…" Foreground="{DynamicResource Muted}" FontSize="13" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0"/>
+     </StackPanel>
     </Grid>
     <ScrollViewer x:Name="ReplyScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="28,20,28,16" Visibility="Collapsed">
-     <Grid MaxWidth="840"><TextBox x:Name="Reply" Visibility="Collapsed" IsReadOnly="True" FontSize="14" AutomationProperties.Name="Raw conversation"/><StackPanel x:Name="ConversationCards"/></Grid>
+     <Grid x:Name="ConversationFrame" MaxWidth="860"><TextBox x:Name="Reply" Visibility="Collapsed" IsReadOnly="True" FontSize="14" AutomationProperties.Name="Raw conversation"/><StackPanel x:Name="ConversationCards"/></Grid>
     </ScrollViewer>
     <Button x:Name="JumpLatest" Grid.Row="1" Content="Jump to latest ↓" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,48,10" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Accent}" BorderThickness="1" Visibility="Collapsed" ToolTip="Return to the latest response (Ctrl+End)" AutomationProperties.Name="Jump to latest response"/>
     </Grid>
@@ -463,14 +502,24 @@ try {
     <Border x:Name="ComposerSurface" Grid.Row="4" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="16" Margin="28,12,28,8" Padding="0" MaxWidth="840">
      <Grid>
       <Grid x:Name="ComposerContent" Margin="16,14">
-       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-       <Grid Grid.Row="0">
+       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+       <Border x:Name="OpenFolderGate" Grid.Row="0" Visibility="Collapsed" Background="{DynamicResource AccentSoft}" BorderBrush="{DynamicResource Accent}" BorderThickness="1" CornerRadius="10" Padding="12,10" Margin="0,0,0,10">
+        <Grid>
+         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+         <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+          <TextBlock Text="Open a project folder first to start chatting" Foreground="{DynamicResource Text}" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap"/>
+          <TextBlock Text="Choose a workspace folder so AlphaCode can read files and run commands in your project." Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0"/>
+         </StackPanel>
+         <Button x:Name="OpenFolderPromptBtn" Grid.Column="1" Style="{DynamicResource PrimaryButton}" Content="Open Folder…" Padding="14,7" MinHeight="34" VerticalAlignment="Center" ToolTip="Open a project folder first to start chatting" AutomationProperties.Name="Open a project folder first to start chatting"/>
+        </Grid>
+       </Border>
+       <Grid Grid.Row="1">
         <TextBox x:Name="Prompt" Style="{DynamicResource ComposerInput}" MinHeight="40" MaxHeight="160" MaxLength="16000" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Prompt"/>
         <TextBox x:Name="CommandInput" Style="{DynamicResource ComposerInput}" MinHeight="40" MaxHeight="160" MaxLength="16000" Visibility="Collapsed" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Command input"/>
         <PasswordBox x:Name="SecretInput" MinHeight="40" MaxLength="16000" Visibility="Collapsed" Background="Transparent" Foreground="{DynamicResource Text}" CaretBrush="{DynamicResource Accent}" BorderThickness="0" FocusVisualStyle="{x:Null}" Padding="0" FontSize="15" AutomationProperties.Name="Password for running command"/>
-        <TextBlock x:Name="Placeholder" Text="Message AlphaCode…" Foreground="{DynamicResource Muted}" FontSize="15" TextWrapping="Wrap" Margin="1,1,0,0" IsHitTestVisible="False"/>
+        <TextBlock x:Name="Placeholder" Text="Open a project folder first to start chatting" Foreground="{DynamicResource Muted}" FontSize="15" TextWrapping="Wrap" Margin="1,1,0,0" IsHitTestVisible="False"/>
        </Grid>
-       <Grid Grid.Row="1" Margin="0,8,0,0">
+       <Grid Grid.Row="2" Margin="0,8,0,0">
         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
         <WrapPanel VerticalAlignment="Center" Margin="-4,0,12,0">
          <Grid Margin="0,0,4,0">
@@ -489,7 +538,7 @@ try {
          <Button x:Name="Send" Style="{StaticResource PrimaryButton}" Content="↑" Width="40" Height="40" Padding="0" FontSize="22" ToolTip="Send prompt (Enter; Shift+Enter or Alt+Enter for a new line)" AutomationProperties.Name="Send prompt" IsEnabled="False"/>
         </StackPanel>
        </Grid>
-       <Grid Grid.Row="2" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+       <Grid Grid.Row="3" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
         <TextBlock x:Name="ComposerHint" Foreground="{DynamicResource Dim}" FontSize="10" Text="Enter to send · Shift+Enter or Alt+Enter for a new line" TextTrimming="CharacterEllipsis"/>
         <TextBlock x:Name="PromptCount" Grid.Column="1" Foreground="{DynamicResource Dim}" FontSize="10" Text="0 / 16,000" Visibility="Collapsed"/>
        </Grid>
@@ -497,7 +546,7 @@ try {
       <Border x:Name="ComposerFocusRing" BorderBrush="{DynamicResource Accent}" BorderThickness="2" CornerRadius="16" Opacity="0" IsHitTestVisible="False"/>
      </Grid>
     </Border>
-    <TextBlock x:Name="FooterStatus" Grid.Row="5" Text="Ready  ·  Enter to send  ·  Shift+Enter or Alt+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" Margin="30,0,30,0" VerticalAlignment="Center"/>
+    <TextBlock x:Name="FooterStatus" Grid.Row="5" Text="Ready  ·  Enter to send  ·  Shift+Enter or Alt+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="24,0,24,0" VerticalAlignment="Center"/>
    </Grid>
   </Grid>
   <Grid x:Name="CommandOverlay" Grid.RowSpan="2" Panel.ZIndex="100" Visibility="Collapsed" Background="#99000000" KeyboardNavigation.TabNavigation="Cycle">
@@ -575,7 +624,7 @@ $controls = @{}
 foreach ($name in @('CommandOverlay','CommandPaletteSurface','CommandSearch','CommandResults','CommandEmpty','CloseCommands','FocusMode','CommandMenu','ResponseActivity','ResponseStage','ResponseDetail','ResponseElapsed','ResponseStop','LoadingDot1','LoadingDot2','LoadingDot3','ModelChooser','ModelChoiceLabel','ModelPopup','ModelPopupSurface','ModelSearch','ModelResults','ModelResultCount','ModelEmpty','ApplyModelChoice','ClearChatSearch','FilterAll','FilterLive','FilterSaved','ChatsHeading','ReplySearchBar','ReplySearch','ReplySearchCount','CloseReplySearch','FindReply','ConversationCards','WorkflowResize','WorkDividerColumn','WorkflowScroll','WorkToggle','WorkColumn','ConversationColumn','WorkflowSurface','WorkflowSummary','WorkflowTodos','WorkflowPlan','WorkflowSwarm','ExamplesPanel','NoticeBanner','NoticeText','ChatSurface','ComposerSurface','ComposerContent','ComposerFocusRing','ComposerHint','PromptCount','ThemeToggle','JumpLatest','Panel','TitleBar','Back','Forward','SidebarToggle','SidebarColumn','SidebarDivider','SidebarSurface','Minimize','Maximize','Close','Cancel','Rename','Archive','Sessions','SessionsEmpty','ProjectsList','SessionSearch','SearchPlaceholder','ModelPicker','EffortPicker','WorkspacePath','OpenTerminal','ExampleExplore','ExampleReview','ExampleTest','Activity','Detail','Timeline','Reply','ReplyScroll','Prompt','CommandInput','SecretInput','Placeholder','EmptyState','Send','Copy','Refresh','AddContext','Voice','NewChat','NavHome','NavRecents','NavProjects','NavArchive','NavCompanion','More','Search','ComposerSettings','SidebarHint','SidebarStatus','SessionCount','StatePill','StateText','FooterStatus','WorkspaceTitle','WorkspaceSubtitle')) {
     $controls[$name] = $window.FindName($name)
 }
-foreach ($name in @('OpenSettings','ChatHeader','WelcomeMark','ResumeChat')) { $controls[$name] = $window.FindName($name) }
+foreach ($name in @('OpenSettings','ChatHeader','ChatHeaderRow','WelcomeMark','ResumeChat','RailColumn','ConversationFrame','TitleBarBrand','TitleBrandLabel','OpenWorkspaceFolder','ShowAllWorkspaces','ChatLoadingPanel','ChatLoadingTitle','ChatLoadingDetail','EmptyOpenFolder','OpenFolderGate','OpenFolderPromptBtn')) { $controls[$name] = $window.FindName($name) }
 
 
 function Toggle-FocusMode {
@@ -723,20 +772,8 @@ function Add-DisplayRuns($paragraph, [string]$text, [bool]$strong = $false, [boo
     }
 }
 
-function New-ReadableText([string]$text) {
-    $view = New-Object Windows.Controls.RichTextBox
-    $view.IsReadOnly = $true; $view.IsReadOnlyCaretVisible = $true
-    $view.BorderThickness = [Windows.Thickness]::new(0); $view.Padding = [Windows.Thickness]::new(0)
-    $view.Background = [Windows.Media.Brushes]::Transparent
-    $view.SetResourceReference([Windows.Controls.Control]::ForegroundProperty, 'Text')
-    $view.VerticalScrollBarVisibility = 'Disabled'; $view.HorizontalScrollBarVisibility = 'Disabled'
-    $document = New-Object Windows.Documents.FlowDocument
-    $document.PagePadding = [Windows.Thickness]::new(0)
-    $document.FontSize = $controls.Reply.FontSize
-    $document.FontFamily = [Windows.Media.FontFamily]::new('Segoe UI Variable Text, Segoe UI')
-    if ($text -match '[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]') { $document.FlowDirection = 'RightToLeft'; $document.TextAlignment = 'Right' }
-    $paragraph = New-Object Windows.Documents.Paragraph
-    $paragraph.Margin = [Windows.Thickness]::new(0); $paragraph.LineHeight = $controls.Reply.FontSize * 1.6
+function Set-ParagraphText($paragraph, [string]$text) {
+    $paragraph.Inlines.Clear()
     $position = 0
     foreach ($token in [regex]::Matches($text, '(\*\*[^*\r\n]+\*\*|`[^`\r\n]+`)')) {
         if ($token.Index -gt $position) { Add-DisplayRuns $paragraph ($text.Substring($position, $token.Index - $position)) }
@@ -745,7 +782,32 @@ function New-ReadableText([string]$text) {
         $position = $token.Index + $token.Length
     }
     if ($position -lt $text.Length) { Add-DisplayRuns $paragraph ($text.Substring($position)) }
-    $document.Blocks.Add($paragraph); $view.Document = $document
+}
+
+function Apply-ReadableDirection($document, [string]$text) {
+    $rtl = $text -match '[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]'
+    $flow = if ($rtl) { [Windows.FlowDirection]::RightToLeft } else { [Windows.FlowDirection]::LeftToRight }
+    $align = if ($rtl) { [Windows.TextAlignment]::Right } else { [Windows.TextAlignment]::Left }
+    if ($document.FlowDirection -ne $flow) { $document.FlowDirection = $flow }
+    if ($document.TextAlignment -ne $align) { $document.TextAlignment = $align }
+}
+
+function New-ReadableText([string]$text) {
+    $view = New-Object Windows.Controls.RichTextBox
+    $view.IsReadOnly = $true; $view.IsReadOnlyCaretVisible = $true; $view.IsUndoEnabled = $false; $view.UndoLimit = 0
+    $view.BorderThickness = [Windows.Thickness]::new(0); $view.Padding = [Windows.Thickness]::new(0)
+    $view.Background = [Windows.Media.Brushes]::Transparent
+    $view.SetResourceReference([Windows.Controls.Control]::ForegroundProperty, 'Text')
+    $view.VerticalScrollBarVisibility = 'Disabled'; $view.HorizontalScrollBarVisibility = 'Disabled'
+    $document = New-Object Windows.Documents.FlowDocument
+    $document.PagePadding = [Windows.Thickness]::new(0)
+    $document.FontSize = $controls.Reply.FontSize
+    $document.FontFamily = [Windows.Media.FontFamily]::new('Segoe UI Variable Text, Segoe UI')
+    Apply-ReadableDirection $document $text
+    $paragraph = New-Object Windows.Documents.Paragraph
+    $paragraph.Margin = [Windows.Thickness]::new(0); $paragraph.LineHeight = $controls.Reply.FontSize * 1.6
+    Set-ParagraphText $paragraph $text
+    $document.Blocks.Add($paragraph); $view.Document = $document; $view.Tag = $paragraph
     return $view
 }
 
@@ -782,7 +844,7 @@ function New-ConversationBlock($block) {
         $code.Padding = [Windows.Thickness]::new(0); $code.Margin = [Windows.Thickness]::new(0,8,0,0)
         $code.SetResourceReference([Windows.Controls.Control]::ForegroundProperty, 'Text')
         $code.HorizontalScrollBarVisibility = 'Auto'; $code.VerticalScrollBarVisibility = 'Auto'; $code.MaxHeight = 360
-        [void]$stack.Children.Add($code); $surface.Child = $stack; $surface.Tag.copy = $copy
+        [void]$stack.Children.Add($code); $surface.Child = $stack; $surface.Tag.copy = $copy; $surface.Tag.codeBox = $code
     } elseif ($block.Kind -in @('role','heading')) {
         $label = New-Object Windows.Controls.TextBlock
         $label.Text = $block.Body
@@ -828,15 +890,42 @@ function New-ConversationBlock($block) {
 }
 
 function Render-Conversation([bool]$force = $false) {
-    $blocks = @(Convert-ResponseBlocks ([string]$controls.Reply.Text))
+    $rawText = [string]$controls.Reply.Text
     $query = [string]$controls.ReplySearch.Text
-    $entries = @($blocks | ForEach-Object { [pscustomobject]@{ Key=($_.Kind + "`0" + $_.Role + "`0" + $_.Language + "`0" + $_.Body + "`0" + $controls.Reply.FontSize + "`0" + $query); Block=$_ } })
+    $fontSize = $controls.Reply.FontSize
+    $stateKey = $rawText + "`0" + $fontSize + "`0" + $query
+    if (-not $force -and $stateKey -eq $script:lastRenderStateKey) { return }
+    $script:lastRenderStateKey = $stateKey
+    $blocks = @(Convert-ResponseBlocks $rawText)
+    $entries = @($blocks | ForEach-Object { [pscustomobject]@{ Key=($_.Kind + "`0" + $_.Role + "`0" + $_.Language + "`0" + $_.Body + "`0" + $fontSize + "`0" + $query); Block=$_ } })
     $common = 0
     if (-not $force) {
         while ($common -lt $entries.Count -and $common -lt $script:renderedBlocks.Count -and $entries[$common].Key -eq $script:renderedBlocks[$common].Key) { $common++ }
     }
-    while ($controls.ConversationCards.Children.Count -gt $common) { $controls.ConversationCards.Children.RemoveAt($controls.ConversationCards.Children.Count-1) }
-    for ($index = $common; $index -lt $entries.Count; $index++) { [void]$controls.ConversationCards.Children.Add((New-ConversationBlock $entries[$index].Block)) }
+    # Stream tail updates in-place instead of discarding and reconstructing the active RichTextBox/TextBox card.
+    $updatedTailInPlace = $false
+    if (-not $force -and -not $query -and $common -eq ($entries.Count - 1) -and $controls.ConversationCards.Children.Count -eq $entries.Count -and $common -lt $script:renderedBlocks.Count) {
+        $prevBlock = $script:renderedBlocks[$common].Block
+        $nextBlock = $entries[$common].Block
+        if ($prevBlock.Kind -eq $nextBlock.Kind -and $prevBlock.Role -eq $nextBlock.Role -and $prevBlock.Language -eq $nextBlock.Language) {
+            $card = $controls.ConversationCards.Children[$common]
+            if ($nextBlock.Kind -eq 'text' -and $card.Child -is [Windows.Controls.RichTextBox] -and $card.Child.Tag -is [Windows.Documents.Paragraph]) {
+                Apply-ReadableDirection $card.Child.Document $nextBlock.Body
+                Set-ParagraphText $card.Child.Tag $nextBlock.Body
+                $card.Tag.body = $nextBlock.Body
+                $updatedTailInPlace = $true
+            } elseif ($nextBlock.Kind -eq 'code' -and $card.Tag.codeBox) {
+                $card.Tag.codeBox.Text = $nextBlock.Body
+                $card.Tag.copy.Tag = [string]$nextBlock.Body
+                $card.Tag.body = $nextBlock.Body
+                $updatedTailInPlace = $true
+            }
+        }
+    }
+    if (-not $updatedTailInPlace) {
+        while ($controls.ConversationCards.Children.Count -gt $common) { $controls.ConversationCards.Children.RemoveAt($controls.ConversationCards.Children.Count-1) }
+        for ($index = $common; $index -lt $entries.Count; $index++) { [void]$controls.ConversationCards.Children.Add((New-ConversationBlock $entries[$index].Block)) }
+    }
     $script:renderedBlocks = $entries
     $script:searchHits = @()
     if ($query) {
@@ -898,59 +987,108 @@ function Set-GuiTheme([string]$theme, [bool]$persist = $true) {
     Update-ProjectsList
     Set-Navigation $script:navigation $false
     if ($script:snapshot) { Set-Snapshot $script:snapshot }
-    if ($persist) { Save-GuiSettings; Show-GuiNotice ("Theme: " + $theme) }
+    if ($persist) {
+        if (-not $Preview) { $script:pendingGuiStateSet = @{ theme = $theme } }
+        Save-GuiSettings
+        Show-GuiNotice ("Theme: " + $theme)
+    }
 }
 
-function Update-GuiLayout {
+function Update-GuiLayout([bool]$force = $false) {
+    $winW = [double]$window.ActualWidth
+    $winH = [double]$window.ActualHeight
+    if ($winW -le 0 -or $winH -le 0) { return }
+    $chatW = [double]$controls.ChatSurface.ActualWidth
+    $layoutKey = ('{0:F0}|{1:F0}|{2:F0}|{3}|{4}|{5}|{6:F0}' -f $winW, $winH, $chatW, $script:sidebarVisible, $script:workflowVisible, $script:focusMode, $script:workflowWidth)
+    if (-not $force -and $layoutKey -eq $script:lastLayoutKey) { return }
+    $script:lastLayoutKey = $layoutKey
+
     # Hysteresis avoids repeated hide/show on the breakpoint. Explicit toggles
     # remain available in compact mode, including Ctrl+K search.
-    if ($window.ActualWidth -lt 1000 -and -not $script:compactLayout) {
+    if ($winW -lt 1000 -and -not $script:compactLayout) {
         $script:compactLayout = $true
         if ($script:sidebarVisible) {
             $script:sidebarAutoHidden = $true
             Set-SidebarVisibility $false $false
         }
-    } elseif ($window.ActualWidth -ge 1080 -and $script:compactLayout -and -not $script:focusMode) {
+    } elseif ($winW -ge 1080 -and $script:compactLayout -and -not $script:focusMode) {
         $script:compactLayout = $false
         if ($script:sidebarAutoHidden) {
             $script:sidebarAutoHidden = $false
             Set-SidebarVisibility $true $false
         }
     }
+
+    $ultraNarrow = $winW -lt 560
+    $railW = if ($ultraNarrow) { 50 } elseif ($winW -lt 780) { 58 } else { 68 }
+    if ([Math]::Abs($controls.RailColumn.Width.Value - $railW) -gt 0.5) {
+        $controls.RailColumn.Width = [Windows.GridLength]::new($railW)
+    }
+    $brandVis = if ($winW -lt 450) { 'Collapsed' } else { 'Visible' }
+    if ($controls.TitleBrandLabel.Visibility -ne $brandVis) { $controls.TitleBrandLabel.Visibility = $brandVis }
+    $controls.TitleBarBrand.Margin = if ($ultraNarrow) { [Windows.Thickness]::new(10,0,6,0) } else { [Windows.Thickness]::new(16,0,8,0) }
+
+    if ($script:sidebarVisible) {
+        $maxSidebar = [Math]::Max(170, $winW - $railW - 250)
+        $targetSidebar = [Math]::Min($script:sidebarWidth, $maxSidebar)
+        if ([Math]::Abs($controls.SidebarColumn.Width.Value - $targetSidebar) -gt 0.5) {
+            $controls.SidebarColumn.Width = [Windows.GridLength]::new($targetSidebar)
+        }
+    }
+
     if ($script:workflowVisible) {
-        $compactWork = $controls.ChatSurface.ActualWidth -lt 900
+        $compactWork = $chatW -lt 900
+        $targetWorkW = [Math]::Min($script:workflowWidth, [Math]::Max(240, $chatW * 0.45))
         $controls.ConversationColumn.Width = if ($compactWork) { [Windows.GridLength]::new(0) } else { [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star) }
         $controls.WorkDividerColumn.Width = [Windows.GridLength]::new($(if ($compactWork) { 0 } else { 5 }))
         $controls.WorkflowResize.Visibility = if ($compactWork) { 'Collapsed' } else { 'Visible' }
-        $controls.WorkColumn.Width = if ($compactWork) { [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star) } else { [Windows.GridLength]::new($script:workflowWidth) }
+        $controls.WorkColumn.Width = if ($compactWork) { [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star) } else { [Windows.GridLength]::new($targetWorkW) }
     } else {
         $controls.ConversationColumn.Width = [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star)
         $controls.WorkColumn.Width = [Windows.GridLength]::new(0)
         $controls.WorkDividerColumn.Width = [Windows.GridLength]::new(0)
         $controls.WorkflowResize.Visibility = 'Collapsed'
     }
-    $controls.CommandResults.MaxHeight = [Math]::Max(80, [Math]::Min(340, $window.ActualHeight - 320))
-    $short = $window.ActualHeight -lt 680
-    $controls.ExamplesPanel.Visibility = if ($short) { 'Collapsed' } else { 'Visible' }
+
+    $controls.CommandResults.MaxHeight = [Math]::Max(80, [Math]::Min(340, $winH - 260))
+    $short = $winH -lt 680
+    $veryShort = $winH -lt 520
+    $hasEffectiveWs = -not [string]::IsNullOrWhiteSpace((Get-EffectiveWorkspacePath))
+    $controls.ExamplesPanel.Visibility = if ($short -or $script:loadingSessionId -or -not $hasEffectiveWs) { 'Collapsed' } else { 'Visible' }
     $controls.Timeline.Visibility = if ($short) { 'Collapsed' } else { 'Visible' }
     $controls.WelcomeMark.Visibility = if ($short) { 'Collapsed' } else { 'Visible' }
-    $controls.Activity.FontSize = if ($short) { 22 } else { 30 }
-    # Keep the composer aligned with the reading column at every window size.
-    $compactChat = $controls.ChatSurface.ActualWidth -lt 620
-    $gutter = if ($compactChat) { 16 } else { 28 }
-    $controls.ChatHeader.Margin = [Windows.Thickness]::new($gutter, $(if ($short) { 12 } else { 20 }), $gutter, 12)
-    $controls.CommandMenu.Visibility = if ($window.ActualWidth -lt 780) { 'Collapsed' } else { 'Visible' }
-    $controls.ComposerSurface.Margin = [Windows.Thickness]::new($gutter,12,$gutter,8)
-    $controls.ReplyScroll.Margin = [Windows.Thickness]::new($gutter + 4,20,$gutter + 4,16)
-    $controls.ComposerContent.Margin = if ($compactChat) { [Windows.Thickness]::new(12,12,12,12) } else { [Windows.Thickness]::new(16,14,16,14) }
-    $available = [Math]::Max(260, $controls.ChatSurface.ActualWidth - 80)
-    $controls.ModelChooser.Width = [Math]::Max(132, [Math]::Min(210, $available - 270))
-    $controls.ModelPopupSurface.Width = [Math]::Max(280, [Math]::Min(420, $window.ActualWidth - 48))
-    $controls.Prompt.MinHeight = 40
-    $controls.Prompt.MaxHeight = if ($short) { 96 } else { 160 }
+    $controls.Activity.FontSize = if ($veryShort -or $ultraNarrow) { 20 } elseif ($short -or $chatW -lt 560) { 22 } else { 30 }
+
+    $cardWidth = if ($chatW -lt 660) { 162 } else { 190 }
+    foreach ($card in @($controls.ExampleExplore, $controls.ExampleReview, $controls.ExampleTest)) {
+        if ($card -and [Math]::Abs($card.Width - $cardWidth) -gt 0.5) { $card.Width = $cardWidth }
+    }
+
+    $compactChat = $chatW -lt 620
+    $tinyChat = $chatW -lt 440
+    $gutter = if ($tinyChat) { 10 } elseif ($compactChat) { 16 } else { 28 }
+    $controls.ChatHeaderRow.MinHeight = if ($short -or $compactChat) { 64 } else { 96 }
+    $controls.ChatHeader.Margin = [Windows.Thickness]::new($gutter, $(if ($short) { 10 } else { 18 }), $gutter, 10)
+    $controls.CommandMenu.Visibility = if ($winW -lt 780) { 'Collapsed' } else { 'Visible' }
+
+    $maxContentWidth = if ($winW -ge 2000) { 1120 } elseif ($winW -ge 1500) { 980 } else { 860 }
+    if ($controls.ConversationFrame) { $controls.ConversationFrame.MaxWidth = $maxContentWidth }
+    $controls.ComposerSurface.MaxWidth = $maxContentWidth
+
+    $controls.ComposerSurface.Margin = [Windows.Thickness]::new($gutter, $(if ($veryShort) { 6 } else { 10 }), $gutter, $(if ($veryShort) { 4 } else { 8 }))
+    $controls.ReplyScroll.Margin = [Windows.Thickness]::new($gutter + 2, $(if ($short) { 10 } else { 18 }), $gutter + 2, $(if ($short) { 8 } else { 14 }))
+    $controls.ComposerContent.Margin = if ($tinyChat) { [Windows.Thickness]::new(10,10,10,10) } elseif ($compactChat) { [Windows.Thickness]::new(12,12,12,12) } else { [Windows.Thickness]::new(16,14,16,14) }
+    $controls.FooterStatus.Margin = [Windows.Thickness]::new($gutter + 2, 0, $gutter + 2, 0)
+
+    $available = [Math]::Max(220, $chatW - ($gutter * 2) - 24)
+    $controls.ModelChooser.Width = [Math]::Max(108, [Math]::Min(220, $available - 220))
+    $controls.EffortPicker.Width = if ($tinyChat) { 74 } elseif ($compactChat) { 80 } else { 88 }
+    $controls.ModelPopupSurface.Width = [Math]::Max(260, [Math]::Min(420, $winW - 36))
+    $controls.Prompt.MinHeight = if ($veryShort) { 34 } else { 40 }
+    $controls.Prompt.MaxHeight = if ($veryShort) { 80 } elseif ($short) { 96 } else { 160 }
     $controls.WorkspacePath.MaxWidth = 120
     $controls.WorkspacePath.Visibility = if ($compactChat) { 'Collapsed' } else { 'Visible' }
-    $controls.Copy.Visibility = if ($available -lt 470) { 'Collapsed' } else { 'Visible' }
+    $controls.Copy.Visibility = if ($available -lt 450) { 'Collapsed' } else { 'Visible' }
 }
 
 
@@ -966,6 +1104,16 @@ function Set-WorkflowVisibility([bool]$visible, [bool]$persist = $true) {
 function Update-Workflow {
     $selected = Get-SelectedSessionId
     $workflow = if ($script:snapshot -and [string]$script:snapshot.selected_session_id -eq $selected) { $script:snapshot.workflow } else { $null }
+    $wfSig = if (-not $workflow -or -not $workflow.available) {
+        "none|$selected|" + [string]$workflow.detail
+    } else {
+        $todoParts = (@($workflow.todos | Where-Object { $null -ne $_ } | ForEach-Object { "$($_.status):$($_.content)" }) -join '|')
+        $planParts = if ($workflow.swarm_plan) { "$($workflow.swarm_plan.version):$($workflow.swarm_plan.completed):$($workflow.swarm_plan.failed):$($workflow.swarm_plan.blocked):$($workflow.swarm_plan.cycles):" + (@($workflow.swarm_plan.items | ForEach-Object { "$($_.status):$($_.content)" }) -join '|') } else { '' }
+        $swarmParts = (@($workflow.swarm | Where-Object { $null -ne $_ } | ForEach-Object { "$($_.name):$($_.status):$($_.role):$($_.detail)" }) -join '|')
+        "ok|$selected|$($workflow.completed)/$($workflow.todo_count)|$todoParts|$($workflow.intention)|$planParts|$swarmParts"
+    }
+    if ($wfSig -eq $script:lastWorkflowSignature) { return }
+    $script:lastWorkflowSignature = $wfSig
     if (-not $workflow -or -not $workflow.available) {
         $controls.WorkflowSummary.Text = if ($workflow.detail) { [string]$workflow.detail } else { 'Updating work for this chat…' }
         $controls.WorkflowTodos.Text = 'No todo snapshot available.'
@@ -1044,11 +1192,12 @@ function Update-ResponseElapsed {
 function Update-ResponseActivity {
     $session = Get-SelectedSessionRow
     $id = Get-SelectedSessionId
+    $loadingChat = $id -and ($id -eq $script:loadingSessionId -or $id -eq $script:resumingSessionId)
     $sending = $id -and $id -eq $script:pendingResponseSession
     $busy = $session -and ($session.state -eq 'working' -or ($id -eq '__companion__' -and $script:ownedBusy))
-    $active = -not $script:responseDisconnected -and $session -and $session.state -notin @('stored','offline','attention') -and -not $script:inputMode -and ($sending -or $busy)
+    $active = -not $script:responseDisconnected -and $session -and ($loadingChat -or ($session.state -notin @('stored','offline','attention') -and -not $script:inputMode -and ($sending -or $busy)))
     if (-not $active) {
-        if ($id -and -not $busy -and -not $sending) { $script:responseStarted.Remove($id) }
+        if ($id -and -not $busy -and -not $sending -and -not $loadingChat) { $script:responseStarted.Remove($id) }
         $script:responseSession = ''
         if ($controls.ResponseActivity.Visibility -ne 'Collapsed') {
             $controls.ResponseActivity.Visibility = 'Collapsed'
@@ -1059,10 +1208,10 @@ function Update-ResponseActivity {
     }
     if (-not $script:responseStarted.ContainsKey($id)) { $script:responseStarted[$id] = [DateTime]::UtcNow }
     $script:responseSession = $id
-    $controls.ResponseStage.Text = if ($sending -and -not $busy) { 'Sending your prompt' } else { 'AlphaCode is working' }
+    $controls.ResponseStage.Text = if ($id -eq $script:resumingSessionId) { 'Resuming saved chat…' } elseif ($loadingChat) { 'Loading conversation messages…' } elseif ($sending -and -not $busy) { 'Sending your prompt' } else { 'AlphaCode is working' }
     $detail = [string]$session.detail
-    $controls.ResponseDetail.Text = if ($sending -and -not $busy) { 'Preparing the response…' } elseif ($detail -and $detail -notin @('Ready','Working','working')) { $detail } else { 'Waiting for the next response · you can stop at any time' }
-    $controls.ResponseStop.IsEnabled = $controls.Cancel.IsEnabled
+    $controls.ResponseDetail.Text = if ($loadingChat) { 'Fetching saved messages from history…' } elseif ($sending -and -not $busy) { 'Preparing the response…' } elseif ($detail -and $detail -notin @('Ready','Working','working')) { $detail } else { 'Waiting for the next response · you can stop at any time' }
+    $controls.ResponseStop.IsEnabled = (-not $loadingChat) -and $controls.Cancel.IsEnabled
     if ($controls.ResponseActivity.Visibility -ne 'Visible') {
         $controls.ResponseActivity.Visibility = 'Visible'
         $index = 0
@@ -1090,8 +1239,14 @@ function Update-ComposerState {
     $controls.PromptCount.Foreground = Get-GuiBrush $(if ($count -ge 15000) { 'Warning' } else { 'Dim' })
     $session = Get-SelectedSessionRow
     $selected = Get-SelectedSessionId
+    $storedOnly = $session -and [string]$session.state -eq 'stored'
+    $effectiveWs = Get-EffectiveWorkspacePath
+    $hasWorkspace = -not [string]::IsNullOrWhiteSpace($effectiveWs)
+    if ($controls.OpenFolderGate) {
+        $controls.OpenFolderGate.Visibility = if (-not $hasWorkspace -and -not $script:inputMode -and -not $storedOnly) { 'Visible' } else { 'Collapsed' }
+    }
     $hasContent = $script:inputMode -or -not [string]::IsNullOrWhiteSpace($controls.Prompt.Text)
-    $controls.Send.IsEnabled = $null -ne $session -and $hasContent -and [string]$session.state -notin @('stored','offline') -and -not ($script:ownedBusy -and $selected -eq '__companion__' -and -not $script:inputMode) -and $script:pendingKind -notin @('prompt','input','new_chat','resume_chat') -and $script:queue.Count -eq 0
+    $controls.Send.IsEnabled = $null -ne $session -and ($hasWorkspace -or $script:inputMode) -and $hasContent -and [string]$session.state -notin @('stored','offline') -and -not ($script:ownedBusy -and $selected -eq '__companion__' -and -not $script:inputMode) -and $script:pendingKind -notin @('prompt','input','new_chat','resume_chat') -and $script:queue.Count -eq 0
     $controls.ResumeChat.IsEnabled = -not $script:ownedBusy -and $script:queue.Count -eq 0 -and $script:pendingKind -in @('','status','sessions','transcript')
 }
 
@@ -1151,43 +1306,277 @@ function Clear-GuiNotice {
     $script:actionNoticeUntil = [DateTime]::MinValue
 }
 
-function Update-ProjectsList {
-    $projects = @($script:allSessions | Where-Object { $_.id -ne '__companion__' -and -not [string]::IsNullOrWhiteSpace([string]$_.working_dir) })
-    $query = [string]$controls.SessionSearch.Text
-    if (-not [string]::IsNullOrWhiteSpace($query)) {
-        $pattern = [regex]::Escape($query.Trim())
-        $projects = @($projects | Where-Object { ([string]$_.title -match $pattern) -or ([string]$_.detail -match $pattern) -or ([string]$_.working_dir -match $pattern) })
+function Normalize-WorkspacePath([string]$path) {
+    if ([string]::IsNullOrWhiteSpace($path)) { return '' }
+    $clean = $path.Trim().Replace('/', '\')
+    if ($clean.Length -gt 3) { $clean = $clean.TrimEnd('\') }
+    return $clean
+}
+
+function Test-SameWorkspacePath([string]$a, [string]$b) {
+    $na = Normalize-WorkspacePath $a
+    $nb = Normalize-WorkspacePath $b
+    if (-not $na -or -not $nb) { return $false }
+    return [string]::Equals($na, $nb, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-EffectiveWorkspacePath {
+    $session = Get-SelectedSessionRow
+    if ($session -and -not [string]::IsNullOrWhiteSpace([string]$session.working_dir)) {
+        return Normalize-WorkspacePath ([string]$session.working_dir)
     }
-    # Keep this quick-access section bounded and group chats by workspace.
-    # The complete session list below remains scrollable and searchable.
+    $selected = Get-SelectedSessionId
+    if (($selected -eq '__companion__' -or [string]::IsNullOrWhiteSpace($selected)) -and -not [string]::IsNullOrWhiteSpace($script:activeWorkspace)) {
+        return Normalize-WorkspacePath $script:activeWorkspace
+    }
+    return ''
+}
+
+function Invoke-WorkspaceAction([string]$action, [string]$wsPath, [hashtable]$extra = @{}) {
+    $clean = Normalize-WorkspacePath $wsPath
+    if ([string]::IsNullOrWhiteSpace($clean)) { return }
+    if ($Preview) {
+        if ($action -eq 'workspace_select') {
+            $script:activeWorkspace = $clean
+            $script:filterByActiveWorkspace = $true
+            $script:projectsListSignature = $null
+            $script:navigationListSignature = $null
+            Update-ProjectsList; Apply-Navigation; Update-SelectedSession
+        }
+        return
+    }
+    $payload = @{ working_dir = $clean }
+    foreach ($k in $extra.Keys) { $payload[$k] = $extra[$k] }
+    Queue-Action $action '' $payload
+}
+
+function Select-WorkspaceFolder([string]$wsPath) {
+    $clean = Normalize-WorkspacePath $wsPath
+    if ([string]::IsNullOrWhiteSpace($clean)) { return }
+    $script:activeWorkspace = $clean
+    $script:filterByActiveWorkspace = $true
+    if ($script:sessionIndex.ContainsKey('__companion__') -and -not $script:ownedBusy) {
+        $script:sessionIndex['__companion__'] | Add-Member -NotePropertyName working_dir -NotePropertyValue $clean -Force
+    }
+    $currentRow = Get-SelectedSessionRow
+    if ($currentRow -and $currentRow.id -ne '__companion__' -and -not (Test-SameWorkspacePath ([string]$currentRow.working_dir) $clean)) {
+        $script:loadingSessionId = ''
+        $script:transcript = ''
+        $script:transcriptFor = ''
+        $script:lastSelectedSessionId = ''
+        if ($script:sessionIndex.ContainsKey('__companion__')) {
+            $controls.Sessions.SelectedValue = '__companion__'
+        }
+    }
+    $script:projectsListSignature = $null
+    $script:navigationListSignature = $null
+    Update-ProjectsList
+    Apply-Navigation
+    Update-SelectedSession
+    Invoke-WorkspaceAction 'workspace_select' $clean
+}
+
+function Apply-GuiState($state, [string]$activeWorkingDir = '') {
+    if (-not $state) { return }
+    $script:guiStateLoaded = $true
+
+    $theme = [string]$state.theme
+    if ($theme -notin @('dark', 'light')) { $theme = 'dark' }
+    if ($theme -ne $script:theme) {
+        Set-GuiTheme $theme $false
+    }
+
+    $wsList = New-Object 'System.Collections.Generic.List[string]'
+    $seenWs = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($w in @($state.workspaces)) {
+        $nw = Normalize-WorkspacePath ([string]$w)
+        if ($nw -and $seenWs.Add($nw)) { [void]$wsList.Add($nw) }
+    }
+    $script:workspaces = $wsList.ToArray()
+
+    $pinWs = New-Object 'System.Collections.Generic.List[string]'
+    $seenPin = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($w in @($state.pinned_workspaces)) {
+        $nw = Normalize-WorkspacePath ([string]$w)
+        if ($nw -and $seenPin.Add($nw)) { [void]$pinWs.Add($nw) }
+    }
+    $script:pinnedWorkspaces = $pinWs.ToArray()
+
+    $colWs = New-Object 'System.Collections.Generic.List[string]'
+    $seenCol = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($w in @($state.collapsed_workspaces)) {
+        $nw = Normalize-WorkspacePath ([string]$w)
+        if ($nw -and $seenCol.Add($nw)) { [void]$colWs.Add($nw) }
+    }
+    $script:collapsedWorkspaces = $colWs.ToArray()
+
+    $pinChats = New-Object 'System.Collections.Generic.List[string]'
+    $seenChats = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    foreach ($cid in @($state.pinned_chats)) {
+        $c = [string]$cid
+        if (-not [string]::IsNullOrWhiteSpace($c) -and $seenChats.Add($c)) { [void]$pinChats.Add($c) }
+    }
+    $script:pinnedChats = $pinChats.ToArray()
+
+    $active = Normalize-WorkspacePath ([string]$state.active_workspace)
+    if (-not $active -and -not [string]::IsNullOrWhiteSpace($activeWorkingDir)) {
+        $active = Normalize-WorkspacePath $activeWorkingDir
+    }
+    $script:activeWorkspace = $active
+    if ($script:sessionIndex.ContainsKey('__companion__') -and -not $script:ownedBusy) {
+        $compDir = [string]$script:sessionIndex['__companion__'].working_dir
+        if ([string]::IsNullOrWhiteSpace($compDir) -and $active) {
+            $script:sessionIndex['__companion__'] | Add-Member -NotePropertyName working_dir -NotePropertyValue $active -Force
+        }
+    }
+
+    # Clean startup: never restore last_session_id onto an old chat.
+    $script:projectsListSignature = $null
+    $script:navigationListSignature = $null
+    Update-ProjectsList
+    Apply-Navigation
+    Update-SelectedSession
+}
+
+function Update-ProjectsList {
     $seenWorkspaces = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    $projects = @($projects | Where-Object {
-        $key = if ([string]::IsNullOrWhiteSpace([string]$_.working_dir)) { 'session:' + [string]$_.id } else { [string]$_.working_dir }
-        $seenWorkspaces.Add($key)
-    } | Select-Object -First 3)
-    $signature = (@($projects | ForEach-Object { "$($_.id)|$($_.title)|$($_.working_dir)|$($_.detail)" }) -join "`n") + '#' + $query
-    if ($signature -eq $script:projectsListSignature) { return }
-    $script:projectsListSignature = $signature
+    $allWs = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($w in @($script:pinnedWorkspaces)) {
+        $nw = Normalize-WorkspacePath ([string]$w)
+        if ($nw -and $seenWorkspaces.Add($nw)) { [void]$allWs.Add($nw) }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:activeWorkspace)) {
+        $na = Normalize-WorkspacePath $script:activeWorkspace
+        if ($na -and $seenWorkspaces.Add($na)) { [void]$allWs.Add($na) }
+    }
+    foreach ($w in @($script:workspaces)) {
+        $nw = Normalize-WorkspacePath ([string]$w)
+        if ($nw -and $seenWorkspaces.Add($nw)) { [void]$allWs.Add($nw) }
+    }
+    foreach ($s in @($script:allSessions)) {
+        if ($s.id -eq '__companion__') { continue }
+        $nw = Normalize-WorkspacePath ([string]$s.working_dir)
+        if ($nw -and $seenWorkspaces.Add($nw)) { [void]$allWs.Add($nw) }
+    }
+
+    $query = ([string]$controls.SessionSearch.Text).Trim()
+    $visibleWs = @($allWs | Where-Object {
+        if (-not $query) { return $true }
+        $leaf = Split-Path -Leaf $_
+        ($_.IndexOf($query, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or ($leaf -and $leaf.IndexOf($query, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    })
+
+    if ($controls.ShowAllWorkspaces) {
+        $controls.ShowAllWorkspaces.Visibility = if (-not [string]::IsNullOrWhiteSpace($script:activeWorkspace)) { 'Visible' } else { 'Collapsed' }
+        $controls.ShowAllWorkspaces.Content = if ($script:filterByActiveWorkspace) { 'All' } else { 'Active' }
+        $controls.ShowAllWorkspaces.Foreground = Get-GuiBrush $(if (-not $script:filterByActiveWorkspace) { 'Accent' } else { 'Muted' })
+    }
+
+    $chatCountSig = (@($visibleWs | ForEach-Object {
+        $ws = $_
+        $cnt = @($script:allSessions | Where-Object { $_.id -ne '__companion__' -and (Test-SameWorkspacePath ([string]$_.working_dir) $ws) }).Count
+        $isAct = Test-SameWorkspacePath $ws $script:activeWorkspace
+        $isPin = @($script:pinnedWorkspaces | Where-Object { Test-SameWorkspacePath $_ $ws }).Count -gt 0
+        $isCol = @($script:collapsedWorkspaces | Where-Object { Test-SameWorkspacePath $_ $ws }).Count -gt 0
+        "$ws|$cnt|$isAct|$isPin|$isCol"
+    }) -join "`n") + '#' + $query + '#' + $script:filterByActiveWorkspace + '#' + $script:theme
+    if ($chatCountSig -eq $script:projectsListSignature) { return }
+    $script:projectsListSignature = $chatCountSig
     $controls.ProjectsList.Children.Clear()
-    if ($projects.Count -eq 0) {
+    if ($visibleWs.Count -eq 0) {
         $empty = New-Object Windows.Controls.TextBlock
-        $empty.Text = if ([string]::IsNullOrWhiteSpace($query)) { 'No active projects' } else { 'No matching projects' }
+        $empty.Text = if ([string]::IsNullOrWhiteSpace($query)) { 'No open workspaces · click + Open' } else { 'No matching workspaces' }
         $empty.Foreground = (Get-GuiBrush 'Muted')
         $empty.FontSize = 11
         $empty.Margin = [Windows.Thickness]::new(7,2,0,5)
         $controls.ProjectsList.Children.Add($empty) | Out-Null
         return
     }
-    foreach ($session in $projects) {
-        $button = New-Object Windows.Controls.Button
-        $button.Content = if ($session.working_dir) { Split-Path -Leaf ([string]$session.working_dir) } else { [string]$session.title }
-        $button.Tag = $session.id
-        $button.HorizontalContentAlignment = 'Left'
-        $button.Foreground = (Get-GuiBrush 'Text')
-        $button.Padding = [Windows.Thickness]::new(7,7,7,7)
-        $button.ToolTip = if ($session.working_dir) { [string]$session.working_dir } else { [string]$session.detail }
-        $button.Add_Click({ param($sender) $controls.SessionSearch.Clear(); Set-Navigation 'Home'; $controls.Sessions.SelectedValue = [string]$sender.Tag; Focus-SelectedChat })
-        $controls.ProjectsList.Children.Add($button) | Out-Null
+
+    foreach ($wsPath in $visibleWs) {
+        $isAct = Test-SameWorkspacePath $wsPath $script:activeWorkspace
+        $isPin = @($script:pinnedWorkspaces | Where-Object { Test-SameWorkspacePath $_ $wsPath }).Count -gt 0
+        $isCol = @($script:collapsedWorkspaces | Where-Object { Test-SameWorkspacePath $_ $wsPath }).Count -gt 0
+        $chatCount = @($script:allSessions | Where-Object { $_.id -ne '__companion__' -and (Test-SameWorkspacePath ([string]$_.working_dir) $wsPath) }).Count
+        $leaf = Split-Path -Leaf $wsPath
+        $labelText = if ($leaf) { $leaf } else { $wsPath }
+
+        $card = New-Object Windows.Controls.Border
+        $card.CornerRadius = [Windows.CornerRadius]::new(8)
+        $card.BorderThickness = [Windows.Thickness]::new(1)
+        $card.Margin = [Windows.Thickness]::new(0,0,0,4)
+        $card.Padding = [Windows.Thickness]::new(2,2,2,2)
+        $card.Background = if ($isAct) { Get-GuiBrush 'AccentSoft' } else { Get-GuiBrush 'Surface' }
+        $card.BorderBrush = if ($isAct) { Get-GuiBrush 'Accent' } else { [Windows.Media.Brushes]::Transparent }
+        $card.ToolTip = "$wsPath · $chatCount chat(s)"
+
+        $grid = New-Object Windows.Controls.Grid
+        $col0 = New-Object Windows.Controls.ColumnDefinition; $col0.Width = [Windows.GridLength]::Auto
+        $col1 = New-Object Windows.Controls.ColumnDefinition; $col1.Width = [Windows.GridLength]::new(1, [Windows.GridUnitType]::Star)
+        $col2 = New-Object Windows.Controls.ColumnDefinition; $col2.Width = [Windows.GridLength]::Auto
+        $col3 = New-Object Windows.Controls.ColumnDefinition; $col3.Width = [Windows.GridLength]::Auto
+        $col4 = New-Object Windows.Controls.ColumnDefinition; $col4.Width = [Windows.GridLength]::Auto
+        [void]$grid.ColumnDefinitions.Add($col0); [void]$grid.ColumnDefinitions.Add($col1); [void]$grid.ColumnDefinitions.Add($col2); [void]$grid.ColumnDefinitions.Add($col3); [void]$grid.ColumnDefinitions.Add($col4)
+
+        $collapseBtn = New-Object Windows.Controls.Button
+        $collapseBtn.Content = if ($isCol) { '▸' } else { '▾' }
+        $collapseBtn.MinHeight = 26; $collapseBtn.Width = 22; $collapseBtn.Padding = [Windows.Thickness]::new(0)
+        $collapseBtn.FontSize = 11; $collapseBtn.Foreground = Get-GuiBrush 'Muted'
+        $collapseBtn.Tag = @{ path = $wsPath; collapsed = $isCol }
+        $collapseBtn.ToolTip = if ($isCol) { 'Expand workspace' } else { 'Collapse workspace' }
+        $collapseBtn.Add_Click({ param($s) $t = $s.Tag; Invoke-WorkspaceAction 'workspace_collapse' $t.path @{ collapsed = (-not $t.collapsed) } })
+        [Windows.Controls.Grid]::SetColumn($collapseBtn, 0); [void]$grid.Children.Add($collapseBtn)
+
+        $selectBtn = New-Object Windows.Controls.Button
+        $selectBtn.HorizontalContentAlignment = 'Left'; $selectBtn.MinHeight = 26; $selectBtn.Padding = [Windows.Thickness]::new(4,3,4,3)
+        $selectBtn.Foreground = Get-GuiBrush $(if ($isAct) { 'Accent' } else { 'Text' })
+        $selectBtn.FontWeight = if ($isAct) { [Windows.FontWeights]::SemiBold } else { [Windows.FontWeights]::Normal }
+        $prefix = if ($isAct) { '● ' } else { '' }
+        $suffix = if ($isCol) { " ($chatCount · hidden)" } else { " ($chatCount)" }
+        $selectBtn.Content = "$prefix$labelText$suffix"
+        $selectBtn.Tag = $wsPath
+        $selectBtn.ToolTip = $wsPath
+        $selectBtn.Add_Click({ param($s) $controls.SessionSearch.Clear(); Select-WorkspaceFolder ([string]$s.Tag) })
+        [Windows.Controls.Grid]::SetColumn($selectBtn, 1); [void]$grid.Children.Add($selectBtn)
+
+        $pinBtn = New-Object Windows.Controls.Button
+        $pinBtn.Content = if ($isPin) { '★' } else { '☆' }
+        $pinBtn.MinHeight = 26; $pinBtn.Width = 22; $pinBtn.Padding = [Windows.Thickness]::new(0)
+        $pinBtn.FontSize = 11; $pinBtn.Foreground = Get-GuiBrush $(if ($isPin) { 'Accent' } else { 'Dim' })
+        $pinBtn.Tag = @{ path = $wsPath; pinned = $isPin }
+        $pinBtn.ToolTip = if ($isPin) { 'Unpin workspace' } else { 'Pin workspace' }
+        $pinBtn.Add_Click({ param($s) $t = $s.Tag; Invoke-WorkspaceAction 'workspace_pin' $t.path @{ pinned = (-not $t.pinned) } })
+        [Windows.Controls.Grid]::SetColumn($pinBtn, 2); [void]$grid.Children.Add($pinBtn)
+
+        $newBtn = New-Object Windows.Controls.Button
+        $newBtn.Content = '+'
+        $newBtn.MinHeight = 26; $newBtn.Width = 22; $newBtn.Padding = [Windows.Thickness]::new(0)
+        $newBtn.FontSize = 13; $newBtn.Foreground = Get-GuiBrush 'Muted'
+        $newBtn.Tag = $wsPath
+        $newBtn.ToolTip = "New chat in $labelText"
+        $newBtn.Add_Click({ param($s) Start-NewChat ([string]$s.Tag) })
+        [Windows.Controls.Grid]::SetColumn($newBtn, 3); [void]$grid.Children.Add($newBtn)
+
+        $remBtn = New-Object Windows.Controls.Button
+        $remBtn.Content = '×'
+        $remBtn.MinHeight = 26; $remBtn.Width = 22; $remBtn.Padding = [Windows.Thickness]::new(0)
+        $remBtn.FontSize = 12; $remBtn.Foreground = Get-GuiBrush 'Dim'
+        $remBtn.Tag = $wsPath
+        $remBtn.ToolTip = "Remove $labelText from workspaces"
+        $remBtn.Add_Click({ param($s) Invoke-WorkspaceAction 'workspace_remove' ([string]$s.Tag) })
+        [Windows.Controls.Grid]::SetColumn($remBtn, 4); [void]$grid.Children.Add($remBtn)
+
+        $wsCtx = New-Object Windows.Controls.ContextMenu
+        $miSel = New-Object Windows.Controls.MenuItem; $miSel.Header = 'Select workspace'; $miSel.Tag = $wsPath; $miSel.Add_Click({ param($s) Select-WorkspaceFolder ([string]$s.Tag) }); [void]$wsCtx.Items.Add($miSel)
+        $miNew = New-Object Windows.Controls.MenuItem; $miNew.Header = 'New chat here'; $miNew.Tag = $wsPath; $miNew.Add_Click({ param($s) Start-NewChat ([string]$s.Tag) }); [void]$wsCtx.Items.Add($miNew)
+        $miPin = New-Object Windows.Controls.MenuItem; $miPin.Header = if ($isPin) { 'Unpin workspace' } else { 'Pin workspace' }; $miPin.Tag = @{ path = $wsPath; pinned = $isPin }; $miPin.Add_Click({ param($s) $t = $s.Tag; Invoke-WorkspaceAction 'workspace_pin' $t.path @{ pinned = (-not $t.pinned) } }); [void]$wsCtx.Items.Add($miPin)
+        $miCol = New-Object Windows.Controls.MenuItem; $miCol.Header = if ($isCol) { 'Expand workspace' } else { 'Collapse workspace' }; $miCol.Tag = @{ path = $wsPath; collapsed = $isCol }; $miCol.Add_Click({ param($s) $t = $s.Tag; Invoke-WorkspaceAction 'workspace_collapse' $t.path @{ collapsed = (-not $t.collapsed) } }); [void]$wsCtx.Items.Add($miCol)
+        $miExp = New-Object Windows.Controls.MenuItem; $miExp.Header = 'Open in Explorer'; $miExp.Tag = $wsPath; $miExp.Add_Click({ param($s) $p = [string]$s.Tag; if (Test-Path -LiteralPath $p -PathType Container) { Start-Process 'explorer.exe' @("`"$p`"") | Out-Null } }); [void]$wsCtx.Items.Add($miExp)
+        $miRem = New-Object Windows.Controls.MenuItem; $miRem.Header = 'Remove workspace'; $miRem.Tag = $wsPath; $miRem.Add_Click({ param($s) Invoke-WorkspaceAction 'workspace_remove' ([string]$s.Tag) }); [void]$wsCtx.Items.Add($miRem)
+        $card.ContextMenu = $wsCtx
+
+        $card.Child = $grid
+        $controls.ProjectsList.Children.Add($card) | Out-Null
     }
 }
 
@@ -1372,14 +1761,14 @@ function Update-SettingsForm {
 
 function New-SettingsWindow {
     [xml]$definition = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="AlphaCode Settings" Width="900" Height="740" MinWidth="640" MinHeight="500" WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13" Foreground="{DynamicResource Text}" Background="{DynamicResource Canvas}" UseLayoutRounding="True">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="AlphaCode Settings" Width="900" Height="740" MinWidth="420" MinHeight="360" WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13" Foreground="{DynamicResource Text}" Background="{DynamicResource Canvas}" UseLayoutRounding="True">
  <WindowChrome.WindowChrome><WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/></WindowChrome.WindowChrome>
  <Window.Resources><Style x:Key="SettingsSwitch" TargetType="ToggleButton"><Setter Property="Width" Value="44"/><Setter Property="Height" Value="26"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton"><Border x:Name="Track" Background="{DynamicResource SurfaceHover}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="13"><Ellipse x:Name="Knob" Width="18" Height="18" Margin="3" HorizontalAlignment="Left" Fill="{DynamicResource Muted}"/></Border><ControlTemplate.Triggers><Trigger Property="IsChecked" Value="True"><Setter TargetName="Track" Property="Background" Value="{DynamicResource Accent}"/><Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right"/><Setter TargetName="Knob" Property="Fill" Value="{DynamicResource AccentText}"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Track" Property="BorderBrush" Value="{DynamicResource Text}"/><Setter TargetName="Track" Property="BorderThickness" Value="2"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style></Window.Resources>
- <Border BorderBrush="{DynamicResource Border}" BorderThickness="1"><Grid><Grid.RowDefinitions><RowDefinition Height="88"/><RowDefinition/><RowDefinition Height="64"/></Grid.RowDefinitions>
-  <Grid x:Name="TitleBar" Margin="28,18,20,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Settings" FontSize="24" FontWeight="SemiBold"/><TextBlock Text="A workspace that works your way." Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,5,0,0"/></StackPanel><Button x:Name="Close" Grid.Column="1" Content="×" FontSize="22" Padding="12,0" VerticalAlignment="Top" ToolTip="Close settings" AutomationProperties.Name="Close settings"/></Grid>
-  <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="200"/><ColumnDefinition/></Grid.ColumnDefinitions>
-   <Border Background="{DynamicResource SidebarBg}" Padding="12,16" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,1,0"><StackPanel><Button x:Name="AppearanceNav" Tag="Appearance" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="12"><StackPanel><TextBlock Text="Appearance" FontWeight="SemiBold"/><TextBlock Text="Theme and typography" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="ModelsNav" Tag="Models" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="12"><StackPanel><TextBlock Text="Models" FontWeight="SemiBold"/><TextBlock Text="Model and reasoning" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="WorkspaceNav" Tag="Workspace" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="12"><StackPanel><TextBlock Text="Workspace" FontWeight="SemiBold"/><TextBlock Text="Layout and folders" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="KeyboardNav" Tag="Keyboard" HorizontalContentAlignment="Left" Padding="12"><StackPanel><TextBlock Text="Keyboard" FontWeight="SemiBold"/><TextBlock Text="Shortcuts and actions" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,5,0,0"/></StackPanel></Button></StackPanel></Border>
-   <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="28,24" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0"><Grid>
+ <Border BorderBrush="{DynamicResource Border}" BorderThickness="1"><Grid><Grid.RowDefinitions><RowDefinition x:Name="SettingsHeaderRow" Height="80"/><RowDefinition/><RowDefinition Height="60"/></Grid.RowDefinitions>
+  <Grid x:Name="TitleBar" Margin="24,14,18,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Settings" FontSize="22" FontWeight="SemiBold"/><TextBlock Text="A workspace that works your way." Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,4,0,0"/></StackPanel><Button x:Name="Close" Grid.Column="1" Content="×" FontSize="22" Padding="12,0" VerticalAlignment="Top" ToolTip="Close settings" AutomationProperties.Name="Close settings"/></Grid>
+  <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition x:Name="SettingsNavColumn" Width="200"/><ColumnDefinition/></Grid.ColumnDefinitions>
+   <Border x:Name="SettingsNavSurface" Background="{DynamicResource SidebarBg}" Padding="12,14" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,1,0"><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel><Button x:Name="AppearanceNav" Tag="Appearance" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="12"><StackPanel><TextBlock Text="Appearance" FontWeight="SemiBold"/><TextBlock Text="Theme and typography" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="ModelsNav" Tag="Models" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="12"><StackPanel><TextBlock Text="Models" FontWeight="SemiBold"/><TextBlock Text="Model and reasoning" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="WorkspaceNav" Tag="Workspace" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="12"><StackPanel><TextBlock Text="Workspace" FontWeight="SemiBold"/><TextBlock Text="Layout and folders" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="KeyboardNav" Tag="Keyboard" HorizontalContentAlignment="Left" Padding="12"><StackPanel><TextBlock Text="Keyboard" FontWeight="SemiBold"/><TextBlock Text="Shortcuts and actions" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel></Button></StackPanel></ScrollViewer></Border>
+   <ScrollViewer x:Name="SettingsScroll" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="24,20" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0"><Grid>
     <StackPanel x:Name="AppearancePage"><TextBlock Text="Appearance" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,8"/><TextBlock Text="Set the tone for your next idea." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,0,0,24"/><TextBlock Text="Color theme" FontWeight="SemiBold" Margin="0,0,0,12"/>
      <UniformGrid Rows="1" Columns="2">
       <Button x:Name="DarkTheme" Style="{DynamicResource SecondaryButton}" HorizontalContentAlignment="Stretch" Padding="12" Margin="0,0,12,0" AutomationProperties.Name="Use dark theme"><StackPanel><Border Background="#181B24" BorderBrush="#3B4455" BorderThickness="1" CornerRadius="8" Height="94" Padding="10"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="#12151D" CornerRadius="4" Margin="0,0,7,0"><StackPanel Margin="5,8"><Border Height="5" Background="#F1C86A" CornerRadius="2" Margin="0,0,0,6"/><Border Height="4" Background="#3B4455" CornerRadius="2" Margin="0,0,0,5"/><Border Height="4" Background="#3B4455" CornerRadius="2"/></StackPanel></Border><Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="14"/><RowDefinition/><RowDefinition Height="20"/></Grid.RowDefinitions><Border Background="#BEC5D2" Height="4" Width="46" HorizontalAlignment="Left" CornerRadius="2"/><StackPanel Grid.Row="1" Margin="0,5,0,0"><Border Background="#393124" Height="9" CornerRadius="3" Margin="10,0,0,5"/><Border Background="#3B4455" Height="4" CornerRadius="2" Margin="0,0,12,5"/><Border Background="#3B4455" Height="4" CornerRadius="2" Margin="0,0,24,0"/></StackPanel><Border Grid.Row="2" Background="#252B37" CornerRadius="5" BorderBrush="#3B4455" BorderThickness="1"><Border Width="10" Height="10" Background="#F1C86A" CornerRadius="3" HorizontalAlignment="Right" Margin="4"/></Border></Grid></Grid></Border><TextBlock Text="Dark · Graphite" FontWeight="SemiBold" Margin="0,12,0,0"/><TextBlock Text="Quiet focus, warm highlights" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel></Button>
@@ -1403,7 +1792,19 @@ function New-SettingsWindow {
     $dialog = [Windows.Markup.XamlReader]::Load([Xml.XmlNodeReader]::new($definition))
     $dialog.Resources.MergedDictionaries.Add($window.Resources)
     $dialog.Owner = $window
-    $dialog.Height = [Math]::Min($dialog.Height,[Windows.SystemParameters]::WorkArea.Height-32)
+    $workArea = [Windows.SystemParameters]::WorkArea
+    $dialog.Width = [Math]::Max(420, [Math]::Min(900, $workArea.Width - 32))
+    $dialog.Height = [Math]::Max(360, [Math]::Min(740, $workArea.Height - 32))
+    $navColumn = $dialog.FindName('SettingsNavColumn')
+    $navSurface = $dialog.FindName('SettingsNavSurface')
+    $settingsScroll = $dialog.FindName('SettingsScroll')
+    $dialog.Add_SizeChanged({
+        $compactDialog = $dialog.ActualWidth -lt 640
+        $navWidth = if ($compactDialog) { 140 } else { 200 }
+        if ($navColumn -and [Math]::Abs($navColumn.Width.Value - $navWidth) -gt 0.5) { $navColumn.Width = [Windows.GridLength]::new($navWidth) }
+        if ($navSurface) { $navSurface.Padding = if ($compactDialog) { [Windows.Thickness]::new(6,10,6,10) } else { [Windows.Thickness]::new(12,14,12,14) } }
+        if ($settingsScroll) { $settingsScroll.Padding = if ($compactDialog) { [Windows.Thickness]::new(14,14,14,14) } else { [Windows.Thickness]::new(24,20,24,20) } }
+    })
     $script:settingsWindow = $dialog; $script:settingsControls = @{}
     foreach ($name in @('TitleBar','Close','Done','AppearanceNav','ModelsNav','WorkspaceNav','KeyboardNav','AppearancePage','ModelsPage','WorkspacePage','KeyboardPage','DarkTheme','LightTheme','TextSize','TextSizeLabel','TypePreview','ResetSize','ActiveModel','ModelSearch','ModelMatches','ModelList','UseModel','Efforts','WorkspacePath','ChooseFolder','OpenFolder','ShowSidebar','ShowWork','Topmost','Feedback')) { $script:settingsControls[$name] = $dialog.FindName($name) }
     $script:settingsModelsSignature = $null; $script:settingsEffortsSignature = $null; $script:settingsSection = 'Appearance'
@@ -1490,6 +1891,17 @@ function Apply-Navigation {
         'Archive' { @($script:allSessions | Where-Object { [bool]$_.saved }) }
         default { @($script:allSessions) }
     })
+    $activeWs = Normalize-WorkspacePath $script:activeWorkspace
+    if ($script:filterByActiveWorkspace -and -not [string]::IsNullOrWhiteSpace($activeWs)) {
+        $visible = @($visible | Where-Object {
+            $rowDir = Normalize-WorkspacePath ([string]$_.working_dir)
+            if ($_.id -eq '__companion__') {
+                [string]::IsNullOrWhiteSpace($rowDir) -or (Test-SameWorkspacePath $rowDir $activeWs)
+            } else {
+                (-not [string]::IsNullOrWhiteSpace($rowDir)) -and (Test-SameWorkspacePath $rowDir $activeWs)
+            }
+        })
+    }
     $query = ([string]$controls.SessionSearch.Text).Trim()
     if ($query) {
         $pattern = [regex]::Escape($query)
@@ -1500,24 +1912,40 @@ function Apply-Navigation {
             [pscustomobject]@{ Row=$visible[$index]; Rank=$rank; Index=$index }
         }
         $visible = @($ranked | Sort-Object Rank,Index | ForEach-Object { $_.Row })
+    } elseif ($script:pinnedChats.Count -gt 0 -and $visible.Count -gt 1) {
+        $indexed = for ($index=0; $index -lt $visible.Count; $index++) {
+            $row = $visible[$index]
+            $order = if ($row.id -eq '__companion__') { 0 } elseif ($script:pinnedChats -contains [string]$row.id) { 1 } else { 2 }
+            [pscustomobject]@{ Row=$row; Order=$order; Index=$index }
+        }
+        $visible = @($indexed | Sort-Object Order,Index | ForEach-Object { $_.Row })
     }
     foreach ($row in $visible) {
+        $isPinnedChat = $script:pinnedChats -contains [string]$row.id
         $status = switch ([string]$row.state) { 'working' { 'Working' } 'attention' { 'Needs you' } 'offline' { 'Offline' } 'stored' { 'Read-only' } default { 'Ready' } }
         $icon = switch ([string]$row.state) { 'working' { '●' } 'attention' { '!' } 'offline' { '↻' } 'stored' { '▤' } default { '○' } }
-        $subtitle = if ($row.working_dir) { $leaf = Split-Path -Leaf ([string]$row.working_dir); if ($leaf) { $leaf } else { [string]$row.working_dir } } elseif ($row.detail -and [string]$row.detail -ne 'Ready') { [string]$row.detail } else { '' }
+        $rowDir = Normalize-WorkspacePath ([string]$row.working_dir)
+        $subtitle = if ($rowDir) { $leaf = Split-Path -Leaf $rowDir; if ($leaf) { $leaf } else { $rowDir } } elseif ($row.detail -and [string]$row.detail -ne 'Ready') { [string]$row.detail } else { '' }
         $tooltip = [string]$row.title
-        if ($row.working_dir) { $tooltip += "`n" + [string]$row.working_dir }
+        if ($rowDir) { $tooltip += "`n" + $rowDir }
         if ($row.detail) { $tooltip += "`n" + [string]$row.detail }
+        $marker = if ($isPinnedChat -and $row.saved) { '📌★' } elseif ($isPinnedChat) { '📌' } elseif ($row.saved) { '★' } else { '' }
         $row | Add-Member -NotePropertyName row_tooltip -NotePropertyValue $tooltip -Force
         $row | Add-Member -NotePropertyName status_label -NotePropertyValue $status -Force
         $row | Add-Member -NotePropertyName row_icon -NotePropertyValue $icon -Force
         $row | Add-Member -NotePropertyName row_subtitle -NotePropertyValue $subtitle -Force
-        $row | Add-Member -NotePropertyName saved_marker -NotePropertyValue $(if ($row.saved) { '★' } else { '' }) -Force
+        $row | Add-Member -NotePropertyName saved_marker -NotePropertyValue $marker -Force
     }
     $label = if ($query) { 'Search results' } else { switch ($script:navigation) { 'Live' { 'Live chats' } 'Archive' { 'Saved chats' } 'Projects' { 'Workspace chats' } default { 'Chats' } } }
-    $controls.ChatsHeading.Text = "$label · $($visible.Count)"
+    if (-not $query -and $script:filterByActiveWorkspace -and $activeWs) {
+        $wsLeaf = Split-Path -Leaf $activeWs
+        if (-not $wsLeaf) { $wsLeaf = $activeWs }
+        $controls.ChatsHeading.Text = "$wsLeaf · $($visible.Count)"
+    } else {
+        $controls.ChatsHeading.Text = "$label · $($visible.Count)"
+    }
     Update-SidebarChrome
-    $listSignature = ($script:navigation + "`n" + $query + "`n" + (@($visible | ForEach-Object { "$($_.id)|$($_.title)|$($_.state)|$($_.detail)|$($_.working_dir)|$($_.saved)" }) -join "`n"))
+    $listSignature = ($script:navigation + "`n" + $activeWs + "`n" + $script:filterByActiveWorkspace + "`n" + ($script:pinnedChats -join ',') + "`n" + $query + "`n" + (@($visible | ForEach-Object { "$($_.id)|$($_.title)|$($_.state)|$($_.detail)|$($_.working_dir)|$($_.saved)|$($_.saved_marker)" }) -join "`n"))
     if ($script:navigationListSignature -eq $listSignature) { return }
     $script:navigationListSignature = $listSignature
     $scroller = Get-ChatListScroller
@@ -1527,11 +1955,12 @@ function Apply-Navigation {
     try {
         $controls.Sessions.ItemsSource = $visible
         $controls.SessionsEmpty.Visibility = if ($visible.Count -eq 0) { 'Visible' } else { 'Collapsed' }
-        $controls.SessionsEmpty.Text = if ($query) { 'No matching chats. Clear the search or try another title or workspace.' } elseif ($script:navigation -eq 'Archive') { 'No saved chats yet. Use the star to save a live chat.' } else { 'No chats in this view.' }
+        $controls.SessionsEmpty.Text = if ($query) { 'No matching chats. Clear the search or try another title or workspace.' } elseif ($script:navigation -eq 'Archive') { 'No saved chats yet. Use the star to save a live chat.' } elseif ($script:filterByActiveWorkspace -and $activeWs) { 'No chats in this workspace yet.' } else { 'No chats in this view.' }
         $visibleIds = @($visible | ForEach-Object { $_.id })
         $allIds = @($script:allSessions | ForEach-Object { $_.id })
         if ($visibleIds -contains $selected) { $controls.Sessions.SelectedValue = $selected }
-        elseif (-not $selected -or $allIds -notcontains $selected) {
+        elseif (-not $selected -or $allIds -notcontains $selected -or ($script:filterByActiveWorkspace -and -not [string]::IsNullOrWhiteSpace($activeWs))) {
+            $script:lastSelectedSessionId = ''
             if ($visibleIds -contains '__companion__') { $controls.Sessions.SelectedValue = '__companion__' }
             elseif ($visible.Count) { $controls.Sessions.SelectedIndex = 0 }
             else { $controls.Sessions.SelectedValue = $null }
@@ -1571,17 +2000,22 @@ function Format-Transcript($transcript) {
 function Get-SessionRows {
     $rows = New-Object System.Collections.Generic.List[object]
     $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+    $index = @{}
     if ($script:ownedSessionId) { [void]$seen.Add($script:ownedSessionId) }
     foreach ($live in @($script:liveSessions)) {
         if ($live.id -eq $script:ownedSessionId) { continue }
         [void]$rows.Add($live)
-        if ($live.id) { [void]$seen.Add([string]$live.id) }
+        if ($live.id) {
+            $lid = [string]$live.id
+            [void]$seen.Add($lid)
+            $index[$lid] = $live
+        }
     }
     foreach ($stored in @($script:storedSessions)) {
         $id = [string]$stored.id
         if ([string]::IsNullOrWhiteSpace($id) -or $seen.Contains($id)) { continue }
         [void]$seen.Add($id)
-        $rows.Add([pscustomobject]@{
+        $item = [pscustomobject]@{
             id = $id
             title = [string]$stored.title
             detail = [string]$stored.detail
@@ -1593,8 +2027,11 @@ function Get-SessionRows {
             working_dir = $stored.working_dir
             last_active_at = $stored.last_active_at
             last_message_time = [string]$stored.last_message_time
-        })
+        }
+        $rows.Add($item)
+        $index[$id] = $item
     }
+    $script:sessionIndex = $index
     return $rows.ToArray()
 }
 
@@ -1658,13 +2095,25 @@ function Set-Snapshot($snapshot) {
         $script:draftSession = $ownedId
         $script:drafts.Remove('__companion__')
     }
+    $ownedChanged = $ownedId -ne $script:ownedSessionId
     $script:ownedSessionId = $ownedId
+    $ownRow = @($snapshot.sessions | Where-Object { $_.id -eq '__companion__' }) | Select-Object -First 1
+    $ownTitle = if ($ownRow) { [string]$ownRow.title } else { '' }
+    if ($ownTitle -ne $script:lastOwnedTitle -or ($script:lastOwnedBusy -and -not $script:ownedBusy)) {
+        $script:lastOwnedTitle = $ownTitle
+        $script:lastStoredPoll = [DateTime]::MinValue
+    }
+    $script:lastOwnedBusy = $script:ownedBusy
+    if ($ownRow -and -not [string]::IsNullOrWhiteSpace([string]$ownRow.working_dir) -and [string]::IsNullOrWhiteSpace($script:activeWorkspace)) {
+        $script:activeWorkspace = Normalize-WorkspacePath ([string]$ownRow.working_dir)
+    }
     $script:responseDisconnected = $false
     $script:working = [int]$snapshot.working
     $selected = $controls.Sessions.SelectedValue
     # Include fields that affect navigation and context actions. A live
     # session can keep the same id while its title, state, or workspace moves.
     $signature = (@($snapshot.sessions | ForEach-Object { $_.id + ':' + $_.title + ':' + $_.state + ':' + $_.detail + ':' + $_.working_dir + ':' + $_.saved }) -join '|')
+    $sessionsChanged = ($signature -ne $script:lastSignature) -or $ownedChanged -or ($null -eq $script:allSessions)
     if ($signature -ne $script:lastSignature) {
         # Keep the picker predictable: the AlphaCode chat first, actionable sessions
         # next, then the remaining sessions in locale-aware title order.
@@ -1675,29 +2124,29 @@ function Set-Snapshot($snapshot) {
             @{ Expression = { $_.title } })
         $script:lastSignature = $signature
     }
-    $script:allSessions = @(Get-SessionRows)
-    Update-ProjectsList
-    Apply-Navigation
-    if ($firstConnection -and -not $script:userSelectedChat -and $script:navigation -eq 'Home' -and [string]::IsNullOrWhiteSpace([string]$controls.SessionSearch.Text) -and @($controls.Sessions.ItemsSource | ForEach-Object { $_.id }) -contains '__companion__') { $controls.Sessions.SelectedValue = '__companion__' }
-    $liveCount = @($script:allSessions | Where-Object { $_.id -ne '__companion__' -and $_.state -ne 'stored' }).Count
-    $storedCount = @($script:allSessions | Where-Object { $_.state -eq 'stored' }).Count
-    if ($storedCount -gt 0) {
-        $controls.SessionCount.Text = "$liveCount live · $storedCount saved"
-    } elseif ($liveCount -eq 1) {
-        $controls.SessionCount.Text = '1 live'
-    } else {
-        $controls.SessionCount.Text = "$liveCount live"
+    if ($sessionsChanged) {
+        $script:allSessions = @(Get-SessionRows)
+        Update-ProjectsList
+        Apply-Navigation
+        if ($firstConnection -and -not $script:userSelectedChat -and $script:navigation -eq 'Home' -and [string]::IsNullOrWhiteSpace([string]$controls.SessionSearch.Text) -and @($controls.Sessions.ItemsSource | ForEach-Object { $_.id }) -contains '__companion__') { $controls.Sessions.SelectedValue = '__companion__' }
+        $liveCount = @($script:allSessions | Where-Object { $_.id -ne '__companion__' -and $_.state -ne 'stored' }).Count
+        $storedCount = @($script:allSessions | Where-Object { $_.state -eq 'stored' }).Count
+        $controls.SessionCount.Text = if ($storedCount -gt 0) { "$liveCount live · $storedCount saved" } elseif ($liveCount -eq 1) { '1 live' } else { "$liveCount live" }
     }
     $allowedModels = @($snapshot.models | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
     $options = if ($null -ne $snapshot.model_options) { @($snapshot.model_options) } elseif ($snapshot.provider -and $snapshot.model -and $allowedModels -ccontains [string]$snapshot.model) { @([pscustomobject]@{id=[string]$snapshot.model; provider=[string]$snapshot.provider}) } else { @() }
-    $seenModels = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
-    $script:modelRows = @(foreach ($option in $options) {
-        $id = [string]$option.id
-        if ($allowedModels -ccontains $id -and $seenModels.Add($id)) {
-            [pscustomobject]@{id=$id; name=(Get-ModelDisplayName $id); provider=[string]$option.provider}
-        }
-    })
-    $script:availableModels = @($script:modelRows | ForEach-Object { $_.id })
+    $modelPayloadSig = ($allowedModels -join "`0") + "`n" + (@($options | ForEach-Object { [string]$_.id + ':' + [string]$_.provider }) -join "`0")
+    if ($modelPayloadSig -ne $script:lastModelPayloadSignature) {
+        $script:lastModelPayloadSignature = $modelPayloadSig
+        $seenModels = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+        $script:modelRows = @(foreach ($option in $options) {
+            $id = [string]$option.id
+            if ($allowedModels -ccontains $id -and $seenModels.Add($id)) {
+                [pscustomobject]@{id=$id; name=(Get-ModelDisplayName $id); provider=[string]$option.provider}
+            }
+        })
+        $script:availableModels = @($script:modelRows | ForEach-Object { $_.id })
+    }
     $models = $script:availableModels
     if ($models.Count -gt 0) {
         $script:suppressSelectionEvents = $true
@@ -1771,7 +2220,13 @@ function Update-SelectedSession([string]$sessionId = '') {
         $script:transcript = ''
         $script:transcriptFor = ''
     }
-    $session = @($script:allSessions | Where-Object { $_.id -eq $selected }) | Select-Object -First 1
+    $session = if ($script:ownedSessionId -and [string]$selected -eq $script:ownedSessionId -and $script:sessionIndex.ContainsKey('__companion__')) {
+        $script:sessionIndex['__companion__']
+    } elseif ($script:sessionIndex.ContainsKey([string]$selected)) {
+        $script:sessionIndex[[string]$selected]
+    } else {
+        @($script:allSessions | Where-Object { $_.id -eq $selected }) | Select-Object -First 1
+    }
     if (-not $session) { return }
     $draftKey = Get-ChatDraftKey $selected
     if ($script:draftSession -ne $draftKey) {
@@ -1786,18 +2241,31 @@ function Update-SelectedSession([string]$sessionId = '') {
     }
     $storedOnly = [string]$session.state -eq 'stored'
     $canResume = $storedOnly -and [string]$session.source -eq 'alphacode'
+    $effectiveWs = if (-not [string]::IsNullOrWhiteSpace([string]$session.working_dir)) {
+        Normalize-WorkspacePath ([string]$session.working_dir)
+    } elseif ($selected -eq '__companion__' -and -not [string]::IsNullOrWhiteSpace($script:activeWorkspace)) {
+        Normalize-WorkspacePath $script:activeWorkspace
+    } else {
+        ''
+    }
+    $hasWorkspace = -not [string]::IsNullOrWhiteSpace($effectiveWs)
+    $isLoadingChat = (-not [string]::IsNullOrWhiteSpace([string]$selected)) -and ([string]$selected -eq $script:loadingSessionId -or [string]$selected -eq $script:resumingSessionId)
     $controls.ResumeChat.Visibility = if ($canResume) { 'Visible' } else { 'Collapsed' }
-    $controls.Prompt.IsReadOnly = $storedOnly
-    $controls.Placeholder.Text = if ($canResume) { 'Resume this chat to send a message' } elseif ($storedOnly) { 'Open Terminal to continue this imported chat' } else { 'Describe a task. Ask a question. Start here.' }
+    $controls.Prompt.IsReadOnly = $storedOnly -or (-not $hasWorkspace -and -not $script:inputMode)
+    $controls.Placeholder.Text = if ($canResume) { 'Resume this chat to send a message' } elseif ($storedOnly) { 'Open Terminal to continue this imported chat' } elseif (-not $hasWorkspace) { 'Open a project folder first to start chatting' } else { 'Describe a task. Ask a question. Start here.' }
     $controls.ModelPicker.IsEnabled = -not $storedOnly -and $script:availableModels.Count -gt 0 -and -not $script:modelRequestPending
     $controls.EffortPicker.IsEnabled = -not $storedOnly -and -not [string]::IsNullOrWhiteSpace($script:selectedModel) -and -not $script:effortRequestPending
-    $controls.WorkspaceTitle.Text = $session.title
-    $controls.WorkspaceSubtitle.Text = switch ($session.state) {
-        'working' { if ($session.detail) { [string]$session.detail } else { 'Working in this workspace…' } }
-        'attention' { 'This workspace needs a decision from you' }
-        'offline' { 'The workspace is reconnecting to its local daemon' }
-        'stored' { if ($canResume) { 'Saved chat · ready to resume' } else { 'Imported chat · opens in Terminal' } }
-        default { if ($session.working_dir) { [string]$session.working_dir } else { 'Ready to work in your workspace' } }
+    $controls.WorkspaceTitle.Text = [string]$session.title
+    $controls.WorkspaceSubtitle.Text = if ($isLoadingChat) {
+        'Loading conversation messages…'
+    } else {
+        switch ($session.state) {
+            'working' { if ($session.detail) { [string]$session.detail } else { 'Working in this workspace…' } }
+            'attention' { 'This workspace needs a decision from you' }
+            'offline' { 'The workspace is reconnecting to its local daemon' }
+            'stored' { if ($canResume) { if ($effectiveWs) { "$effectiveWs · saved chat" } else { 'Saved chat · ready to resume' } } else { 'Imported chat · opens in Terminal' } }
+            default { if ($effectiveWs) { $effectiveWs } else { 'Open a project folder first to start chatting' } }
+        }
     }
     $controls.SidebarHint.Text = "Open: $($session.title)"
     $controls.SidebarHint.ToolTip = [string]$session.detail
@@ -1823,7 +2291,6 @@ function Update-SelectedSession([string]$sessionId = '') {
     $controls.SecretInput.Visibility = if ($script:passwordMode) { 'Visible' } else { 'Collapsed' }
     $controls.Placeholder.Visibility = if ($script:inputMode -or $controls.Prompt.Text.Length) { 'Collapsed' } else { 'Visible' }
     $controls.Send.Content = '↑'
-    $controls.Send.ToolTip = if ($script:inputMode) { 'Send command input (Enter)' } else { 'Send message (Enter)' }
     if ($script:inputMode) { $controls.Activity.Text = 'A command needs your input'; $controls.Detail.Text = $inputRequest.prompt }
     if ($script:deliveryNotice -and [DateTime]::UtcNow -lt $script:noticeUntil) {
         $controls.Detail.Text = $script:deliveryNotice
@@ -1836,12 +2303,42 @@ function Update-SelectedSession([string]$sessionId = '') {
     }
     if ($script:transcriptFor -eq $selected -and [string]$script:transcript) { $reply = $script:transcript }
     $hasReply = -not [string]::IsNullOrWhiteSpace($reply)
-    $controls.EmptyState.Visibility = if ($hasReply) { 'Collapsed' } else { 'Visible' }
-    $controls.ReplyScroll.Visibility = if ($hasReply) { 'Visible' } else { 'Collapsed' }
-    if (-not $hasReply) { $controls.JumpLatest.Visibility = 'Collapsed' }
-    if (-not $hasReply -and -not $script:inputMode -and $session.state -eq 'ready') {
-        $controls.Activity.Text = if ($selected -eq '__companion__') { 'What will you build today?' } else { 'Ready for your next idea' }
+    if ($hasReply -and [string]$selected -eq $script:loadingSessionId) {
+        $script:loadingSessionId = ''
+        $isLoadingChat = $false
     }
+    if ($isLoadingChat -and -not $hasReply) {
+        if ($controls.ChatLoadingPanel) {
+            $controls.ChatLoadingTitle.Text = if ([string]$selected -eq $script:resumingSessionId) { 'Resuming saved chat…' } else { 'Loading conversation messages…' }
+            $controls.ChatLoadingDetail.Text = 'Fetching saved messages from history…'
+            $controls.ChatLoadingPanel.Visibility = 'Visible'
+        }
+        $controls.EmptyState.Visibility = 'Collapsed'
+        $controls.ReplyScroll.Visibility = 'Collapsed'
+        $controls.Activity.Text = 'Loading conversation messages…'
+    } elseif ($hasReply) {
+        if ($controls.ChatLoadingPanel) { $controls.ChatLoadingPanel.Visibility = 'Collapsed' }
+        $controls.EmptyState.Visibility = 'Collapsed'
+        $controls.ReplyScroll.Visibility = 'Visible'
+        if ($controls.EmptyOpenFolder) { $controls.EmptyOpenFolder.Visibility = 'Collapsed' }
+    } else {
+        if ($controls.ChatLoadingPanel) { $controls.ChatLoadingPanel.Visibility = 'Collapsed' }
+        $controls.EmptyState.Visibility = 'Visible'
+        $controls.ReplyScroll.Visibility = 'Collapsed'
+        if (-not $hasWorkspace -and -not $storedOnly -and -not $script:inputMode) {
+            $controls.Activity.Text = 'Open a project folder first to start chatting'
+            $controls.Detail.Text = 'Choose a workspace folder so AlphaCode can explore code and run tasks in your project.'
+            if ($controls.EmptyOpenFolder) { $controls.EmptyOpenFolder.Visibility = 'Visible' }
+            $controls.ExamplesPanel.Visibility = 'Collapsed'
+        } else {
+            if ($controls.EmptyOpenFolder) { $controls.EmptyOpenFolder.Visibility = 'Collapsed' }
+            if (-not $script:inputMode -and $session.state -eq 'ready') {
+                $controls.Activity.Text = if ($selected -eq '__companion__') { 'What will you build today?' } else { 'Ready for your next idea' }
+            }
+            $controls.ExamplesPanel.Visibility = if ($window.ActualHeight -lt 680 -or $storedOnly) { 'Collapsed' } else { 'Visible' }
+        }
+    }
+    if (-not $hasReply) { $controls.JumpLatest.Visibility = 'Collapsed' }
     if ($controls.Reply.Text -ne $reply) {
         $following = $controls.ReplyScroll.VerticalOffset -ge ($controls.ReplyScroll.ScrollableHeight - 8)
         $controls.Reply.Text = $reply
@@ -1858,13 +2355,12 @@ function Update-SelectedSession([string]$sessionId = '') {
     $controls.Rename.ToolTip = 'Rename this chat'
     $controls.Archive.ToolTip = 'Save or unsave this chat'
     $controls.AddContext.IsEnabled = -not $script:ownedBusy
-    $controls.AddContext.ToolTip = 'Choose a workspace folder for a new chat'
-    $workspace = [string]$session.working_dir
-    $controls.WorkspacePath.Text = if ($workspace) { Split-Path -Leaf $workspace } else { 'Choose workspace' }
-    $controls.WorkspacePath.ToolTip = if ($workspace) { $workspace } else { 'Choose a folder with the + button' }
+    $controls.AddContext.ToolTip = 'Choose a workspace folder'
+    $controls.WorkspacePath.Text = if ($effectiveWs) { $wsLeaf = Split-Path -Leaf $effectiveWs; if ($wsLeaf) { $wsLeaf } else { $effectiveWs } } else { 'No folder open' }
+    $controls.WorkspacePath.ToolTip = if ($effectiveWs) { $effectiveWs } else { 'Open a project folder first to start chatting' }
     $controls.Archive.Content = if ([bool]$session.saved) { [char]0x2605 } else { [char]0x2606 }
     $controls.Archive.Foreground = Get-GuiBrush $(if ([bool]$session.saved) { 'Warning' } else { 'Muted' })
-    $controls.Send.ToolTip = if ($canResume) { 'Resume this chat to send a message' } elseif ($storedOnly) { 'Open Terminal to continue this imported chat' } else { 'Send prompt (Enter; Shift+Enter or Alt+Enter for a new line)' }
+    $controls.Send.ToolTip = if ($script:inputMode) { 'Send command input (Enter)' } elseif ($canResume) { 'Resume this chat to send a message' } elseif ($storedOnly) { 'Open Terminal to continue this imported chat' } elseif (-not $hasWorkspace) { 'Open a project folder first to start chatting' } else { 'Send prompt (Enter; Shift+Enter or Alt+Enter for a new line)' }
     $notice = if ($script:inputMode) { [string]$inputRequest.prompt } elseif ($script:deliveryNotice -and [DateTime]::UtcNow -lt $script:noticeUntil) { $script:deliveryNotice } else { '' }
     $noticeRole = if (-not $script:inputMode -and $notice -eq 'Prompt delivered') { 'Success' } else { 'Warning' }
     $controls.NoticeText.Foreground = Get-GuiBrush $noticeRole
@@ -1873,12 +2369,17 @@ function Update-SelectedSession([string]$sessionId = '') {
     $controls.NoticeBanner.Visibility = if ($notice) { 'Visible' } else { 'Collapsed' }
     Update-ComposerState
     Update-Workflow
-    Update-SettingsForm
+    if ($script:settingsWindow) { Update-SettingsForm }
     Update-ModelChooser
     Update-ResponseActivity
 }
 
 function Send-Prompt {
+    if (-not $script:inputMode -and [string]::IsNullOrWhiteSpace((Get-EffectiveWorkspacePath))) {
+        Show-GuiNotice 'Open a project folder first to start chatting'
+        Update-ComposerState
+        return
+    }
     if (-not $controls.Send.IsEnabled) { return }
     $content = if ($script:passwordMode) { $controls.SecretInput.Password } elseif ($script:inputMode) { $controls.CommandInput.Text } else { $controls.Prompt.Text }
     if (-not $script:inputMode -and [string]::IsNullOrWhiteSpace($content)) { return }
@@ -1892,6 +2393,7 @@ function Send-Prompt {
     $controls.Detail.Text = 'Sending your prompt…'
     $script:pendingResponseSession = Get-SelectedSessionId
     Update-ResponseActivity
+    if ($timer) { $timer.Interval = [TimeSpan]::FromMilliseconds(20) }
 }
 
 # Queue a non-composer bridge request (cancel/rename/archive/new_chat).
@@ -1914,6 +2416,7 @@ function Queue-Action([string]$action, [string]$sessionId, [hashtable]$extra = @
     foreach ($key in $extra.Keys) { $request[$key] = $extra[$key] }
     $script:queue.Enqueue($request)
     $controls.Send.IsEnabled = $false
+    if ($timer) { $timer.Interval = [TimeSpan]::FromMilliseconds(20) }
 }
 
 # Small modal input dialog used by Rename and Archive. Returns through the
@@ -2004,12 +2507,35 @@ function Queue-Capabilities([string]$sessionId) {
     Show-GuiNotice 'Loading tools and skills…' 20
 }
 
+function Open-WorkspaceFolderPicker([string]$mode = 'select') {
+    try {
+        if ($script:ownedBusy) { Show-GuiNotice 'Finish or cancel the current GUI turn first'; return }
+        $selectedPath = Select-AlphacodeWorkspace 'Choose a project folder'
+        if (-not $selectedPath) { return }
+        $cleanPath = Normalize-WorkspacePath $selectedPath
+        if ($mode -eq 'add') {
+            Invoke-WorkspaceAction 'workspace_add' $cleanPath
+            Show-GuiNotice "Adding workspace: $cleanPath"
+            return
+        }
+        $selected = Get-SelectedSessionId
+        $row = Get-SelectedSessionRow
+        $hasOwnedMessages = $selected -eq '__companion__' -and -not [string]::IsNullOrWhiteSpace([string]$script:ownedSessionId)
+        if ($hasOwnedMessages -or ($row -and $row.id -ne '__companion__')) {
+            Start-NewChat $cleanPath
+        } else {
+            Select-WorkspaceFolder $cleanPath
+        }
+        Show-GuiNotice "Opened workspace: $cleanPath"
+    } catch {
+        Show-GuiNotice ("Workspace picker error: " + $_.Exception.Message) 12
+    }
+}
+
 function Open-SelectedWorkspace {
-    $selected = Get-SelectedSessionId
-    $row = @($script:allSessions | Where-Object { $_.id -eq $selected } | Select-Object -First 1)
-    $path = if ($row.Count -gt 0) { [string]$row[0].working_dir } else { '' }
+    $path = Get-EffectiveWorkspacePath
     if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Container)) {
-        Show-GuiNotice 'No accessible workspace folder is attached to this chat'
+        Open-WorkspaceFolderPicker 'select'
         return
     }
     Start-Process -FilePath 'explorer.exe' -ArgumentList @("`"$path`"") | Out-Null
@@ -2229,28 +2755,20 @@ function Select-AlphacodeWorkspace([string]$Description) {
     }
 }
 
-$controls.AddContext.Add_Click({
-    try {
-        if ($script:ownedBusy) { Show-GuiNotice 'Finish or cancel the current GUI turn first'; return }
-        $selectedPath = $null
-        try {
-            $selectedPath = Select-AlphacodeWorkspace 'Choose a workspace for a new AlphaCode chat'
-        } catch {
-            Show-GuiNotice ("Could not open the workspace picker: " + $_.Exception.Message) 12
-            return
-        }
-        if ($selectedPath) {
-            try { $controls.Sessions.SelectedValue = '__companion__' } catch {}
-            try { Queue-Action 'new_chat' '__companion__' @{ working_dir = $selectedPath } } catch {
-                Show-GuiNotice ("Could not start the workspace chat: " + $_.Exception.Message) 12
-                return
-            }
-            Show-GuiNotice "Opening workspace: $selectedPath"
-        }
-    } catch {
-        try { Show-GuiNotice ("Workspace picker error: " + $_.Exception.Message) 12 } catch {}
-    }
-})
+$controls.AddContext.Add_Click({ Open-WorkspaceFolderPicker 'select' })
+if ($controls.OpenWorkspaceFolder) { $controls.OpenWorkspaceFolder.Add_Click({ Open-WorkspaceFolderPicker 'select' }) }
+if ($controls.EmptyOpenFolder) { $controls.EmptyOpenFolder.Add_Click({ Open-WorkspaceFolderPicker 'select' }) }
+if ($controls.OpenFolderPromptBtn) { $controls.OpenFolderPromptBtn.Add_Click({ Open-WorkspaceFolderPicker 'select' }) }
+if ($controls.ShowAllWorkspaces) {
+    $controls.ShowAllWorkspaces.Add_Click({
+        $script:filterByActiveWorkspace = -not $script:filterByActiveWorkspace
+        $script:projectsListSignature = $null
+        $script:navigationListSignature = $null
+        Update-ProjectsList
+        Apply-Navigation
+        Update-SelectedSession
+    })
+}
 $controls.OpenTerminal.Add_Click({
     try {
         $selected = @($script:allSessions | Where-Object { $_.id -eq (Get-SelectedSessionId) }) | Select-Object -First 1
@@ -2269,17 +2787,25 @@ $controls.OpenTerminal.Add_Click({
 })
 $controls.Refresh.Add_Click({
     $script:lastPoll = [DateTime]::MinValue; $script:lastStoredPoll = [DateTime]::MinValue; $script:lastTranscriptPoll = [DateTime]::MinValue
-    $script:lastSignature = ''; $script:projectsListSignature = $null
+    $script:lastSignature = ''; $script:projectsListSignature = $null; $script:guiStateNeeded = $true
     if (-not $Preview) { Queue-Action 'reconnect' '__companion__' }
     Show-GuiNotice 'Refreshing workspace and connection…' 20
 })
-function Start-NewChat {
+function Start-NewChat([string]$workingDir = '') {
     if ($script:ownedBusy) {
         Show-GuiNotice 'Finish or cancel the current GUI turn first'
         return
     }
     if (-not (Can-QueueAction)) { return }
     Clear-GuiNotice
+    $targetDir = Normalize-WorkspacePath $workingDir
+    if (-not $targetDir -and -not [string]::IsNullOrWhiteSpace($script:activeWorkspace)) {
+        $targetDir = Normalize-WorkspacePath $script:activeWorkspace
+    }
+    if ($targetDir) {
+        $script:activeWorkspace = $targetDir
+        $script:filterByActiveWorkspace = $true
+    }
     # The companion chat only appears in the unfiltered Home list; leaving the
     # picker on Archive/Recents would hide the chat the user just started.
     $controls.SessionSearch.Clear()
@@ -2290,10 +2816,14 @@ function Start-NewChat {
     $controls.SessionSearch.Clear()
     $controls.CommandInput.Clear(); $controls.SecretInput.Clear(); $controls.Prompt.Focus()
     $script:lastSignature = ''
+    $script:loadingSessionId = ''
+    $script:resumingSessionId = ''
     $script:transcript = ''; $script:transcriptFor = ''
-    Queue-Action 'new_chat' '__companion__'
-    $controls.WorkspaceTitle.Text = 'New chat'
-    $controls.WorkspaceSubtitle.Text = 'Starting a fresh chat...'
+    $extra = @{}
+    if ($targetDir) { $extra.working_dir = $targetDir }
+    Queue-Action 'new_chat' '__companion__' $extra
+    $controls.WorkspaceTitle.Text = 'New conversation'
+    $controls.WorkspaceSubtitle.Text = if ($targetDir) { $targetDir } else { 'Open a project folder first to start chatting' }
 }
 $controls.NewChat.Add_Click({ Start-NewChat })
 # Single owner of the sidebar geometry. Collapsing the column to a fixed 1px
@@ -2313,6 +2843,7 @@ function Set-SidebarVisibility([bool]$visible, [bool]$persist = $true) {
     Update-SidebarChrome
     $controls.SidebarHint.Text = if ($visible) { 'Sidebar visible · Ctrl+K jumps to chats' } else { 'Sidebar hidden · use the rail to navigate' }
     $controls.FooterStatus.Text = if ($visible) { 'Sidebar restored' } else { 'Sidebar hidden · Ctrl+B or the rail restores it' }
+    if ($controls.ChatSurface -and $window.ActualWidth -gt 0) { Update-GuiLayout $true }
     if ($persist) { Save-GuiSettings }
 }
 function Set-Navigation([string]$section, [bool]$record = $true) {
@@ -2367,6 +2898,10 @@ function Get-ChatDraftKey([string]$sessionId) {
 function Get-SelectedSessionRow {
     $id = Get-SelectedSessionId
     if ([string]::IsNullOrWhiteSpace($id)) { return $null }
+    if ($script:ownedSessionId -and $id -eq $script:ownedSessionId -and $script:sessionIndex.ContainsKey('__companion__')) {
+        return $script:sessionIndex['__companion__']
+    }
+    if ($script:sessionIndex.ContainsKey($id)) { return $script:sessionIndex[$id] }
     return @($script:allSessions | Where-Object { $_.id -eq $id }) | Select-Object -First 1
 }
 
@@ -2387,8 +2922,11 @@ $controls.ResumeChat.Add_Click({
     $session = Get-SelectedSessionRow
     if (-not $session -or $session.state -ne 'stored' -or $session.source -ne 'alphacode') { return }
     if (-not (Can-QueueAction)) { return }
+    $script:resumingSessionId = [string]$session.id
+    $script:loadingSessionId = [string]$session.id
     Queue-Action 'resume_chat' ([string]$session.id)
     $controls.ResumeChat.IsEnabled = $false
+    Update-SelectedSession ([string]$session.id)
     Show-GuiNotice 'Resuming the saved chat…' 75
 })
 
@@ -2563,7 +3101,20 @@ $controls.Sessions.Add_SelectionChanged({
     if ($script:suppressSelectionEvents) { return }
     $script:userSelectedChat = $true
     # SelectedValue may still be the previous row during this routed event.
-    if ($event.AddedItems.Count -gt 0) { Update-SelectedSession ([string]$event.AddedItems[0].id) }
+    if ($event.AddedItems.Count -gt 0) {
+        $chosen = $event.AddedItems[0]
+        $chosenId = [string]$chosen.id
+        if ($chosen.state -eq 'stored' -and [string]$chosen.source -eq 'alphacode' -and $script:transcriptFor -ne $chosenId) {
+            $script:loadingSessionId = $chosenId
+            $script:immediateTranscriptSessionId = $chosenId
+            $script:transcript = ''
+            $script:transcriptFor = ''
+            if ($timer) { $timer.Interval = [TimeSpan]::FromMilliseconds(20) }
+        } else {
+            $script:loadingSessionId = ''
+        }
+        Update-SelectedSession $chosenId
+    }
 })
 
 $menu = New-Object Windows.Controls.ContextMenu
@@ -2669,7 +3220,7 @@ $timer.Interval = [TimeSpan]::FromMilliseconds(100)
 $timer.Add_Tick({
     if ($script:closed) { return }
     try {
-        $timer.Interval = [TimeSpan]::FromMilliseconds($(if ($script:working -gt 0) { 100 } else { 400 }))
+        $timer.Interval = [TimeSpan]::FromMilliseconds($(if ($script:queue.Count -gt 0 -or $script:pending -or $script:guiStateNeeded -or $script:immediateTranscriptSessionId) { 40 } elseif ($script:working -gt 0) { 150 } else { 450 }))
         if ($Preview) { return }
         if ($script:providersRefreshRequested -and -not $script:pending -and $script:queue.Count -eq 0) {
             $script:providersRefreshRequested = $false
@@ -2685,6 +3236,20 @@ $timer.Add_Tick({
                     if ($response.connection) { Set-ProviderProgress $response.connection }
                 }
                 elseif ($response.ok -and $response.connection) { Set-ProviderProgress $response.connection }
+                elseif ($response.ok -and $script:pendingKind -eq 'gui_state_get') {
+                    if ($response.state) { Apply-GuiState $response.state ([string]$response.active_working_dir) }
+                    elseif ($response.sessions) { Set-Snapshot $response }
+                }
+                elseif ($response.ok -and $script:pendingKind -eq 'gui_state_set') {
+                    if ($response.state) { Apply-GuiState $response.state }
+                }
+                elseif ($response.ok -and $script:pendingKind -in @('workspace_select','workspace_add','workspace_remove','workspace_pin','workspace_collapse')) {
+                    if ($response.state) { Apply-GuiState $response.state ([string]$response.working_dir) }
+                    if ($script:pendingKind -in @('workspace_select','workspace_remove')) { $script:lastPoll = [DateTime]::MinValue }
+                    if ($script:pendingKind -eq 'workspace_add') { Show-GuiNotice "Added workspace: $($response.working_dir)" }
+                    elseif ($script:pendingKind -eq 'workspace_remove') { Show-GuiNotice "Removed workspace: $($response.working_dir)" }
+                    elseif ($script:pendingKind -eq 'workspace_pin') { Show-GuiNotice $(if ([bool]$response.pinned) { 'Workspace pinned' } else { 'Workspace unpinned' }) }
+                }
                 elseif ($response.sessions) {
                     Set-Snapshot $response
                 }
@@ -2692,6 +3257,7 @@ $timer.Add_Tick({
                     Set-StoredSessions $response.stored
                 }
                 elseif ($response.ok -and $script:pendingKind -eq 'transcript') {
+                    if ($script:loadingSessionId -eq [string]$response.session_id -or $script:loadingSessionId) { $script:loadingSessionId = '' }
                     $payload = $response.transcript
                     if ($payload -and $payload.message_count -ne $null) {
                         $script:transcriptFor = [string]$response.session_id
@@ -2732,6 +3298,7 @@ $timer.Add_Tick({
                 }
                 elseif ($response.ok -and $script:pendingKind -eq 'reconnect') {
                     $script:lastPoll = [DateTime]::MinValue
+                    $script:guiStateNeeded = $true
                     Show-GuiNotice 'Reconnecting to AlphaCode…' 20
                 }
                 elseif ($response.ok -and $script:pendingKind -eq 'new_chat') {
@@ -2741,15 +3308,43 @@ $timer.Add_Tick({
                     $script:drafts.Remove('__companion__')
                     $script:draftSession = ''
                     $script:ownedSessionId = ''
+                    $script:loadingSessionId = ''
+                    $script:resumingSessionId = ''
+                    $script:transcript = ''
+                    $script:transcriptFor = ''
+                    if (-not [string]::IsNullOrWhiteSpace([string]$response.working_dir)) {
+                        $script:activeWorkspace = Normalize-WorkspacePath ([string]$response.working_dir)
+                        $script:filterByActiveWorkspace = $true
+                    }
                     if ($response.snapshot) { Set-Snapshot $response.snapshot }
                     Show-GuiNotice 'New chat ready  ·  type a prompt to begin'
                     $controls.Prompt.Focus() | Out-Null
                     $script:lastPoll = [DateTime]::MinValue
+                    $script:lastStoredPoll = [DateTime]::MinValue
                 }
                 elseif ($response.ok -and $script:pendingKind -eq 'resume_chat') {
+                    $resumedId = $script:resumingSessionId
+                    $script:loadingSessionId = ''
+                    $script:resumingSessionId = ''
+                    $preservedTranscript = ''
+                    if ($response.transcript -and $response.transcript.message_count -ne $null) {
+                        $preservedTranscript = Format-Transcript $response.transcript
+                    } elseif ($response.snapshot -and -not [string]::IsNullOrWhiteSpace([string]$response.snapshot.reply)) {
+                        $preservedTranscript = [string]$response.snapshot.reply
+                    } elseif ($resumedId -and $script:transcriptFor -eq $resumedId -and -not [string]::IsNullOrWhiteSpace($script:transcript)) {
+                        $preservedTranscript = $script:transcript
+                    }
+                    if ($response.snapshot -and $response.snapshot.sessions -and $response.snapshot.sessions.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$response.snapshot.sessions[0].working_dir)) {
+                        $script:activeWorkspace = Normalize-WorkspacePath ([string]$response.snapshot.sessions[0].working_dir)
+                        $script:filterByActiveWorkspace = $true
+                    }
                     $controls.SessionSearch.Clear()
                     Set-Navigation 'Home'
-                    Set-Snapshot $response.snapshot
+                    if ($response.snapshot) { Set-Snapshot $response.snapshot }
+                    if (-not [string]::IsNullOrWhiteSpace($preservedTranscript) -and (-not $response.snapshot -or [string]::IsNullOrWhiteSpace([string]$response.snapshot.reply))) {
+                        $script:transcriptFor = '__companion__'
+                        $script:transcript = $preservedTranscript
+                    }
                     $controls.Sessions.SelectedValue = '__companion__'
                     Update-SelectedSession '__companion__'
                     Show-GuiNotice 'Saved chat resumed'
@@ -2759,12 +3354,16 @@ $timer.Add_Tick({
                 elseif ($response.ok -and $script:pendingKind -eq 'archive') {
                     $verb = if ([bool]$response.saved) { 'Saved' } else { 'Unsaved' }
                     $controls.FooterStatus.Text = "$verb the chat"
+                    $script:lastSignature = ''
+                    $script:lastStoredCount = -1
                     $script:lastPoll = [DateTime]::MinValue
                     $script:lastStoredPoll = [DateTime]::MinValue
                 }
                 elseif ($response.ok -and $script:pendingKind -eq 'rename') {
                     $name = $response.detail.display_title
                     $controls.FooterStatus.Text = if ($name) { "Renamed the chat to '$name'" } else { 'Chat name updated' }
+                    $script:lastSignature = ''
+                    $script:lastStoredCount = -1
                     $script:lastPoll = [DateTime]::MinValue
                     $script:lastStoredPoll = [DateTime]::MinValue
                 }
@@ -2796,6 +3395,9 @@ $timer.Add_Tick({
                     if ($script:pendingKind -eq 'model') { $script:modelRequestPending = $false; $script:preferredModel = ''; $script:lastPoll = [DateTime]::MinValue }
                     if ($script:pendingKind -eq 'effort') { $script:effortRequestPending = $false; $script:preferredEffort = ''; $script:lastPoll = [DateTime]::MinValue }
                     if ($script:pendingKind -eq 'capabilities') { $script:capabilitiesRequestPending = $false }
+                    if ($script:pendingKind -eq 'transcript') { $script:loadingSessionId = '' }
+                    if ($script:pendingKind -eq 'resume_chat') { $script:loadingSessionId = ''; $script:resumingSessionId = '' }
+                    if ($script:pendingKind -like 'workspace_*') { Show-GuiNotice ([string]$response.error) 10 }
                     if ($script:pendingKind -eq 'dictate') { $controls.Voice.IsEnabled = -not $script:inputMode }
                     $controls.ModelPicker.IsEnabled = $true
                     $controls.EffortPicker.IsEnabled = $true
@@ -2819,6 +3421,21 @@ $timer.Add_Tick({
         if (-not $script:process -or $script:process.HasExited) { Start-Bridge }
         $request = $null
         if ($script:queue.Count -gt 0) { $request = $script:queue.Dequeue() }
+        elseif ($script:guiStateNeeded) {
+            $script:guiStateNeeded = $false
+            $request = @{ action='gui_state_get' }
+        }
+        elseif ($null -ne $script:pendingGuiStateSet) {
+            $updates = $script:pendingGuiStateSet
+            $script:pendingGuiStateSet = $null
+            $request = @{ action='gui_state_set'; updates=$updates }
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($script:immediateTranscriptSessionId)) {
+            $targetId = $script:immediateTranscriptSessionId
+            $script:immediateTranscriptSessionId = ''
+            $script:lastTranscriptPoll = [DateTime]::UtcNow
+            $request = @{ action='transcript'; session_id=$targetId }
+        }
         elseif (([DateTime]::UtcNow - $script:lastTranscriptPoll).TotalSeconds -ge 4) {
             # Real conversation for the selected live session, so the desktop
             # shows the same chat the terminal does.
@@ -2855,6 +3472,8 @@ $timer.Add_Tick({
         Write-GuiFailure 'bridge' 'MainTimer.Tick' $failure
         if ([AlphaCode.Desktop.GuiDiagnostics]::IsFatal($failure.Exception)) { throw }
         $script:responseDisconnected = $true
+        $script:loadingSessionId = ''
+        $script:resumingSessionId = ''
         $controls.StateText.Text = 'Reconnecting'
         $script:deliveryNotice = [AlphaCode.Desktop.GuiDiagnostics]::Redact($failure.Exception.Message,$null)
         $script:submittedPrompt = ''
@@ -2903,7 +3522,7 @@ $controls.FindReply.Add_Click({ Open-ConversationSearch })
 $controls.CloseReplySearch.Add_Click({ Close-ConversationSearch })
 $controls.ReplySearch.Add_TextChanged({ $searchTimer.Stop(); $searchTimer.Start() })
 $controls.ReplySearch.Add_PreviewKeyDown({ param($sender,$event) if ($event.Key -eq 'Return') { $searchTimer.Stop(); if ($script:renderedQuery -ne $controls.ReplySearch.Text) { Render-Conversation $true }; Move-ConversationHit $(if ([Windows.Input.Keyboard]::Modifiers -band [Windows.Input.ModifierKeys]::Shift) { -1 } else { 1 }); $event.Handled = $true } })
-$controls.WorkflowResize.Add_DragCompleted({ $script:workflowWidth = [Math]::Max(260,[Math]::Min(480,$controls.WorkColumn.ActualWidth)); Update-GuiLayout; Save-GuiSettings })
+$controls.WorkflowResize.Add_DragCompleted({ $script:workflowWidth = [Math]::Max(260,[Math]::Min(480,$controls.WorkColumn.ActualWidth)); Update-GuiLayout $true; Save-GuiSettings })
 $controls.WorkToggle.Add_Click({ Set-WorkflowVisibility (-not $script:workflowVisible) })
 $controls.ThemeToggle.Add_Click({ Set-GuiTheme $(if ($script:theme -eq 'dark') { 'light' } else { 'dark' }) })
 $controls.FocusMode.Add_Click({ Toggle-FocusMode })

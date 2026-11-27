@@ -59,6 +59,16 @@ scripts/.[a-zA-Z0-9_-]*.ps1
 .cargo_target_test/
 .target-perf/
 
+# Node / Frontend dependencies & build artifacts
+node_modules/
+**/node_modules/
+**/dist/
+release/
+release/**
+package-lock.json
+*.tsbuildinfo
+*.lnk
+
 # Search-engine site-verification files (served from the web root, not the crate)
 google*.html
 

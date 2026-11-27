@@ -48,7 +48,8 @@ futures = "0.3"
 async-trait = "0.1"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+# `handshake` and `stream` also power the local GUI WebSocket bridge (`cli::gui::web`).
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "stream", "rustls-tls-native-roots"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 # HTTP client
@@ -120,6 +121,8 @@ tracing = "0.1"
 unicode-width = "0.2"
 unicode-segmentation = "1"
 unicode-properties = { version = "0.1", features = ["emoji"] }
+# UAX #9 bidirectional layout for Arabic/RTL terminal rendering
+unicode-bidi = "0.3"
 
 # Image processing
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
@@ -167,6 +170,9 @@ azure_core = { version = "1", optional = true }
 
 # QR code generation
 qrcode = "0.14"
+
+# Local SQLite database for GUI state, workspaces, and chat metadata
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 httpdate = "1"
 azure_identity = { version = "1", default-features = false, features = ["tokio"], optional = true }
@@ -218,6 +224,12 @@ crossterm = { version = "0.29", features = ["use-dev-tty"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Threading", "Win32_System_Console", "Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Power", "Win32_UI", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
+# Native WebView2 (Windows) / WKWebView (macOS) desktop window for `alphacode --gui`.
+# Scoped to Windows and macOS so Linux/Alpine builds do not pull in webkit2gtk/gtk3.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tao = "0.31"
+wry = "0.47"
 
 # macOS-only bindings: CoreGraphics for synthetic input via `tool::computer`,
 # plus the global hotkey crate and the objc2 stack for the menubar status item.
