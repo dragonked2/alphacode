@@ -28,7 +28,17 @@ struct AuthStatusProviderReport {
 struct AuthStatusReport {
     any_available: bool,
     providers: Vec<AuthStatusProviderReport>,
-    oauth_accounts: Vec<crate::alphacode_base::auth::OAuthAccountSnapshot>,
+    oauth_accounts: Vec<OAuthAccountStatusReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct OAuthAccountStatusReport {
+    provider_id: &'static str,
+    provider_name: &'static str,
+    expires_at_ms: Option<i64>,
+    active: bool,
+    valid: bool,
+    switchable: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -145,12 +155,11 @@ pub(super) fn run_auth_status_command(emit_json: bool) -> Result<()> {
     } else {
         for provider in &report.providers {
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t-\t{}\t{}",
                 provider.id,
                 provider.status,
                 provider.auth_kind,
                 provider.method,
-                provider.account.as_deref().unwrap_or("-"),
                 provider.health,
                 provider.validation.as_deref().unwrap_or("not validated")
             );
@@ -164,19 +173,7 @@ pub(super) fn run_auth_status_command(emit_json: bool) -> Result<()> {
                     (false, true) => "saved",
                     (false, false) => "saved, expired",
                 };
-                let extra = acc
-                    .project_id
-                    .as_deref()
-                    .or(acc.subscription_type.as_deref())
-                    .map(|v| format!(" ({v})"))
-                    .unwrap_or_default();
-                println!(
-                    "  - {}: {}{} [{}]",
-                    acc.provider_name,
-                    acc.primary_identity(),
-                    extra,
-                    state
-                );
+                println!("  - {} [{}]", acc.provider_name, state);
             }
         }
     }
@@ -191,13 +188,19 @@ fn build_auth_status_report() -> AuthStatusReport {
     let reports = providers
         .into_iter()
         .map(|provider| {
-            let assessment = status.assessment_for_provider(provider);
+            let mut assessment = status.assessment_for_provider(provider);
+            assessment.account_summary = None;
+            if let Some(refresh) = &mut assessment.last_refresh
+                && let Some(error) = &mut refresh.last_error
+            {
+                *error = "details omitted".to_string();
+            }
             AuthStatusProviderReport {
                 id: provider.id.to_string(),
                 display_name: provider.display_name.to_string(),
                 status: auth_state_label(assessment.state).to_string(),
                 method: assessment.method_detail.clone(),
-                account: assessment.account_summary.clone(),
+                account: None,
                 health: assessment.health_summary(),
                 credential_source: assessment.credential_source.label().to_string(),
                 expiry_confidence: assessment.expiry_confidence.label().to_string(),
@@ -219,7 +222,17 @@ fn build_auth_status_report() -> AuthStatusReport {
     AuthStatusReport {
         any_available: status.has_any_available(),
         providers: reports,
-        oauth_accounts: crate::alphacode_base::auth::connected_oauth_accounts(),
+        oauth_accounts: crate::alphacode_base::auth::connected_oauth_accounts()
+            .into_iter()
+            .map(|account| OAuthAccountStatusReport {
+                provider_id: account.provider_id,
+                provider_name: account.provider_name,
+                expires_at_ms: account.expires_at_ms,
+                active: account.active,
+                valid: account.valid,
+                switchable: account.switchable,
+            })
+            .collect(),
     }
 }
 
@@ -806,6 +819,21 @@ mod tests {
                 .recommended_actions
                 .iter()
                 .any(|line| { line == "Review current state: alphacode auth status --json" })
+        );
+
+        crate::alphacode_base::auth::refresh_state::record_failure(
+            provider.id,
+            "refresh rejected for private@example.invalid",
+        )
+        .expect("record refresh failure");
+        let status = build_auth_status_report();
+        let health = &provider_status(&status, provider.id).health;
+        assert!(health.contains("last refresh: failed"));
+        assert!(health.contains("details omitted"));
+        assert!(
+            !serde_json::to_string(&status)
+                .expect("serialize auth status")
+                .contains("private@example.invalid")
         );
     }
 }
