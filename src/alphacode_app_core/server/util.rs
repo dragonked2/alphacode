@@ -863,7 +863,11 @@ mod newest_reload_candidate_integration_tests {
         let prev_home = std::env::var_os("ALPHACODE_HOME");
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path());
 
-        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        // Fixture mtimes must be fresher than the running test binary: since
+        // `shared_server_update_candidate` can fall back to `current_exe()`
+        // (mtime = CI build time), a 1970-based fixture always loses the
+        // cross-flavor newest-candidate comparison to the test runner itself.
+        let base = SystemTime::now();
         // Field state: shared-server pinned to an OLD self-dev build; stable
         // lags. Then `/update` installs a NEWER release and advances
         // stable/current (but NOT the pinned shared-server channel).
@@ -904,7 +908,11 @@ mod newest_reload_candidate_integration_tests {
         let prev_home = std::env::var_os("ALPHACODE_HOME");
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path());
 
-        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        // Fixture mtimes must be fresher than the running test binary: since
+        // `shared_server_update_candidate` can fall back to `current_exe()`
+        // (mtime = CI build time), a 1970-based fixture always loses the
+        // cross-flavor newest-candidate comparison to the test runner itself.
+        let base = SystemTime::now();
         // A deliberately-promoted self-dev build that is NEWER than stable must
         // still be honored: the whole point of pinning shared-server.
         let stable_old = "0.14.3";
@@ -972,7 +980,11 @@ mod newest_reload_candidate_integration_tests {
         let prev_home = std::env::var_os("ALPHACODE_HOME");
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path());
 
-        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        // Fixture mtimes must be fresher than the running test binary: since
+        // `shared_server_update_candidate` can fall back to `current_exe()`
+        // (mtime = CI build time), a 1970-based fixture always loses the
+        // cross-flavor newest-candidate comparison to the test runner itself.
+        let base = SystemTime::now();
         let old_release = "0.14.3";
         let new_release = "0.15.0";
         let old_path = install_versioned_binary(old_release, base);
@@ -1074,7 +1086,11 @@ mod newest_reload_candidate_integration_tests {
         let prev_home = std::env::var_os("ALPHACODE_HOME");
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path());
 
-        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        // Fixture mtimes must be fresher than the running test binary: since
+        // `shared_server_update_candidate` can fall back to `current_exe()`
+        // (mtime = CI build time), a 1970-based fixture always loses the
+        // cross-flavor newest-candidate comparison to the test runner itself.
+        let base = SystemTime::now();
         // Wrapper written strictly AFTER the payload (the bad copy order).
         let (wrapper, payload) =
             install_release_style_binary("0.25.1", base + Duration::from_secs(5), base);
