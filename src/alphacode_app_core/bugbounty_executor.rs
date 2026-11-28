@@ -999,6 +999,44 @@ async fn execute_task(
             index
         ));
     }
+    // Resolve the task's tool to an installed binary before hydrating inputs.
+    // The executor used to run `task.tool` verbatim, so a missing scanner
+    // failed every attempted call with a raw spawn error, and the
+    // orchestrator's documented fallback chain was never consulted.
+    let tool = orchestrator.resolve_tool(&task.tool).await;
+    if tool != task.tool
+        && !crate::alphacode_app_core::tool::bounty_bridge::SUPPORTED_TASK_TOOLS
+            .contains(&tool.as_str())
+    {
+        return Err(anyhow!(
+            "{}: tool '{}' is not installed; its fallback '{}' is not wired for orchestrator tasks",
+            task.id,
+            task.tool,
+            tool
+        ));
+    }
+    if tool == task.tool
+        && !matches!(
+            crate::alphacode_app_core::bugbounty_doctor::which(&task.tool),
+            crate::alphacode_app_core::bugbounty_doctor::ToolStatus::Present { .. }
+        )
+    {
+        return Err(anyhow!(
+            "{}: tool '{}' is not installed and no fallback is available; install it with `alphacode bugbounty install {}` and retry",
+            task.id,
+            task.tool,
+            task.tool
+        ));
+    }
+    if tool != task.tool {
+        tracing::info!(
+            "{}: tool '{}' unavailable, running fallback '{}'",
+            task.id,
+            task.tool,
+            tool
+        );
+    }
+
     let seeds = collect_seeds(orchestrator).await;
     let inputs = build_tool_inputs(task, orchestrator, dir, &seeds).await?;
     if inputs.is_empty() {
@@ -1026,7 +1064,7 @@ async fn execute_task(
     let mut coverage = TaskCoverage {
         target: orchestrator.target.clone(),
         task_id: task.id.clone(),
-        tool: task.tool.clone(),
+        tool: tool.clone(),
         inputs_planned: inputs.len(),
         inputs_attempted: 0,
         successful_calls: 0,
@@ -1042,7 +1080,7 @@ async fn execute_task(
     // The audit exists before the first external call, so an interrupted run
     // leaves an explicit unresolved attempt rather than silently losing it.
     atomic_write(&audit_path, &serde_json::to_vec_pretty(&coverage)?)?;
-    let is_url_tool = URL_LINE_TOOLS.contains(&task.tool.as_str());
+    let is_url_tool = URL_LINE_TOOLS.contains(&tool.as_str());
     let mut raw_text = String::new();
     let mut lines = Vec::new();
     let mut seen_lines = HashSet::new();
@@ -1062,7 +1100,7 @@ async fn execute_task(
             graceful_shutdown_signal: None,
             execution_mode: ToolExecutionMode::Direct,
         };
-        let (output, failed) = match run_task_tool(&task.tool, input.clone(), call_ctx).await {
+        let (output, failed) = match run_task_tool(&tool, input.clone(), call_ctx).await {
             Ok(out) => (out.output, false),
             Err(err) => (format!("[error] {err}"), true),
         };
