@@ -190,6 +190,11 @@ fn build_auth_status_report() -> AuthStatusReport {
         .map(|provider| {
             let mut assessment = status.assessment_for_provider(provider);
             assessment.account_summary = None;
+            if let Some(refresh) = &mut assessment.last_refresh
+                && let Some(error) = &mut refresh.last_error
+            {
+                *error = "details omitted".to_string();
+            }
             AuthStatusProviderReport {
                 id: provider.id.to_string(),
                 display_name: provider.display_name.to_string(),
@@ -814,6 +819,21 @@ mod tests {
                 .recommended_actions
                 .iter()
                 .any(|line| { line == "Review current state: alphacode auth status --json" })
+        );
+
+        crate::alphacode_base::auth::refresh_state::record_failure(
+            provider.id,
+            "refresh rejected for private@example.invalid",
+        )
+        .expect("record refresh failure");
+        let status = build_auth_status_report();
+        let health = &provider_status(&status, provider.id).health;
+        assert!(health.contains("last refresh: failed"));
+        assert!(health.contains("details omitted"));
+        assert!(
+            !serde_json::to_string(&status)
+                .expect("serialize auth status")
+                .contains("private@example.invalid")
         );
     }
 }
