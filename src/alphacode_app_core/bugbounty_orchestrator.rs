@@ -462,85 +462,33 @@ impl BugBountyOrchestrator {
             }
         }
 
-        // First, check if the requested tool is already available
-        if let ToolStatus::Present { path } = which(tool) {
-            tracing::debug!("Tool '{}' found at: {}", tool, path);
-            let result = tool.to_string();
-            // Cache the result
-            self.tool_resolution_cache
-                .write()
-                .await
-                .insert(tool.to_string(), result.clone());
-            return result;
-        }
+        let is_present = |name: &str| matches!(which(name), ToolStatus::Present { .. });
+        let resolved = resolve_tool_with_availability(tool, is_present);
 
-        // Tool not found, try alternatives based on known toolchain relationships
-        let alternative = match tool {
-            // ProjectDiscovery toolkit alternates
-            "gau" => "waybackurls",
-            "waybackurls" => "gau",
-            "katana" => "gau", // fall back to URL collector
-            "subfinder" => "assetfinder",
-            "amass" => "subfinder",
-            "assetfinder" => "subfinder",
-            "dnsx" => "subfinder",
-            "httpx" => "curl",
-            "nuclei" => "httpx",
-            // Active probing tools
-            "dalfox" => "gf", // fallback to pattern matching
-            "corsy" => "gf",
-            "crlfuzz" => "gf",
-            "hakrawler" => "gospider",
-            "ffuf" => "gobuster",
-            // Additional tool alternatives
-            "feroxbuster" => "gobuster",
-            "gobuster" => "feroxbuster",
-            "nikto" => "nuclei",     // template scanner as fallback
-            "sqlmap" => "nuclei",    // template scanner as fallback
-            "naabu" => "nmap",       // port scanner fallback
-            "kxss" => "gf",          // XSS pattern matching fallback
-            "meg" => "httpx",        // HTTP probe fallback
-            "anew" => "sort",        // deduplication fallback
-            "qsreplace" => "gf",     // query param manipulation fallback
-            "unfurl" => "gf",        // URL analysis fallback
-            "cariddi" => "katana",   // crawler fallback
-            "puredns" => "dnsx",     // DNS resolver fallback
-            "shuffledns" => "dnsx",  // DNS resolver fallback
-            "alterx" => "subfinder", // subdomain permutation fallback
-            _ => return tool.to_string(),
-        };
-
-        // Verify the alternative is actually available before suggesting it
-        if let ToolStatus::Present { path } = which(alternative) {
+        if resolved != tool {
             tracing::info!(
-                "Tool '{}' not found, using alternative '{}' (found at: {})",
+                "Tool '{}' not found, using alternative '{}'",
                 tool,
-                alternative,
-                path
+                resolved
             );
-            let result = alternative.to_string();
-            // Cache the result
-            self.tool_resolution_cache
-                .write()
-                .await
-                .insert(tool.to_string(), result.clone());
-            return result;
+        } else if !is_present(tool) {
+            // No alternative anywhere on the chain: return the original name
+            // and let the caller handle the failure gracefully.
+            tracing::warn!(
+                "Tool '{}' not found and no suitable alternative available",
+                tool
+            );
         }
 
-        // No alternative available - check if there are other tools in the
-        // toolchain that might serve a similar purpose
-        // Return original; caller will handle the failure gracefully
-        tracing::warn!(
-            "Tool '{}' not found and no suitable alternative available",
-            tool
-        );
-        let result = tool.to_string();
-        // Cache the result (even failure) to avoid repeated probing
+        // Cache the result (even failure) to avoid repeated probing.
+        // `ensure_tools_installed` clears the cache after a successful
+        // install, so a newly installed preferred tool is picked up instead
+        // of the stale fallback.
         self.tool_resolution_cache
             .write()
             .await
-            .insert(tool.to_string(), result.clone());
-        result
+            .insert(tool.to_string(), resolved.clone());
+        resolved
     }
 
     /// Ensure all required tools are installed, auto-installing if possible.
@@ -566,11 +514,13 @@ impl BugBountyOrchestrator {
         let mut requested: Vec<String> = tools.into_iter().collect();
         requested.sort();
 
+        let mut any_installed = false;
         for (tool, outcome) in install_all(&requested).await {
             match outcome {
                     crate::alphacode_app_core::bugbounty_install::InstallOutcome::AlreadyPresent { .. } => {}
                     crate::alphacode_app_core::bugbounty_install::InstallOutcome::Installed { .. } => {
                         tracing::info!("Auto-installed tool: {}", tool);
+                        any_installed = true;
                     }
                     crate::alphacode_app_core::bugbounty_install::InstallOutcome::InstalledButNotOnPath { hint, .. } => {
                         tracing::warn!("Tool {} installed but not on PATH: {}", tool, hint);
@@ -588,6 +538,12 @@ impl BugBountyOrchestrator {
                         tracing::warn!("Timed out installing tool: {}", tool);
                     }
             }
+        }
+        if any_installed {
+            // Resolutions cached before the install may point at a fallback
+            // even though the preferred tool is now available; drop them so
+            // the next `resolve_tool` call re-probes.
+            self.tool_resolution_cache.write().await.clear();
         }
     }
 
@@ -1773,9 +1729,108 @@ impl std::fmt::Display for OrchestratorSummary {
     }
 }
 
+/// The single-hop fallback table: the tool to try when `tool` itself is not
+/// installed. Kept separate from [`resolve_tool_with_availability`] so the
+/// chain-walking logic and the table can be tested independently.
+fn fallback_alternative(tool: &str) -> Option<&'static str> {
+    Some(match tool {
+        // ProjectDiscovery toolkit alternates
+        "gau" => "waybackurls",
+        "waybackurls" => "gau",
+        "katana" => "gau", // fall back to URL collector
+        "subfinder" => "assetfinder",
+        "amass" => "subfinder",
+        "assetfinder" => "subfinder",
+        "dnsx" => "subfinder",
+        "httpx" => "curl",
+        "nuclei" => "httpx",
+        // Active probing tools
+        "dalfox" => "gf", // fallback to pattern matching
+        "corsy" => "gf",
+        "crlfuzz" => "gf",
+        "hakrawler" => "gospider",
+        "ffuf" => "gobuster",
+        // Additional tool alternatives
+        "feroxbuster" => "gobuster",
+        "gobuster" => "feroxbuster",
+        "nikto" => "nuclei",     // template scanner as fallback
+        "sqlmap" => "nuclei",    // template scanner as fallback
+        "naabu" => "nmap",       // port scanner fallback
+        "kxss" => "gf",          // XSS pattern matching fallback
+        "meg" => "httpx",        // HTTP probe fallback
+        "anew" => "sort",        // deduplication fallback
+        "qsreplace" => "gf",     // query param manipulation fallback
+        "unfurl" => "gf",        // URL analysis fallback
+        "cariddi" => "katana",   // crawler fallback
+        "puredns" => "dnsx",     // DNS resolver fallback
+        "shuffledns" => "dnsx",  // DNS resolver fallback
+        "alterx" => "subfinder", // subdomain permutation fallback
+        _ => return None,
+    })
+}
+
+/// Walk the fallback chain from `tool` until `is_present` finds an installed
+/// binary, following multi-hop paths (e.g. `katana` -> `gau` ->
+/// `waybackurls`). The previous single-hop lookup gave up whenever the first
+/// alternative was missing too, returning a tool that did not exist. The
+/// visited set makes cycles in the table (`gau` <-> `waybackurls`) terminate.
+/// Returns the original `tool` when the entire chain is missing.
+fn resolve_tool_with_availability(tool: &str, mut is_present: impl FnMut(&str) -> bool) -> String {
+    if is_present(tool) {
+        return tool.to_string();
+    }
+    let mut visited: HashSet<&str> = [tool].into_iter().collect();
+    let mut current = tool;
+    while let Some(alternative) = fallback_alternative(current) {
+        // Reaching an already-probed name means every tool on the loop is
+        // missing; stop instead of probing forever.
+        if !visited.insert(alternative) {
+            break;
+        }
+        if is_present(alternative) {
+            return alternative.to_string();
+        }
+        current = alternative;
+    }
+    tool.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_chain_follows_multiple_hops() {
+        // katana -> gau -> waybackurls: with katana and gau both missing, the
+        // walk must reach waybackurls instead of giving up after one hop.
+        let resolved = resolve_tool_with_availability("katana", |name| name == "waybackurls");
+        assert_eq!(resolved, "waybackurls");
+    }
+
+    #[test]
+    fn fallback_chain_cycles_terminate() {
+        // gau <-> waybackurls form a cycle; with both missing the walk must
+        // stop and return the original tool instead of looping forever.
+        let resolved = resolve_tool_with_availability("gau", |_| false);
+        assert_eq!(resolved, "gau");
+    }
+
+    #[test]
+    fn fallback_prefers_the_requested_tool_when_present() {
+        let resolved = resolve_tool_with_availability("nuclei", |_| true);
+        assert_eq!(resolved, "nuclei");
+    }
+
+    #[test]
+    fn fallback_walks_deep_chains_and_returns_original_when_all_missing() {
+        // sqlmap -> nuclei -> httpx -> curl: with the whole chain missing the
+        // original tool name comes back so the caller can report it.
+        let resolved = resolve_tool_with_availability("sqlmap", |_| false);
+        assert_eq!(resolved, "sqlmap");
+        // And with only the last hop installed, the walk reaches it.
+        let resolved = resolve_tool_with_availability("sqlmap", |name| name == "curl");
+        assert_eq!(resolved, "curl");
+    }
 
     #[tokio::test]
     async fn test_orchestrator_creation() {
